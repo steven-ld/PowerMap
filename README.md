@@ -48,7 +48,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。需要固定版本时使用 `sh install.sh v0.2.0`，或设置 `POWERMAP_VERSION`。也可继续使用下方的手动下载和源码构建方式。
+安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。若最新 Release 尚未上传当前平台的资产，脚本会显示对应资产和发布页；可稍后重试，或使用 `sh install.sh v0.2.0` 固定版本。也可设置 `POWERMAP_VERSION`，或继续使用下方的手动下载和源码构建方式。
 
 ## 适用边界
 

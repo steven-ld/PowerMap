@@ -28,8 +28,14 @@ target="${arch}-${os}"
 archive="powermap-${target}.tar.gz"
 
 case "$VERSION" in
-  latest) base_url="https://github.com/${REPOSITORY}/releases/latest/download" ;;
-  v*) base_url="https://github.com/${REPOSITORY}/releases/download/${VERSION}" ;;
+  latest)
+    base_url="https://github.com/${REPOSITORY}/releases/latest/download"
+    release_page="https://github.com/${REPOSITORY}/releases/latest"
+    ;;
+  v*)
+    base_url="https://github.com/${REPOSITORY}/releases/download/${VERSION}"
+    release_page="https://github.com/${REPOSITORY}/releases/tag/${VERSION}"
+    ;;
   *)
     echo "Version must be 'latest' or a tag beginning with v (for example v0.1.0)." >&2
     exit 1
@@ -56,9 +62,23 @@ tmpdir="$(mktemp -d)"
 cleanup() { rm -rf "$tmpdir"; }
 trap cleanup EXIT HUP INT TERM
 
+download_asset() {
+  asset="$1"
+
+  if ! curl --fail --location --retry 3 --silent --output "$tmpdir/$asset" "$base_url/$asset"; then
+    echo "Unable to download $asset for $target from PowerMap $VERSION." >&2
+    echo "The release may not include assets for this platform yet, or the network request failed." >&2
+    echo "Release page: $release_page" >&2
+    if [ "$VERSION" = "latest" ]; then
+      echo "Retry shortly, or install a published version explicitly: sh install.sh v0.2.0" >&2
+    fi
+    exit 1
+  fi
+}
+
 echo "Downloading PowerMap ${VERSION} for ${target}..."
-curl --fail --location --retry 3 --output "$tmpdir/$archive" "$base_url/$archive"
-curl --fail --location --retry 3 --output "$tmpdir/powermap-$target.sha256" "$base_url/powermap-$target.sha256"
+download_asset "$archive"
+download_asset "powermap-$target.sha256"
 
 (
   cd "$tmpdir"

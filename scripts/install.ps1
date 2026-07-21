@@ -29,9 +29,34 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 
 if ($Version -eq 'latest') {
     $baseUrl = "https://github.com/$repository/releases/latest/download"
+    $releasePage = "https://github.com/$repository/releases/latest"
 }
 else {
     $baseUrl = "https://github.com/$repository/releases/download/$Version"
+    $releasePage = "https://github.com/$repository/releases/tag/$Version"
+}
+
+function Download-ReleaseAsset {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Asset,
+
+        [Parameter(Mandatory = $true)]
+        [string]$OutputPath
+    )
+
+    try {
+        Invoke-WebRequest -Uri "$baseUrl/$Asset" -OutFile $OutputPath -UseBasicParsing
+    }
+    catch {
+        $message = "Unable to download $Asset for $target from PowerMap $Version. " +
+            'The release may not include assets for this platform yet, or the network request failed. ' +
+            "Release page: $releasePage"
+        if ($Version -eq 'latest') {
+            $message += ' Retry shortly, or install a published version explicitly: .\install.ps1 -Version v0.2.0'
+        }
+        throw $message
+    }
 }
 
 $temporaryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("powermap-install-" + [System.Guid]::NewGuid())
@@ -42,8 +67,8 @@ try {
     $checksumPath = Join-Path $temporaryDirectory $checksumFile
 
     Write-Host "Downloading PowerMap $Version for $target..."
-    Invoke-WebRequest -Uri "$baseUrl/$archive" -OutFile $archivePath -UseBasicParsing
-    Invoke-WebRequest -Uri "$baseUrl/$checksumFile" -OutFile $checksumPath -UseBasicParsing
+    Download-ReleaseAsset -Asset $archive -OutputPath $archivePath
+    Download-ReleaseAsset -Asset $checksumFile -OutputPath $checksumPath
 
     $expectedChecksum = (Get-Content -LiteralPath $checksumPath -Raw).Trim().Split([char[]]" `t", [System.StringSplitOptions]::RemoveEmptyEntries)[0]
     if ($expectedChecksum -notmatch '^[A-Fa-f0-9]{64}$') {
