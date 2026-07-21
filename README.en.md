@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="assets/powermap-logo.svg" alt="PowerMap" width="420" />
+
 ![PowerMap](https://img.shields.io/badge/PowerMap-P2P%20Tunnel-3370ff?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-green?style=for-the-badge)
 ![Rust](https://img.shields.io/badge/Rust-1.85+-orange?style=for-the-badge&logo=rust&logoColor=white)
@@ -11,6 +13,8 @@ A NAT-traversal tunnel built on [iroh](https://iroh.computer) (P2P / QUIC). Two 
 
 [![CI](https://github.com/steven-ld/PowerMap/actions/workflows/ci.yml/badge.svg)](https://github.com/steven-ld/PowerMap/actions/workflows/ci.yml)
 [![Release](https://github.com/steven-ld/PowerMap/actions/workflows/release.yml/badge.svg)](https://github.com/steven-ld/PowerMap/actions/workflows/release.yml)
+
+**🔗 Website: [powermap.ga666666.com](https://powermap.ga666666.com)**
 
 [简体中文](README.md) • **English**
 
@@ -56,6 +60,16 @@ Target allowlists (CIDR + port), per-tenant tokens, audit logging, resource caps
 - **HTTPS Admin UI** — optional TLS reusing iroh's ring backend, no extra C deps
 - **Cross-Platform** — prebuilt binaries for Linux / macOS / Windows
 - **Docker Ready** — the intranet side fits container deployment perfectly
+
+---
+
+## 🖥️ Screenshots
+
+Flat dual-theme web admin UI with a two-page layout, showing live connection status and transport path (P2P direct / relayed) in real time.
+
+| Port Mappings (home) | Connection Settings |
+|---|---|
+| ![Port Mappings](assets/screenshots/light-mappings.png) | ![Connection Settings](assets/screenshots/light-connection.png) |
 
 ---
 

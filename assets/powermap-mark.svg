@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" role="img" aria-labelledby="title desc">
+  <title id="title">PowerMap mark</title>
+  <desc id="desc">A connected P-shaped tunnel mark.</desc>
+  <defs>
+    <linearGradient id="tunnel" x1="28" y1="28" x2="152" y2="152" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#377DFF"/>
+      <stop offset="1" stop-color="#1751C4"/>
+    </linearGradient>
+  </defs>
+  <rect width="140" height="140" rx="30" fill="#0D1B3A"/>
+  <path d="M36 108V34h39c25 0 40 14 40 35s-15 35-40 35H58" fill="none" stroke="url(#tunnel)" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/>
+  <path d="M58 69h43" fill="none" stroke="#E8F1FF" stroke-linecap="round" stroke-width="7"/>
+  <circle cx="36" cy="108" r="11" fill="#57D5B0"/>
+  <circle cx="115" cy="69" r="11" fill="#57D5B0"/>
+  <circle cx="58" cy="34" r="8" fill="#E8F1FF"/>
+</svg>

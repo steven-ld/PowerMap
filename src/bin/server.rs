@@ -26,6 +26,7 @@ use powermap::{config, proto, signal, tunnel};
 #[derive(Parser)]
 #[command(
     name = "powermap-server",
+    version,
     about = "iroh P2P 穿透端：部署在内网设备，生成凭证供 A 端接入（支持多租户）"
 )]
 struct Args {

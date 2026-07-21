@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 官网 / Website
+    url: https://powermap.ga666666.com
+    about: 项目主页与文档 / Project homepage and docs
+  - name: 安全问题 / Security issue
+    url: https://github.com/steven-ld/PowerMap/security/advisories/new
+    about: 请勿在公开 issue 里报告安全漏洞，走私密通道 / Please report vulnerabilities privately, not in public issues

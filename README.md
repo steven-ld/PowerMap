@@ -2,6 +2,8 @@
 
 <div align="center">
 
+<img src="assets/powermap-logo.svg" alt="PowerMap" width="420" />
+
 ![PowerMap](https://img.shields.io/badge/PowerMap-P2P%20Tunnel-3370ff?style=for-the-badge)
 ![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-green?style=for-the-badge)
 ![Rust](https://img.shields.io/badge/Rust-1.85+-orange?style=for-the-badge&logo=rust&logoColor=white)
@@ -11,6 +13,8 @@
 
 [![CI](https://github.com/steven-ld/PowerMap/actions/workflows/ci.yml/badge.svg)](https://github.com/steven-ld/PowerMap/actions/workflows/ci.yml)
 [![Release](https://github.com/steven-ld/PowerMap/actions/workflows/release.yml/badge.svg)](https://github.com/steven-ld/PowerMap/actions/workflows/release.yml)
+
+**🌐 官网：[powermap.ga666666.com](https://powermap.ga666666.com)**
 
 **简体中文** • [English](README.en.md)
 
@@ -56,6 +60,16 @@
 - **HTTPS 管理页** —— 可选 TLS，复用 iroh 的 ring 后端，无额外 C 依赖
 - **跨平台** —— Linux / macOS / Windows 预编译二进制
 - **Docker Ready** —— 内网侧完美适配容器部署
+
+---
+
+## 🖥️ 界面预览
+
+Web 管理页扁平双主题、两页式布局，实时显示连接状态与穿透路径（P2P 直连 / 经中继）。
+
+| 端口映射（主页） | 连接设置 |
+|---|---|
+| ![端口映射](assets/screenshots/light-mappings.png) | ![连接设置](assets/screenshots/light-connection.png) |
 
 ---
 

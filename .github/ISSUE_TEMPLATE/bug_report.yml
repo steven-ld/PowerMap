@@ -1,0 +1,66 @@
+name: Bug 报告 / Bug report
+description: 报告一个可复现的问题 / Report a reproducible problem
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量填全，方便定位。**不要贴出 token、node_id 或 credential.json 内容。**
+        Thanks! Please fill in as much as you can. **Do not paste tokens, node_id, or credential.json contents.**
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: 现象 / What happened
+      description: 发生了什么？期望是什么？/ What went wrong, and what did you expect?
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: 复现步骤 / Steps to reproduce
+      placeholder: |
+        1. 启动 powermap-server ...
+        2. 在管理页添加映射 ...
+        3. 看到错误 ...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: side
+    attributes:
+      label: 哪一端 / Which side
+      options:
+        - powermap-server（穿透端 / server）
+        - powermap-client（用户端 / client）
+        - 两者 / both
+        - 不确定 / not sure
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / Version
+      description: "`powermap-client --version` 或管理页页脚显示的版本 / from --version or the admin footer"
+      placeholder: "0.1.0"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: 操作系统 / OS
+      placeholder: "Ubuntu 22.04 / macOS 14 / Windows 11"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志 / Logs
+      description: 相关日志（用 RUST_LOG=debug 更详细）。请先脱敏。/ Relevant logs (RUST_LOG=debug for more). Redact secrets first.
+      render: text
+    validations:
+      required: false

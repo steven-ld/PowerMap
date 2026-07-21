@@ -44,6 +44,7 @@ use powermap::{config, proto, signal, tunnel};
 #[derive(Parser)]
 #[command(
     name = "powermap-client",
+    version,
     about = "iroh P2P 用户端：家里电脑，Web 管理端口映射"
 )]
 struct Args {
@@ -140,6 +141,37 @@ impl Link {
         match self.conn.lock().await.as_ref() {
             Some(c) => c.close_reason().is_none(),
             None => false,
+        }
+    }
+
+    /// 当前到 B 的穿透路径：direct（P2P 打洞直连）/ relay（经中继转发）/ unknown（暂不可知）。
+    /// 读 iroh 的 remote_info，看当前活跃的传输地址是 IP（直连）还是 Relay（中继）。
+    /// 未连接或无凭证时返回 None。
+    async fn transport_path(&self) -> Option<&'static str> {
+        let target = self.creds.read().await.target?;
+        if !self.is_alive().await {
+            return None;
+        }
+        let info = self.endpoint.remote_info(target).await?;
+        let mut has_direct = false;
+        let mut has_relay = false;
+        for a in info.addrs() {
+            if !matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active) {
+                continue;
+            }
+            match a.addr() {
+                iroh::TransportAddr::Ip(_) => has_direct = true,
+                iroh::TransportAddr::Relay(_) => has_relay = true,
+                _ => {}
+            }
+        }
+        // 有活跃直连即视为 P2P（iroh 会尽量升级到直连）；否则若有活跃中继则为 relay。
+        if has_direct {
+            Some("direct")
+        } else if has_relay {
+            Some("relay")
+        } else {
+            Some("unknown")
         }
     }
 }
@@ -275,16 +307,23 @@ struct Status {
     configured: bool,
     node_id: String,
     mappings: usize,
+    /// 穿透路径：direct（P2P 打洞直连）/ relay（经中继转发）/ unknown；未连接时为 null。
+    path: Option<&'static str>,
+    /// 二进制版本（Cargo.toml 的 package version），供管理页展示。
+    version: &'static str,
 }
 
 async fn status(State(st): State<AppState>) -> Json<Status> {
     let n = st.inner.lock().await.mappings.len();
+    let path = st.link.transport_path().await;
     let creds = st.link.creds.read().await;
     Json(Status {
         connected: st.link.is_alive().await,
         configured: creds.target.is_some(),
         node_id: creds.node_id.clone(),
         mappings: n,
+        path,
+        version: env!("CARGO_PKG_VERSION"),
     })
 }
 

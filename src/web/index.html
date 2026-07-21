@@ -159,6 +159,23 @@
     @keyframes pulse { 0% { transform: scale(.6); opacity: .45; } 100% { transform: scale(1.4); opacity: 0; } }
   }
 
+  /* 穿透路径徽章：P2P 直连（success）/ 中继（warning）/ 协商中（muted） */
+  .path-chip {
+    display: none; align-items: center; gap: 5px;
+    height: 1.5rem; padding: 0 0.5rem;
+    border: 1px solid var(--border); border-radius: 9999px;
+    font: 600 11px/1 var(--font-mono); letter-spacing: 0.01em;
+    color: var(--muted-foreground); background: var(--card); white-space: nowrap;
+  }
+  .path-chip.show { display: inline-flex; }
+  .path-chip svg { width: 12px; height: 12px; flex: none; }
+  .path-chip.direct { color: var(--success); border-color: color-mix(in oklab, var(--success) 40%, var(--border)); }
+  .path-chip.relay { color: var(--warning); border-color: color-mix(in oklab, var(--warning) 40%, var(--border)); }
+  .path-chip .ico-direct, .path-chip .ico-relay { display: none; }
+  .path-chip.direct .ico-direct { display: block; }
+  .path-chip.relay .ico-relay { display: block; }
+  .path-chip.unknown .ico-relay { display: block; }
+
   #mainPage { flex: 1 0 auto; display: flex; flex-direction: column; }
   .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; width: 100%; flex: 1 0 auto; }
 
@@ -293,6 +310,20 @@
   .footer-title-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .footer-title { color: var(--foreground); font-size: 0.9375rem; font-weight: 600; line-height: 1.2; }
   .footer-version { color: var(--muted-foreground); font-size: 0.75rem; }
+  .footer-badge {
+    display: inline-flex; align-items: center; font: 600 0.6875rem/1.4 var(--font-mono);
+    padding: 0.0625rem 0.4375rem; border-radius: 9999px;
+    background: var(--muted); color: var(--muted-foreground); border: 1px solid var(--border);
+  }
+  .footer-link {
+    display: inline-flex; align-items: center; gap: 0.3125rem; text-decoration: none;
+    color: var(--muted-foreground); font: 500 0.8125rem/1 var(--font-mono);
+    transition: color .15s ease;
+  }
+  .footer-link:hover { color: var(--foreground); }
+  .footer-link svg { width: 0.875rem; height: 0.875rem; flex: none; }
+  .footer-meta a { color: var(--muted-foreground); text-decoration: none; }
+  .footer-meta a:hover { color: var(--foreground); }
   .footer-desc { max-width: 31rem; margin: 0.375rem 0 0; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.55; }
   .footer-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
   .app-footer .status-dot { width: 0.4375rem; height: 0.4375rem; }
@@ -326,8 +357,8 @@
     <div class="app-header-inner">
       <div class="brand-wrap">
         <a class="brand" href="#">
-          <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
-          <span class="brand-text">Power<b>Mapping</b></span>
+          <svg class="brand-icon" viewBox="0 0 140 140" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M36 108V34h39c25 0 40 14 40 35s-15 35-40 35H58" stroke-width="18"/><path d="M58 69h43" stroke-width="7" opacity="0.5"/><circle cx="36" cy="108" r="10" fill="currentColor" stroke="none"/><circle cx="115" cy="69" r="10" fill="currentColor" stroke="none"/></svg>
+          <span class="brand-text">Power<b>Map</b></span>
         </a>
       </div>
       <nav class="header-nav" aria-label="页面">
@@ -346,6 +377,7 @@
         <span class="conn">
           <span id="statusDot" class="status-dot"></span>
           <span id="statusText">查询中</span>
+          <span id="pathChip" class="path-chip" style="display:none"></span>
         </span>
         <button id="themeToggle" class="icon-btn theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">
           <svg class="ico-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>
@@ -362,7 +394,7 @@
       <div class="stat-card">
         <div class="stat-card-title">连接状态</div>
         <div class="stat-body">
-          <div class="stat-main"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span></div></div>
+          <div class="stat-main"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div></div>
           <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></span>
         </div>
       </div>
@@ -470,20 +502,25 @@
     <div class="app-footer-inner">
       <div class="footer-panel">
         <div class="footer-identity">
-          <svg class="footer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          <svg class="footer-icon" viewBox="0 0 140 140" fill="none" aria-hidden="true"><rect width="140" height="140" rx="30" fill="#0D1B3A"/><path d="M36 108V34h39c25 0 40 14 40 35s-15 35-40 35H58" fill="none" stroke="#377DFF" stroke-linecap="round" stroke-linejoin="round" stroke-width="18"/><path d="M58 69h43" fill="none" stroke="#E8F1FF" stroke-linecap="round" stroke-width="7"/><circle cx="36" cy="108" r="11" fill="#57D5B0"/><circle cx="115" cy="69" r="11" fill="#57D5B0"/><circle cx="58" cy="34" r="8" fill="#E8F1FF"/></svg>
           <div class="footer-copy">
             <div class="footer-title-row">
               <span class="footer-title">PowerMap</span>
               <span class="footer-version">内网穿透控制台</span>
+              <span id="footerVer" class="footer-badge" style="display:none"></span>
             </div>
             <p class="footer-desc">把内网服务安全地映射到本地端口 · 单可执行、零依赖。</p>
           </div>
         </div>
         <div class="footer-actions">
           <span class="footer-status"><span id="footerDot" class="status-dot"></span><span id="footerStatus">查询中</span></span>
+          <a class="footer-link" href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
+            官网
+          </a>
         </div>
       </div>
-      <div class="footer-meta"><span>© <span id="footerYear"></span> PowerMap</span></div>
+      <div class="footer-meta"><span>© <span id="footerYear"></span> PowerMap · <a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">powermap.ga666666.com</a></span></div>
     </div>
   </footer>
 </div>
@@ -521,12 +558,14 @@ function selectTab(name) {
     b.classList.toggle('active', b.dataset.tab === name);
   });
   localStorage.setItem(TAB_KEY, name);
+  if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
 }
 document.getElementById('tabBar').addEventListener('click', (e) => {
   const b = e.target.closest('.tab');
   if (b) selectTab(b.dataset.tab);
 });
-selectTab(localStorage.getItem(TAB_KEY) || 'mappings');
+window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
+selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'mappings');
 
 document.getElementById('footerYear').textContent = new Date().getFullYear();
 
@@ -699,6 +738,19 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   refresh();
 });
 
+// ── 穿透路径徽章：direct = P2P 直连，relay = 经中继，unknown = 探测中 ──
+const PATH_ICONS =
+  '<svg class="ico-direct" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>' +
+  '<svg class="ico-relay" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/></svg>';
+const PATH_LABEL = { direct: 'P2P 直连', relay: '经中继', unknown: '探测中' };
+function renderPathChip(el, path, connected) {
+  if (!el) return;
+  if (!connected || !path) { el.className = 'path-chip'; el.style.display = 'none'; el.innerHTML = ''; return; }
+  el.className = 'path-chip show ' + path;
+  el.style.display = '';
+  el.innerHTML = PATH_ICONS + '<span>' + (PATH_LABEL[path] || path) + '</span>';
+}
+
 // ── 状态：顶栏 + 指标卡 + 页脚 ──
 async function refreshStatus() {
   const dot = document.getElementById('statusDot');
@@ -708,8 +760,12 @@ async function refreshStatus() {
   const mTunnels = document.getElementById('mTunnels');
   const fDot = document.getElementById('footerDot');
   const fTxt = document.getElementById('footerStatus');
+  const pathChip = document.getElementById('pathChip');
+  const mPathChip = document.getElementById('mPathChip');
+  const fVer = document.getElementById('footerVer');
   try {
     const s = await (await fetch('/api/status', { headers: authHeaders() })).json();
+    if (fVer && s.version) { fVer.textContent = 'v' + s.version; fVer.style.display = ''; }
     let cls, label;
     if (!s.configured) { cls = ''; label = '未配置'; }
     else if (s.connected) { cls = 'ok'; label = '已连接'; }
@@ -722,10 +778,14 @@ async function refreshStatus() {
     mTunnels.textContent = s.mappings;
     fDot.className = 'status-dot ' + cls;
     fTxt.textContent = label;
+    renderPathChip(pathChip, s.path, s.connected);
+    renderPathChip(mPathChip, s.path, s.connected);
   } catch {
     dot.className = 'status-dot err'; txt.textContent = '服务不可用';
     mDot.className = 'status-dot err'; mState.textContent = '不可用';
     fDot.className = 'status-dot err'; fTxt.textContent = '服务不可用';
+    renderPathChip(pathChip, null, false);
+    renderPathChip(mPathChip, null, false);
   }
 }
 refreshCred();
