@@ -25,6 +25,14 @@ pub struct Mapping {
     pub host: String,
     /// 目标端口
     pub port: u16,
+    /// 是否启用；停用后释放本地端口、不再接受连接，但保留在配置里可随时再启用。
+    /// 旧配置没有此字段时默认启用，保持向后兼容。
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+fn default_enabled() -> bool {
+    true
 }
 
 /// B 端明确允许在 client 管理页中推荐的目标服务。
@@ -562,6 +570,7 @@ mod tests {
                 local: "127.0.0.1:80".into(),
                 host: "10.0.0.1".into(),
                 port: 80,
+                enabled: true,
             }],
             ..Default::default()
         };
@@ -768,51 +777,17 @@ revoked = false
 
     #[test]
     fn mapping_validate_rejects_bad_input() {
-        assert!(
-            Mapping {
-                local: "127.0.0.1:8080".into(),
-                host: "10.0.0.1".into(),
-                port: 80
-            }
-            .validate()
-            .is_ok()
-        );
-        assert!(
-            Mapping {
-                local: "not-an-addr".into(),
-                host: "10.0.0.1".into(),
-                port: 80
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            Mapping {
-                local: "127.0.0.1:8080".into(),
-                host: "".into(),
-                port: 80
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            Mapping {
-                local: "127.0.0.1:8080".into(),
-                host: "a b".into(),
-                port: 80
-            }
-            .validate()
-            .is_err()
-        );
-        assert!(
-            Mapping {
-                local: "127.0.0.1:8080".into(),
-                host: "10.0.0.1".into(),
-                port: 0
-            }
-            .validate()
-            .is_err()
-        );
+        let m = |local: &str, host: &str, port: u16| Mapping {
+            local: local.into(),
+            host: host.into(),
+            port,
+            enabled: true,
+        };
+        assert!(m("127.0.0.1:8080", "10.0.0.1", 80).validate().is_ok());
+        assert!(m("not-an-addr", "10.0.0.1", 80).validate().is_err());
+        assert!(m("127.0.0.1:8080", "", 80).validate().is_err());
+        assert!(m("127.0.0.1:8080", "a b", 80).validate().is_err());
+        assert!(m("127.0.0.1:8080", "10.0.0.1", 0).validate().is_err());
     }
 
     #[test]

@@ -27,7 +27,7 @@ use axum::extract::{Path, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::{delete, get, post};
+use axum::routing::{get, post, put};
 use clap::Parser;
 use iroh::endpoint::{Connection, presets};
 use iroh::{Endpoint, PublicKey};
@@ -152,43 +152,195 @@ impl Link {
         }
     }
 
-    /// 当前到 B 的穿透路径：direct（P2P 打洞直连）/ relay（经中继转发）/ unknown（暂不可知）。
-    /// 读 iroh 的 remote_info，看当前活跃的传输地址是 IP（直连）还是 Relay（中继）。
-    /// 未连接或无凭证时返回 None。
-    async fn transport_path(&self) -> Option<&'static str> {
+    /// 当前到 B 的穿透质量快照：路径（direct / relay / unknown）、往返延迟、中继主机。
+    /// 优先读活跃连接的“已选路径”，直接拿到该路径的 RTT 与地址类型；
+    /// 连接尚无路径快照时回退到 remote_info 判断路径类型。未连接或无凭证时返回 None。
+    async fn transport_path(&self) -> Option<PathInfo> {
         let target = self.creds.read().await.target?;
-        if !self.is_alive().await {
-            return None;
+        let conn = {
+            let guard = self.conn.lock().await;
+            match guard.as_ref() {
+                Some(c) if c.close_reason().is_none() => c.clone(),
+                _ => return None,
+            }
+        };
+
+        // 已选路径能同时给出 RTT 与地址类型，是最准确的“当前正在走”的路径。
+        // Path 借用 Connection，不能跨 await，因此在此同步提取出所有拥有型数据。
+        let selected = {
+            let paths = conn.paths();
+            let path = paths.into_iter().find(|p| p.is_selected());
+            path.map(|p| {
+                let rtt_ms = (p.rtt().as_secs_f64() * 1000.0).round() as u64;
+                let relay = match p.remote_addr() {
+                    iroh::TransportAddr::Relay(url) => url.host_str().map(|h| h.to_string()),
+                    _ => None,
+                };
+                let kind = if p.is_ip() {
+                    "direct"
+                } else if p.is_relay() {
+                    "relay"
+                } else {
+                    "unknown"
+                };
+                (kind, rtt_ms, relay)
+            })
+        };
+        if let Some((kind, rtt_ms, relay)) = selected {
+            return Some(PathInfo {
+                path: kind,
+                rtt_ms: Some(rtt_ms),
+                relay,
+            });
         }
+
+        // 回退：还没有选定路径时，用 remote_info 的活跃地址判断类型（无 RTT）。
         let info = self.endpoint.remote_info(target).await?;
         let mut has_direct = false;
         let mut has_relay = false;
+        let mut relay_host = None;
         for a in info.addrs() {
             if !matches!(a.usage(), iroh::endpoint::TransportAddrUsage::Active) {
                 continue;
             }
             match a.addr() {
                 iroh::TransportAddr::Ip(_) => has_direct = true,
-                iroh::TransportAddr::Relay(_) => has_relay = true,
+                iroh::TransportAddr::Relay(url) => {
+                    has_relay = true;
+                    if relay_host.is_none() {
+                        relay_host = url.host_str().map(|h| h.to_string());
+                    }
+                }
                 _ => {}
             }
         }
-        // 有活跃直连即视为 P2P（iroh 会尽量升级到直连）；否则若有活跃中继则为 relay。
-        if has_direct {
-            Some("direct")
+        let path = if has_direct {
+            "direct"
         } else if has_relay {
-            Some("relay")
+            "relay"
         } else {
-            Some("unknown")
+            "unknown"
+        };
+        Some(PathInfo {
+            path,
+            rtt_ms: None,
+            relay: if path == "relay" { relay_host } else { None },
+        })
+    }
+}
+
+/// 到 B 的连接质量快照，供管理页展示路径徽章与延迟。
+#[derive(Clone, Serialize)]
+struct PathInfo {
+    /// 穿透路径：direct（P2P 直连）/ relay（经中继）/ unknown。
+    path: &'static str,
+    /// 已选路径的往返延迟（毫秒）；仅有活跃路径时可得。
+    rtt_ms: Option<u64>,
+    /// 经中继时的中继主机名（direct 时为 None）。
+    relay: Option<String>,
+}
+
+/// 一条控制台事件：供管理页“事件”页只读展示近期发生了什么，
+/// 便于用户在不看终端日志的情况下排查连接与隧道问题。
+#[derive(Clone, Serialize)]
+struct Event {
+    /// unix 毫秒时间戳。
+    at: u64,
+    /// 级别：info / warn / error，仅用于前端着色。
+    level: &'static str,
+    /// 事件分类（tunnel / reconnect / credential / mapping），供前端筛选或图标。
+    kind: &'static str,
+    /// 人类可读的事件描述（已脱敏，不含 token）。
+    message: String,
+}
+
+/// 近期事件的有界环形缓冲：只保留最新 N 条，读写用轻量 Mutex 保护。
+/// 纯内存、不落盘，进程退出即清空——它是排查辅助，不是审计副本。
+struct EventLog {
+    events: std::sync::Mutex<std::collections::VecDeque<Event>>,
+    capacity: usize,
+}
+
+impl EventLog {
+    fn new(capacity: usize) -> Arc<EventLog> {
+        Arc::new(EventLog {
+            events: std::sync::Mutex::new(std::collections::VecDeque::with_capacity(capacity)),
+            capacity,
+        })
+    }
+
+    /// 追加一条事件；超过容量时丢弃最旧的。message 已由调用方脱敏。
+    fn push(&self, level: &'static str, kind: &'static str, message: impl Into<String>) {
+        let event = Event {
+            at: now_unix_millis(),
+            level,
+            kind,
+            message: message.into(),
+        };
+        let mut events = self.events.lock().unwrap_or_else(|e| e.into_inner());
+        if events.len() >= self.capacity {
+            events.pop_front();
         }
+        events.push_back(event);
+    }
+
+    /// 返回最新在前的事件快照。
+    fn snapshot(&self) -> Vec<Event> {
+        let events = self.events.lock().unwrap_or_else(|e| e.into_inner());
+        events.iter().rev().cloned().collect()
     }
 }
 
 /// 单条映射的流量统计（按块增量累加，实时可见）。
 struct Stats {
-    tx: AtomicU64, // 本地 -> 远端（上行）
-    rx: AtomicU64, // 远端 -> 本地（下行）
+    tx: AtomicU64,           // 本地 -> 远端（上行）
+    rx: AtomicU64,           // 远端 -> 本地（下行）
+    active_conns: AtomicU64, // 当前活跃连接数（gauge，进出隧道时增减）
+    /// 下一个连接序号（单调递增，仅用于给活跃连接一个稳定的展示 id）。
+    next_conn_id: AtomicU64,
+    /// 当前活跃连接明细：连接序号 → 元数据（来源、起始时间、独立字节计数）。
+    /// 连接建立时登记、结束时由守卫移除，供管理页展开查看“哪条连接在忙”。
+    conns: std::sync::Mutex<BTreeMap<u64, Arc<ConnMeta>>>,
     diagnostics: RwLock<MappingDiagnostics>,
+}
+
+/// 单条活跃连接的元数据。tx/rx 是这条连接自己的字节计数，接入 copy_count 的计数器切片，
+/// 与映射级累计各自独立累加。
+struct ConnMeta {
+    /// 本地端连接来源（127/8 上的临时端口），用于区分并发连接。
+    peer: String,
+    /// 连接建立时间（unix 毫秒）。
+    started_at: u64,
+    tx: AtomicU64,
+    rx: AtomicU64,
+}
+
+/// 活跃连接守卫：进入隧道处理时把连接登记进 active_conns 与明细表，
+/// 任务结束（正常或 panic）时移除，保证 gauge 与明细都不会因异常路径而泄漏。
+struct ActiveGuard {
+    stats: Arc<Stats>,
+    id: u64,
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        self.stats.active_conns.fetch_sub(1, Ordering::Relaxed);
+        self.stats
+            .conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.id);
+    }
+}
+
+/// 一条活跃连接的只读快照，供 /api/stats 展开明细。
+#[derive(Clone, Serialize)]
+struct ConnSnapshot {
+    id: u64,
+    peer: String,
+    started_at: u64,
+    tx_bytes: u64,
+    rx_bytes: u64,
 }
 
 #[derive(Clone, Serialize)]
@@ -208,6 +360,8 @@ enum TunnelOutcome {
 #[derive(Default)]
 struct MappingDiagnostics {
     listener_active: bool,
+    /// 是否被用户停用；停用后不绑定本地端口，状态显示为 disabled。
+    disabled: bool,
     last_tunnel_failure: Option<TunnelFailure>,
     last_tunnel_success_at: Option<u64>,
     last_outcome: TunnelOutcome,
@@ -215,14 +369,55 @@ struct MappingDiagnostics {
 
 impl Stats {
     fn new() -> Arc<Stats> {
+        Stats::with_state(true, false)
+    }
+
+    /// 按初始运行态构造：`listener_active` 表示监听是否在跑，`disabled` 表示是否被用户停用。
+    fn with_state(listener_active: bool, disabled: bool) -> Arc<Stats> {
         Arc::new(Stats {
             tx: AtomicU64::new(0),
             rx: AtomicU64::new(0),
+            active_conns: AtomicU64::new(0),
+            next_conn_id: AtomicU64::new(1),
+            conns: std::sync::Mutex::new(BTreeMap::new()),
             diagnostics: RwLock::new(MappingDiagnostics {
-                listener_active: true,
+                listener_active,
+                disabled,
                 ..Default::default()
             }),
         })
+    }
+
+    /// 登记一条新连接，返回其序号与独立字节计数器（接入 copy_count 用）。
+    fn register_conn(&self, peer: String) -> (u64, Arc<ConnMeta>) {
+        let id = self.next_conn_id.fetch_add(1, Ordering::Relaxed);
+        let meta = Arc::new(ConnMeta {
+            peer,
+            started_at: now_unix_millis(),
+            tx: AtomicU64::new(0),
+            rx: AtomicU64::new(0),
+        });
+        self.conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, meta.clone());
+        (id, meta)
+    }
+
+    /// 当前活跃连接明细快照（按连接序号升序，即建立先后）。
+    fn conn_snapshot(&self) -> Vec<ConnSnapshot> {
+        self.conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(id, meta)| ConnSnapshot {
+                id: *id,
+                peer: meta.peer.clone(),
+                started_at: meta.started_at,
+                tx_bytes: meta.tx.load(Ordering::Relaxed),
+                rx_bytes: meta.rx.load(Ordering::Relaxed),
+            })
+            .collect()
     }
 
     async fn record_success(&self) {
@@ -246,7 +441,9 @@ impl Stats {
 
     async fn diagnostic_snapshot(&self) -> MappingDiagnosticSnapshot {
         let diagnostics = self.diagnostics.read().await;
-        let state = if !diagnostics.listener_active {
+        let state = if diagnostics.disabled {
+            "disabled"
+        } else if !diagnostics.listener_active {
             "stopped"
         } else {
             match diagnostics.last_outcome {
@@ -316,6 +513,7 @@ struct AppState {
     max_conns_per_mapping: usize,
     config_path: PathBuf,
     metrics: Arc<Metrics>,
+    events: Arc<EventLog>,
     inner: Arc<Mutex<Inner>>,
 }
 
@@ -365,11 +563,13 @@ async fn open_with_retry(
 }
 
 /// 一条隧道：开流、握手、本地与远端双向透传（优雅半关闭 + 流量计数 + 全局指标）。
+/// conn 是这条连接自己的元数据；其 tx/rx 与映射级累计并行累加，供管理页展开明细。
 async fn handle_tunnel(
     link: Link,
     req: proto::OpenRequest,
     local: TcpStream,
     stats: Arc<Stats>,
+    conn: Arc<ConnMeta>,
     metrics: Arc<Metrics>,
 ) -> Result<()> {
     let (mut send, mut recv) = open_with_retry(&link, &req).await?;
@@ -377,12 +577,22 @@ async fn handle_tunnel(
     stats.record_success().await;
     let (mut l_read, mut l_write) = tokio::io::split(local);
     let up = async {
-        tunnel::copy_count(&mut l_read, &mut send, &[&stats.tx, &metrics.bytes_tx]).await?;
+        tunnel::copy_count(
+            &mut l_read,
+            &mut send,
+            &[&stats.tx, &conn.tx, &metrics.bytes_tx],
+        )
+        .await?;
         send.shutdown().await.ok();
         Ok::<_, anyhow::Error>(())
     };
     let down = async {
-        tunnel::copy_count(&mut recv, &mut l_write, &[&stats.rx, &metrics.bytes_rx]).await?;
+        tunnel::copy_count(
+            &mut recv,
+            &mut l_write,
+            &[&stats.rx, &conn.rx, &metrics.bytes_rx],
+        )
+        .await?;
         l_write.shutdown().await.ok();
         Ok::<_, anyhow::Error>(())
     };
@@ -412,6 +622,10 @@ struct Status {
     mappings: usize,
     /// 穿透路径：direct（P2P 打洞直连）/ relay（经中继转发）/ unknown；未连接时为 null。
     path: Option<&'static str>,
+    /// 已选路径的往返延迟（毫秒）；无活跃路径时为 null。
+    rtt_ms: Option<u64>,
+    /// 经中继时的中继主机名；直连或未知时为 null。
+    relay: Option<String>,
     /// 二进制版本（Cargo.toml 的 package version），供管理页展示。
     version: &'static str,
     /// 当前活跃隧道数（瞬时量）。区别于 mappings：后者是已配置的映射条数。
@@ -428,15 +642,21 @@ struct Status {
 
 async fn status(State(st): State<AppState>) -> Json<Status> {
     let n = st.inner.lock().await.mappings.len();
-    let path = st.link.transport_path().await;
+    let path_info = st.link.transport_path().await;
     let creds = st.link.creds.read().await;
     let m = &st.metrics;
+    let (path, rtt_ms, relay) = match path_info {
+        Some(p) => (Some(p.path), p.rtt_ms, p.relay),
+        None => (None, None, None),
+    };
     Json(Status {
         connected: st.link.is_alive().await,
         configured: creds.target.is_some(),
         node_id: creds.node_id.clone(),
         mappings: n,
         path,
+        rtt_ms,
+        relay,
         version: env!("CARGO_PKG_VERSION"),
         active_tunnels: m.tunnels_active.load(Ordering::Relaxed),
         tunnels_opened: m.tunnels_opened.load(Ordering::Relaxed),
@@ -478,6 +698,7 @@ mod integration_tests {
             max_conns_per_mapping: 8,
             config_path: std::env::temp_dir().join(format!("powermap-client-test-{suffix}.toml")),
             metrics: Metrics::new(),
+            events: EventLog::new(200),
             inner: Arc::new(Mutex::new(Inner {
                 mappings: HashMap::new(),
             })),
@@ -528,6 +749,230 @@ mod integration_tests {
             .await
             .unwrap();
         assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn update_retargets_in_place_and_rebinds_a_new_local_address() {
+        let state = test_state("").await;
+        let app = app(state);
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/mappings")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+            )))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(create).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        // 仅改目标：本地地址不变，复用监听。
+        let retarget = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/mappings/{local}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"local":"{local}","host":"127.0.0.1","port":5432}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(retarget.status(), StatusCode::OK);
+        let listed = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/mappings").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["local"], local.to_string());
+        assert_eq!(listed[0]["port"], 5432);
+
+        // 改本地地址：绑定新地址、释放旧地址。
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let new_local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let rebind = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/mappings/{local}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"local":"{new_local}","host":"127.0.0.1","port":5432}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(rebind.status(), StatusCode::OK);
+        let listed = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/mappings").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
+        assert_eq!(listed[0]["local"], new_local.to_string());
+        // 旧地址已释放，可以重新绑定。
+        TcpListener::bind(local).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn toggle_disables_a_mapping_and_frees_its_local_port() {
+        let state = test_state("").await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let app = app(state);
+
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/mappings")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+            )))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(create).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        // 停用：应释放本地端口，状态转为 disabled。
+        let disabled = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/mappings/{local}/toggle"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled.status(), StatusCode::OK);
+        let body = response_json(disabled).await;
+        assert_eq!(body["enabled"], false);
+        // 端口已释放：可重新绑定。停用需等待旧监听任务收尾，稍作重试。
+        let mut rebound = false;
+        for _ in 0..25 {
+            if TcpListener::bind(local).await.is_ok() {
+                rebound = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(rebound, "停用后本地端口应可重新绑定");
+
+        let stats = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(stats[0]["state"], "disabled");
+        assert_eq!(stats[0]["enabled"], false);
+
+        // 再次 toggle：重新启用并绑回端口。
+        let enabled = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/mappings/{local}/toggle"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(enabled.status(), StatusCode::OK);
+        assert_eq!(response_json(enabled).await["enabled"], true);
+        // 重新启用后端口被映射占用，外部不能再绑定。
+        assert!(TcpListener::bind(local).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn update_rejects_an_unknown_mapping() {
+        let state = test_state("").await;
+        let app = app(state);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/mappings/127.0.0.1:1")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:1","host":"127.0.0.1","port":6379}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn creating_a_mapping_records_an_event_and_reports_active_conns() {
+        let state = test_state("").await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let app = app(state);
+
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/mappings")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+            )))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(create).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        // 新建映射即产生一条 mapping 事件，供“事件”页只读展示。
+        let events = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/events").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        let events = events.as_array().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["kind"], "mapping");
+        assert!(
+            events[0]["message"]
+                .as_str()
+                .unwrap()
+                .contains(&local.to_string())
+        );
+
+        // 全新映射尚无连接，active_conns 应为 0（字段存在即验证已接线）。
+        let stats = response_json(
+            app.oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(stats[0]["active_conns"], 0);
     }
 
     #[tokio::test]
@@ -753,6 +1198,7 @@ mod integration_tests {
             local: old_local.to_string(),
             host: "127.0.0.1".into(),
             port: 6379,
+            enabled: true,
         };
         let old_handle = start_mapping_owned(&state, old_mapping.clone())
             .await
@@ -825,8 +1271,14 @@ struct StatItem {
     local: String,
     host: String,
     port: u16,
+    /// 是否启用；停用的映射不监听本地端口。
+    enabled: bool,
     tx_bytes: u64,
     rx_bytes: u64,
+    /// 当前活跃连接数（这条映射上正在透传的隧道数量）。
+    active_conns: u64,
+    /// 当前活跃连接明细（来源、起始时间、独立字节），供管理页展开查看。
+    conns: Vec<ConnSnapshot>,
     #[serde(flatten)]
     diagnostics: MappingDiagnosticSnapshot,
 }
@@ -847,12 +1299,20 @@ async fn stats(State(st): State<AppState>) -> Json<Vec<StatItem>> {
             local: mapping.local.clone(),
             host: mapping.host.clone(),
             port: mapping.port,
+            enabled: mapping.enabled,
             tx_bytes: stats.tx.load(Ordering::Relaxed),
             rx_bytes: stats.rx.load(Ordering::Relaxed),
+            active_conns: stats.active_conns.load(Ordering::Relaxed),
+            conns: stats.conn_snapshot(),
             diagnostics: stats.diagnostic_snapshot().await,
         });
     }
     Json(result)
+}
+
+/// GET /api/events —— 返回近期控制台事件（最新在前），供“事件”页只读展示。
+async fn events(State(st): State<AppState>) -> Json<Vec<Event>> {
+    Json(st.events.snapshot())
 }
 
 #[derive(Deserialize)]
@@ -860,6 +1320,9 @@ struct CreateBody {
     local: String,
     host: String,
     port: u16,
+    /// 是否启用；创建时省略默认启用，编辑时省略则沿用原状态。
+    #[serde(default)]
+    enabled: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -884,31 +1347,45 @@ async fn preflight(
         local: body.local,
         host: body.host,
         port: body.port,
+        enabled: true,
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
     }
 
     let mut checks = BTreeMap::new();
-    match TcpListener::bind(&mapping.local).await {
-        Ok(listener) => {
-            drop(listener);
-            checks.insert(
-                "local_listener",
-                PreflightCheck {
-                    ok: true,
-                    detail: format!("{} 可用于监听", mapping.local),
-                },
-            );
-        }
-        Err(error) => {
-            checks.insert(
-                "local_listener",
-                PreflightCheck {
-                    ok: false,
-                    detail: format!("{} 无法监听: {error}", mapping.local),
-                },
-            );
+    // 编辑一条映射而保持本地地址不变时，该地址已被自己的监听占用，属正常情况；
+    // 视为可用，不再尝试重绑（否则会误报端口占用）。
+    let owned_by_existing = st.inner.lock().await.mappings.contains_key(&mapping.local);
+    if owned_by_existing {
+        checks.insert(
+            "local_listener",
+            PreflightCheck {
+                ok: true,
+                detail: format!("{} 已由现有映射监听", mapping.local),
+            },
+        );
+    } else {
+        match TcpListener::bind(&mapping.local).await {
+            Ok(listener) => {
+                drop(listener);
+                checks.insert(
+                    "local_listener",
+                    PreflightCheck {
+                        ok: true,
+                        detail: format!("{} 可用于监听", mapping.local),
+                    },
+                );
+            }
+            Err(error) => {
+                checks.insert(
+                    "local_listener",
+                    PreflightCheck {
+                        ok: false,
+                        detail: format!("{} 无法监听: {error}", mapping.local),
+                    },
+                );
+            }
         }
     }
 
@@ -972,6 +1449,7 @@ async fn create(
         local: body.local,
         host: body.host,
         port: body.port,
+        enabled: body.enabled.unwrap_or(true),
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
@@ -1015,14 +1493,43 @@ async fn create(
         g.mappings.insert(mapping.local.clone(), handle);
     }
     save_config(&st).await;
+    st.events.push(
+        "info",
+        "mapping",
+        format!(
+            "已创建映射 {} → {}:{}",
+            mapping.local, mapping.host, mapping.port
+        ),
+    );
     Ok(Json(mapping))
 }
 
+/// 为停用的映射构造一个不绑定端口、不接受连接的把手：任务只等待取消令牌。
+/// 这样启用/停用与增删改共用同一套 MappingHandle 生命周期管理。
+fn disabled_handle(mapping: config::Mapping) -> MappingHandle {
+    let stats = Stats::with_state(false, true);
+    let cancel = CancellationToken::new();
+    let cancel_task = cancel.clone();
+    let task = tokio::spawn(async move {
+        cancel_task.cancelled().await;
+    });
+    MappingHandle {
+        mapping: Arc::new(RwLock::new(mapping)),
+        task,
+        stats,
+        cancel,
+    }
+}
+
 /// 启动一条映射的本地监听；返回运行期把手（含取消令牌）。
+/// 停用的映射不绑定本地端口，只登记为 disabled 状态，随时可再启用。
 async fn start_mapping_owned(
     st: &AppState,
     mapping: config::Mapping,
 ) -> Result<MappingHandle, (StatusCode, String)> {
+    if !mapping.enabled {
+        return Ok(disabled_handle(mapping));
+    }
     let listener = TcpListener::bind(&mapping.local).await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -1050,7 +1557,7 @@ async fn start_mapping_owned(
                 r = listener.accept() => r,
             };
             match accepted {
-                Ok((tcp, _)) => {
+                Ok((tcp, peer)) => {
                     // 并发上限：拿不到许可就直接拒绝这条本地连接（丢弃即关闭）。
                     let permit = match &conn_sem {
                         Some(s) => match s.clone().try_acquire_owned() {
@@ -1072,6 +1579,13 @@ async fn start_mapping_owned(
                     let mapping = mapping_for_task.clone();
                     tokio::spawn(async move {
                         let _permit = permit; // 持有至隧道结束
+                        // 本地连接进入即计入活跃数与明细表，任务结束（含取消/异常）时由 guard 自动移除。
+                        stats.active_conns.fetch_add(1, Ordering::Relaxed);
+                        let (conn_id, conn_meta) = stats.register_conn(peer.to_string());
+                        let _active = ActiveGuard {
+                            stats: stats.clone(),
+                            id: conn_id,
+                        };
                         // 每条隧道建立时实时读取当前令牌，凭证轮换后新连接立即生效。
                         let mapping = mapping.read().await;
                         let req = proto::OpenRequest {
@@ -1081,7 +1595,7 @@ async fn start_mapping_owned(
                         };
                         tokio::select! {
                             _ = child.cancelled() => {}
-                            r = handle_tunnel(link.clone(), req, tcp, stats_for_tunnel, metrics.clone()) => {
+                            r = handle_tunnel(link.clone(), req, tcp, stats_for_tunnel, conn_meta, metrics.clone()) => {
                                 if let Err(e) = r {
                                     Metrics::inc(&metrics.tunnels_failed);
                                     stats.record_failure(&e).await;
@@ -1117,10 +1631,95 @@ async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> impl Into
             h.task.abort();
             drop(g);
             save_config(&st).await;
+            st.events
+                .push("info", "mapping", format!("已断开映射 {id}"));
             StatusCode::NO_CONTENT
         }
         None => StatusCode::NOT_FOUND,
     }
+}
+
+/// PUT /api/mappings/{id} —— 就地编辑一条映射。
+/// 仅改目标（host/port）时复用原监听 socket、不重绑端口，已建立的隧道不受影响，
+/// 后续新连接立即用新目标。改本地地址时先绑定新地址再停旧监听，失败则原样保留。
+async fn update(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<CreateBody>,
+) -> Result<Json<config::Mapping>, (StatusCode, String)> {
+    let mut g = st.inner.lock().await;
+    let existing = g
+        .mappings
+        .get(&id)
+        .ok_or((StatusCode::NOT_FOUND, format!("{id} 不存在映射")))?;
+    // 编辑表单不改变启用状态：省略 enabled 时沿用原值，启用/停用走专门的 toggle 接口。
+    let was_enabled = existing.mapping.read().await.enabled;
+    let mapping = config::Mapping {
+        local: body.local,
+        host: body.host,
+        port: body.port,
+        enabled: body.enabled.unwrap_or(was_enabled),
+    };
+    if let Err(reason) = mapping.validate() {
+        return Err((StatusCode::BAD_REQUEST, reason));
+    }
+
+    // 本地地址与启用状态都没变：复用原把手，原子更新目标，无重绑竞争。
+    if mapping.local == id && mapping.enabled == was_enabled {
+        let handle = g.mappings.get(&id).expect("已确认存在");
+        *handle.mapping.write().await = mapping.clone();
+        drop(g);
+        save_config(&st).await;
+        return Ok(Json(mapping));
+    }
+
+    // 改本地地址：新地址不能与其他映射冲突。
+    if mapping.local != id && g.mappings.contains_key(&mapping.local) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("{} 已存在映射", mapping.local),
+        ));
+    }
+    // 先按新参数（含启用态）建把手；成功后再停旧的，避免旧地址提前释放又绑不上新地址。
+    let handle = start_mapping_owned(&st, mapping.clone()).await?;
+    let old = g.mappings.remove(&id).expect("已确认存在");
+    g.mappings.insert(mapping.local.clone(), handle);
+    drop(g);
+    stop_mapping(old).await;
+    save_config(&st).await;
+    Ok(Json(mapping))
+}
+
+/// POST /api/mappings/{id}/toggle —— 启用/停用一条映射。
+/// 停用释放本地端口并 drain 在途连接；启用重新绑定端口。地址不变，仅切换运行态。
+async fn toggle(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+) -> Result<Json<config::Mapping>, (StatusCode, String)> {
+    let mut g = st.inner.lock().await;
+    let existing = g
+        .mappings
+        .get(&id)
+        .ok_or((StatusCode::NOT_FOUND, format!("{id} 不存在映射")))?;
+    let mut mapping = existing.mapping.read().await.clone();
+    mapping.enabled = !mapping.enabled;
+    // 启用时按当前地址重新绑定；停用时换成不占端口的把手。任一路径失败则保持原样。
+    let handle = start_mapping_owned(&st, mapping.clone()).await?;
+    let old = g.mappings.remove(&id).expect("已确认存在");
+    g.mappings.insert(mapping.local.clone(), handle);
+    drop(g);
+    stop_mapping(old).await;
+    save_config(&st).await;
+    st.events.push(
+        "info",
+        "mapping",
+        format!(
+            "已{}映射 {}",
+            if mapping.enabled { "启用" } else { "停用" },
+            mapping.local
+        ),
+    );
+    Ok(Json(mapping))
 }
 
 /// Web API 鉴权：配置了 web_token 时，只接受 Authorization: Bearer；
@@ -1148,9 +1747,11 @@ fn app(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/status", get(status))
         .route("/api/stats", get(stats))
+        .route("/api/events", get(events))
         .route("/api/mappings/preflight", post(preflight))
         .route("/api/mappings", get(list).post(create))
-        .route("/api/mappings/{id}", delete(remove))
+        .route("/api/mappings/{id}", put(update).delete(remove))
+        .route("/api/mappings/{id}/toggle", post(toggle))
         .route("/api/credential", get(get_credential).post(set_credential))
         .route("/api/export", get(export_config))
         .route("/api/import", post(import_config))
@@ -1268,6 +1869,8 @@ async fn set_credential(
         )
         .await;
     save_config(&st).await;
+    st.events
+        .push("info", "credential", "已更新接入凭证，正在用新凭证重连");
     tracing::info!("凭证已更新，将以新凭证重连");
     let expose = token_exposable(&st);
     let c = st.link.creds.read().await;
@@ -1421,6 +2024,18 @@ async fn import_config(
     save_config(&st).await;
     let started = incoming.mappings.len();
     tracing::info!(started, reused, "已导入配置");
+    st.events.push(
+        "info",
+        "mapping",
+        format!(
+            "已导入配置：{started} 条映射{}",
+            if new_target.is_some() {
+                "，凭证已更新"
+            } else {
+                ""
+            }
+        ),
+    );
     Ok(Json(serde_json::json!({
         "started": started,
         "failed": [],
@@ -1511,6 +2126,7 @@ async fn main() -> Result<()> {
     tracing::info!("配置文件: {}", config_path.display());
 
     let metrics = Metrics::new();
+    let events = EventLog::new(200);
     let endpoint = Endpoint::builder(presets::N0)
         .transport_config(tunnel::transport_config())
         .bind()
@@ -1536,6 +2152,7 @@ async fn main() -> Result<()> {
         max_conns_per_mapping: cfg.max_conns_per_mapping,
         config_path: config_path.clone(),
         metrics: metrics.clone(),
+        events: events.clone(),
         inner: Arc::new(Mutex::new(Inner {
             mappings: HashMap::new(),
         })),
@@ -1566,8 +2183,11 @@ async fn main() -> Result<()> {
     // 避免 B 宕机时疯狂重连打爆
     let watchdog_link = link.clone();
     let watchdog_metrics = metrics.clone();
+    let watchdog_events = state.events.clone();
     tokio::spawn(async move {
         let mut failures: u32 = 0;
+        // 记录上一轮是否处于断线状态，仅在“断线 → 恢复”跃迁时记一条事件，避免刷屏。
+        let mut was_down = false;
         loop {
             tokio::time::sleep(Duration::from_secs(5)).await;
             // 尚未配置凭证时不尝试连接，静候网页粘贴凭证。
@@ -1577,7 +2197,12 @@ async fn main() -> Result<()> {
             }
             if watchdog_link.is_alive().await {
                 failures = 0;
+                was_down = false;
                 continue;
+            }
+            if !was_down {
+                was_down = true;
+                watchdog_events.push("warn", "reconnect", "与 server 的连接断开，看门狗开始重连");
             }
             let delay = tunnel::backoff_delay(
                 failures,
@@ -1592,8 +2217,10 @@ async fn main() -> Result<()> {
             match watchdog_link.get().await {
                 Ok(_) => {
                     failures = 0;
+                    was_down = false;
                     Metrics::inc(&watchdog_metrics.reconnects);
                     tracing::info!(?delay, "看门狗：已重连");
+                    watchdog_events.push("info", "reconnect", "看门狗已重新连接到 server");
                 }
                 Err(e) => {
                     failures = failures.saturating_add(1);

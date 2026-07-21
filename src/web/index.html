@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>PowerMap</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20140%20140'%3E%3Crect%20width='140'%20height='140'%20rx='30'%20fill='%230D1B3A'/%3E%3Cpath%20d='M36%20108V34h39c25%200%2040%2014%2040%2035s-15%2035-40%2035H58'%20fill='none'%20stroke='%23377DFF'%20stroke-linecap='round'%20stroke-linejoin='round'%20stroke-width='18'/%3E%3Cpath%20d='M58%2069h43'%20fill='none'%20stroke='%23E8F1FF'%20stroke-linecap='round'%20stroke-width='7'/%3E%3Ccircle%20cx='36'%20cy='108'%20r='11'%20fill='%2357D5B0'/%3E%3Ccircle%20cx='115'%20cy='69'%20r='11'%20fill='%2357D5B0'/%3E%3Ccircle%20cx='58'%20cy='34'%20r='8'%20fill='%23E8F1FF'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
@@ -359,8 +360,11 @@
   td.status { color: var(--success); font-size: .9rem; }
   td.status.listening { color: var(--muted-foreground); }
   td.status.degraded, td.status.stopped { color: var(--destructive); }
+  td.status.disabled { color: var(--muted-foreground); }
   td.status::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .55rem; border-radius: 50%; background: currentColor; }
+  td.status.disabled::before { background: transparent; border: 1.5px solid var(--muted-foreground); }
   td.status .status-detail { display: block; max-width: 18rem; margin: .35rem 0 0 1.2rem; overflow: hidden; color: var(--muted-foreground); font: 500 .72rem/1.35 var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
+  tr.is-disabled td.target, tr.is-disabled td.num { opacity: .5; }
   .btn-del { height: 2rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: .5rem; background: var(--card); }
   .btn-del:hover { color: var(--destructive-foreground); }
   .app-footer { display: none; }
@@ -591,9 +595,12 @@
   .sidebar-static { gap: 0; }
   .theme-toggle { min-height: 2.25rem; padding: 0 .7rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--foreground); font: 700 .72rem/1 var(--font-sans); cursor: pointer; }
   .theme-toggle:hover { background: var(--muted); }
-  .mapping-list-head { display: flex; align-items: center; justify-content: space-between; margin: .25rem 0 .85rem; }
+  .mapping-list-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: .25rem 0 .85rem; }
   .mapping-list-head h2 { margin: 0; color: var(--foreground); font: 700 1.05rem/1 var(--font-display); letter-spacing: -.025em; }
-  .mapping-list-head span { color: var(--muted-foreground); font: .72rem/1 var(--font-mono); }
+  .mapping-list-tools { display: inline-flex; align-items: center; gap: .75rem; min-width: 0; }
+  .mapping-list-tools > #mappingCount { color: var(--muted-foreground); font: .72rem/1 var(--font-mono); white-space: nowrap; }
+  .mapping-search { display: inline-flex; min-width: 0; }
+  .mapping-search input { width: min(16rem, 42vw); height: 2.25rem; min-height: 0; border-radius: .55rem; }
   .empty { padding: 3.25rem 1.25rem; }
   .empty-title { color: var(--foreground); font: 700 1.15rem/1.2 var(--font-display); }
   .empty p { max-width: 25rem; margin: .6rem auto 1.2rem; color: var(--muted-foreground); font: .88rem/1.6 var(--font-sans); }
@@ -605,6 +612,57 @@
     .mapping-list-head { margin-top: 1rem; }
     .empty { padding: 2.5rem 1rem; }
   }
+
+  /* ── 事件页 ── */
+  .event-filter { min-height: 2.5rem; width: auto; padding: 0 .7rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--foreground); font: 600 .8rem/1 var(--font-sans); cursor: pointer; }
+  .event-list { display: flex; flex-direction: column; gap: .4rem; }
+  .event-row { display: grid; grid-template-columns: auto auto 1fr; align-items: baseline; gap: .75rem; padding: .6rem .75rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--background); }
+  .event-row .event-time { color: var(--muted-foreground); font: 500 .74rem/1.3 var(--font-mono); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .event-row .event-kind { padding: .1rem .45rem; border-radius: .35rem; font: 600 .68rem/1.4 var(--font-mono); background: var(--muted); color: var(--muted-foreground); white-space: nowrap; }
+  .event-row .event-msg { color: var(--foreground); font: 500 .82rem/1.4 var(--font-sans); word-break: break-word; }
+  .event-row.warn { border-color: color-mix(in srgb, var(--warning) 40%, var(--border)); }
+  .event-row.warn .event-kind { color: var(--warning-foreground); background: var(--warning); }
+  .event-row.error { border-color: color-mix(in srgb, var(--destructive) 42%, var(--border)); }
+  .event-row.error .event-kind { color: var(--destructive-foreground); background: var(--destructive); }
+  .event-row.info .event-kind { color: var(--accent-foreground); background: var(--accent); }
+  .event-toolbar { display: inline-flex; align-items: center; gap: .5rem; }
+  .event-search { width: min(14rem, 40vw); height: 2.5rem; min-height: 0; border-radius: .5rem; }
+
+  /* ── 刷新间隔控制：轮询频率 + 暂停 ── */
+  .refresh-control { display: inline-flex; align-items: center; gap: .4rem; }
+  .refresh-select { min-height: 2.25rem; width: auto; padding: 0 .55rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--foreground); font: 600 .74rem/1 var(--font-sans); cursor: pointer; }
+  .refresh-toggle { display: inline-flex; align-items: center; gap: .35rem; min-height: 2.25rem; padding: 0 .6rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--muted-foreground); font: 700 .72rem/1 var(--font-sans); cursor: pointer; white-space: nowrap; }
+  .refresh-toggle:hover { color: var(--foreground); border-color: color-mix(in srgb, var(--foreground) 30%, var(--border)); }
+  .refresh-toggle.paused { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, var(--border)); }
+  .refresh-toggle::before { content: ""; width: .5rem; height: .5rem; border-radius: 50%; background: var(--success); }
+  .refresh-toggle.paused::before { background: var(--warning); border-radius: 1px; }
+  .sidebar-refresh { display: grid; grid-template-columns: 1fr auto; gap: .5rem; padding: 0 .65rem; }
+  .sidebar-refresh .refresh-select, .sidebar-refresh .refresh-toggle { width: 100%; }
+  @media (max-width: 900px) { .sidebar-refresh, .sidebar-static + .sidebar-refresh { display: none; } }
+
+  /* ── 每行迷你趋势图 ── */
+  .row-spark { display: block; width: 4.5rem; height: 1.25rem; margin-top: .3rem; opacity: .9; }
+
+  /* ── 启用/停用开关 ── */
+  .switch { position: relative; display: inline-flex; align-items: center; width: 2.35rem; height: 1.35rem; flex: none; cursor: pointer; }
+  .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+  .switch .track { position: relative; width: 100%; height: 100%; border-radius: 9999px; background: var(--muted-foreground); opacity: .55; transition: background .18s ease, opacity .18s ease; }
+  .switch .track::after { content: ""; position: absolute; top: 2px; left: 2px; width: calc(1.35rem - 4px); height: calc(1.35rem - 4px); border-radius: 50%; background: #fff; transition: transform .18s ease; }
+  .switch input:checked + .track { background: var(--success); opacity: 1; }
+  .switch input:checked + .track::after { transform: translateX(1rem); }
+  .switch input:focus-visible + .track { outline: 2px solid var(--ring); outline-offset: 2px; }
+
+  /* ── 连接明细展开区 ── */
+  tr.conn-detail-row > td { padding: 0; border-bottom: 1px solid var(--border); background: var(--muted); }
+  tr.conn-detail-row.hidden { display: none; }
+  .conn-detail { padding: .75rem 1.1rem; }
+  .conn-detail-title { margin: 0 0 .55rem; color: var(--muted-foreground); font: 600 .72rem/1 var(--font-mono); letter-spacing: .04em; text-transform: uppercase; }
+  .conn-detail-table { width: 100%; border-collapse: collapse; }
+  .conn-detail-table th { padding: .3rem .6rem; color: var(--muted-foreground); font: 500 .68rem/1 var(--font-mono); text-align: left; text-transform: none; letter-spacing: 0; background: transparent; border: 0; }
+  .conn-detail-table td { padding: .3rem .6rem; border: 0; font: 500 .76rem/1.3 var(--font-mono); color: var(--foreground); }
+  .conn-detail-empty { color: var(--muted-foreground); font: 500 .78rem/1.4 var(--font-sans); }
+  .btn-conns { position: relative; }
+  .btn-conns.active { color: var(--primary); border-color: var(--primary); }
 
   /* ── Toast ── */
   .toast-stack {
@@ -655,6 +713,38 @@
     .modal-backdrop, .modal { transition: none; }
     .modal { transform: none; }
   }
+
+  /* ── 命令面板（Cmd/Ctrl+K）── */
+  .palette-backdrop {
+    position: fixed; inset: 0; z-index: 58; display: none;
+    align-items: flex-start; justify-content: center; padding: 12vh 1.25rem 1.25rem;
+    background: color-mix(in srgb, #0a0a0a 46%, transparent);
+    opacity: 0; transition: opacity .14s ease;
+  }
+  .palette-backdrop.open { display: flex; opacity: 1; }
+  .palette {
+    width: min(34rem, 100%); max-height: 60vh; display: flex; flex-direction: column;
+    background: var(--popover); color: var(--foreground);
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    box-shadow: 0 24px 60px rgba(0,0,0,.28) !important; overflow: hidden;
+    transform: translateY(.5rem) scale(.99); transition: transform .14s ease;
+  }
+  .palette-backdrop.open .palette { transform: none; }
+  .palette-input { height: 3rem; min-height: 0; border: 0; border-bottom: 1px solid var(--border); border-radius: 0; background: transparent; font: 500 .95rem/1 var(--font-sans); }
+  .palette-input:focus { border-color: var(--border); box-shadow: none !important; }
+  .palette-list { overflow-y: auto; padding: .4rem; }
+  .palette-item { display: flex; align-items: center; justify-content: space-between; gap: .75rem; padding: .6rem .7rem; border-radius: .5rem; cursor: pointer; color: var(--foreground); }
+  .palette-item-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .palette-item-hint { color: var(--muted-foreground); font: 500 .72rem/1 var(--font-mono); white-space: nowrap; }
+  .palette-item.active, .palette-item:hover { background: var(--accent); color: var(--accent-foreground); }
+  .palette-item.active .palette-item-hint { color: var(--accent-foreground); }
+  .palette-empty { padding: 1.5rem .7rem; color: var(--muted-foreground); font: 500 .85rem/1.4 var(--font-sans); text-align: center; }
+  .palette-foot { padding: .5rem .7rem; border-top: 1px solid var(--border); color: var(--muted-foreground); font: 500 .68rem/1.4 var(--font-mono); }
+  .palette-foot kbd { padding: 2px 5px; margin: 0 1px; border: 1px solid var(--border); border-radius: 4px; background: var(--muted); font: inherit; }
+  @media (prefers-reduced-motion: reduce) {
+    .palette-backdrop, .palette { transition: none; }
+    .palette { transform: none; }
+  }
 </style>
 </head>
 <body>
@@ -667,6 +757,7 @@
       <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar" role="tablist" aria-label="页面">
         <button type="button" class="tab active" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="true" aria-controls="tabMappings"><span>端口映射</span></button>
         <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>连接</span></button>
+        <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件</span></button>
       </div></nav>
       <div class="sidebar-static">实时指标</div>
       <section class="sidebar-monitor" aria-label="实时指标">
@@ -679,6 +770,16 @@
           <div class="sidebar-metric"><span>本地映射</span><strong id="sideMappings">0</strong></div>
         </div>
         <div class="sidebar-metric"><span>活跃隧道</span><strong id="sideActive">0</strong></div>
+      </section>
+      <div class="sidebar-static">刷新</div>
+      <section class="sidebar-refresh" aria-label="刷新控制">
+        <select id="refreshInterval" class="refresh-select" aria-label="刷新间隔">
+          <option value="2000">每 2 秒</option>
+          <option value="5000">每 5 秒</option>
+          <option value="10000">每 10 秒</option>
+          <option value="0">手动</option>
+        </select>
+        <button id="refreshPause" class="refresh-toggle" type="button" aria-pressed="false" title="暂停/恢复自动刷新">暂停</button>
       </section>
       <div class="sidebar-bottom"><span class="conn"><span id="statusDot" class="status-dot"></span><span id="statusText">查询中</span><span id="pathChip" class="path-chip" style="display:none"></span></span></div>
     </aside>
@@ -737,7 +838,7 @@
         </div>
       </section>
       <div class="card mapping-editor" id="mappingEditor">
-        <div class="card-header"><span class="card-title">添加映射</span></div>
+        <div class="card-header"><span class="card-title" id="mappingEditorTitle">添加映射</span></div>
         <p class="hint">
           本地地址默认 <kbd>127.0.0.1</kbd>，也可填 <kbd>127.0.0.2</kbd> 这类 127/8 虚拟 IP。
           目标主机填 server 端所在内网里能访问到的 IP / 主机名。
@@ -753,13 +854,13 @@
             <div class="arrow">→</div>
             <div class="field"><span class="lbl">目标主机</span><input name="host" class="mono" placeholder="192.168.1.101" required /></div>
             <div class="field"><span class="lbl">目标端口</span><input name="port" class="mono" type="number" placeholder="6379" required /></div>
-            <div class="mapping-actions"><button id="preflightBtn" class="btn btn-outline" type="button">测试目标</button><button type="submit" class="btn btn-primary">添加映射</button></div>
+            <div class="mapping-actions"><button id="cancelEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="preflightBtn" class="btn btn-outline" type="button">测试目标</button><button id="submitMappingBtn" type="submit" class="btn btn-primary">添加映射</button></div>
           </div>
           <div id="preflightResult" class="preflight-result hidden" role="status" aria-live="polite"></div>
         </form>
       </div>
 
-      <div class="mapping-list-head"><h2>映射列表</h2><span id="mappingCount">0 条映射</span></div>
+      <div class="mapping-list-head"><h2>映射列表</h2><div class="mapping-list-tools"><span id="mappingSearchWrap" class="mapping-search hidden"><input id="mappingSearch" type="search" class="mono" placeholder="搜索本地地址或目标…" aria-label="搜索映射" autocomplete="off" /></span><span id="mappingCount">0 条映射</span></div></div>
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -786,6 +887,10 @@
               导入配置
             </button>
             <input id="importFile" type="file" accept="application/json,.json" style="display:none" />
+            <button id="clearTokenBtn" class="btn btn-outline btn-sm" type="button" style="display:none" title="清除本页内存中的管理令牌">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+              清除令牌
+            </button>
           </div>
         </div>
         <div class="cred-status">
@@ -810,6 +915,31 @@
         </form>
         <hr class="divider-h" />
         <span id="ioMsg"></span>
+      </div>
+    </div>
+
+    <!-- Tab: 事件 -->
+    <div id="tabEvents" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-events" tabindex="0">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">近期事件</span>
+          <div class="card-actions">
+            <input id="eventSearch" type="search" class="event-search mono" placeholder="搜索事件内容…" aria-label="搜索事件" autocomplete="off" />
+            <select id="eventFilter" class="event-filter" aria-label="按类型筛选事件">
+              <option value="">全部类型</option>
+              <option value="reconnect">连接</option>
+              <option value="credential">凭证</option>
+              <option value="mapping">映射</option>
+            </select>
+            <button id="exportEvents" class="btn btn-outline btn-sm" type="button">导出</button>
+            <button id="refreshEvents" class="btn btn-outline btn-sm" type="button">刷新</button>
+          </div>
+        </div>
+        <p class="hint" style="margin-bottom:12px">
+          仅保留本进程运行期间最近 200 条事件，纯内存、不落盘，重启即清空。用于快速排查连接与映射变化，不含任何令牌。
+        </p>
+        <div id="eventList" class="event-list" role="log" aria-live="polite"></div>
+        <div id="eventEmpty" class="empty"><div class="empty-title">暂无事件</div><p>接入凭证、创建映射或连接变化后，事件会显示在这里。</p></div>
       </div>
     </div></main></div>
 
@@ -853,6 +983,14 @@
       <button id="modalCancel" class="btn btn-outline btn-sm" type="button">取消</button>
       <button id="modalConfirm" class="btn btn-primary btn-sm" type="button">确定</button>
     </div>
+  </div>
+</div>
+
+<div id="paletteBackdrop" class="palette-backdrop" role="dialog" aria-modal="true" aria-label="命令面板">
+  <div class="palette">
+    <input id="paletteInput" class="palette-input" type="text" placeholder="输入命令或搜索…" autocomplete="off" aria-label="命令面板搜索" aria-controls="paletteList" aria-expanded="true" />
+    <div id="paletteList" class="palette-list" role="listbox" aria-label="命令"></div>
+    <div class="palette-foot"><kbd>↑</kbd><kbd>↓</kbd> 选择 · <kbd>Enter</kbd> 执行 · <kbd>Esc</kbd> 关闭</div>
   </div>
 </div>
 
@@ -956,7 +1094,12 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 
 // ── 标签页切换 ──
 const TAB_KEY = 'powermap_tab';
-const tabViews = { mappings: 'tabMappings', connection: 'tabConnection' };
+const tabViews = { mappings: 'tabMappings', connection: 'tabConnection', events: 'tabEvents' };
+const TAB_META = {
+  mappings: { title: '端口映射', subtitle: '将本地端口安全地映射至内网服务。' },
+  connection: { title: '连接设置', subtitle: '管理穿透端凭证与连接状态。' },
+  events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
+};
 function selectTab(name) {
   if (!tabViews[name]) name = 'mappings';
   for (const [k, id] of Object.entries(tabViews)) {
@@ -968,15 +1111,14 @@ function selectTab(name) {
     b.setAttribute('aria-selected', on ? 'true' : 'false');
     b.tabIndex = on ? 0 : -1;
   });
-  const mapping = name === 'mappings';
-  document.getElementById('workspaceTitle').textContent = mapping ? '端口映射' : '连接设置';
-  document.getElementById('workspaceSubtitle').textContent = mapping
-    ? '将本地端口安全地映射至内网服务。'
-    : '管理穿透端凭证与连接状态。';
+  const meta = TAB_META[name] || TAB_META.mappings;
+  document.getElementById('workspaceTitle').textContent = meta.title;
+  document.getElementById('workspaceSubtitle').textContent = meta.subtitle;
   const newMapping = document.getElementById('newMappingBtn');
-  newMapping.style.display = mapping ? '' : 'none';
+  newMapping.style.display = name === 'mappings' ? '' : 'none';
   localStorage.setItem(TAB_KEY, name);
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
+  if (name === 'events') refreshEvents();
 }
 document.getElementById('tabBar').addEventListener('click', (e) => {
   const b = e.target.closest('.tab');
@@ -999,16 +1141,77 @@ document.getElementById('tabBar').addEventListener('keydown', (e) => {
 window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
 selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'mappings');
 
-document.getElementById('newMappingBtn').addEventListener('click', () => {
+// ── 映射编辑器：新建 / 编辑双模式。editMode 为 null 表示新建，否则存原映射 local。 ──
+let editMode = null;
+function applyEditorMode() {
+  const editing = editMode !== null;
+  document.getElementById('mappingEditorTitle').textContent = editing ? '编辑映射' : '添加映射';
+  document.getElementById('submitMappingBtn').textContent = editing ? '保存修改' : '添加映射';
+  document.getElementById('cancelEditBtn').style.display = editing ? '' : 'none';
+}
+function openEditorForCreate() {
   const editor = document.getElementById('mappingEditor');
-  editor.classList.toggle('open');
-  if (editor.classList.contains('open')) editor.querySelector('[name=localPort]').focus();
-});
-document.getElementById('emptyNewMappingBtn').addEventListener('click', () => {
-  const editor = document.getElementById('mappingEditor');
+  editMode = null;
+  applyEditorMode();
   editor.classList.add('open');
   editor.querySelector('[name=localPort]').focus();
+}
+function openEditorForEdit(local, host, port) {
+  const editor = document.getElementById('mappingEditor');
+  const form = document.getElementById('f');
+  const [addr, lport] = splitLocal(local);
+  editMode = local;
+  form.elements.localAddr.value = addr;
+  form.elements.localPort.value = lport;
+  form.elements.host.value = host;
+  form.elements.port.value = port;
+  latestPreflight = { key: '', ready: false };
+  document.getElementById('preflightResult').classList.add('hidden');
+  applyEditorMode();
+  editor.classList.add('open');
+  editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  form.elements.host.focus();
+}
+// 克隆：以某条映射为模板新建。沿用目标 host/port 与本地地址，但清空本地端口——
+// 本地端口不能重复，必须由用户填一个新的，因此聚焦到该字段。
+function openEditorForClone(local, host, port) {
+  const editor = document.getElementById('mappingEditor');
+  const form = document.getElementById('f');
+  const [addr] = splitLocal(local);
+  editMode = null;
+  form.elements.localAddr.value = addr || '127.0.0.1';
+  form.elements.localPort.value = '';
+  form.elements.host.value = host;
+  form.elements.port.value = port;
+  latestPreflight = { key: '', ready: false };
+  document.getElementById('preflightResult').classList.add('hidden');
+  applyEditorMode();
+  editor.classList.add('open');
+  editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  form.elements.localPort.focus();
+}
+function closeEditor() {
+  const form = document.getElementById('f');
+  form.reset();
+  form.elements.localAddr.value = '127.0.0.1';
+  editMode = null;
+  applyEditorMode();
+  document.getElementById('preflightResult').classList.add('hidden');
+  document.getElementById('mappingEditor').classList.remove('open');
+}
+// 把 host:port 形式的本地地址拆成 [地址, 端口]，兼容 IPv6 的 [::1]:8080。
+function splitLocal(local) {
+  const i = local.lastIndexOf(':');
+  if (i < 0) return [local, ''];
+  return [local.slice(0, i), local.slice(i + 1)];
+}
+document.getElementById('newMappingBtn').addEventListener('click', () => {
+  const editor = document.getElementById('mappingEditor');
+  if (editor.classList.contains('open') && editMode === null) { closeEditor(); return; }
+  openEditorForCreate();
 });
+document.getElementById('emptyNewMappingBtn').addEventListener('click', openEditorForCreate);
+document.getElementById('cancelEditBtn').addEventListener('click', closeEditor);
 
 document.getElementById('footerYear').textContent = new Date().getFullYear();
 
@@ -1033,7 +1236,7 @@ function requestAdminToken() {
   })
     .then(value => {
       const valueTrimmed = (value || '').trim();
-      if (valueTrimmed) adminToken = valueTrimmed;
+      if (valueTrimmed) { adminToken = valueTrimmed; syncClearTokenBtn(); }
       return Boolean(valueTrimmed);
     })
     .finally(() => { tokenPrompt = null; });
@@ -1072,6 +1275,7 @@ function mappingState(s) {
     const failure = s.last_tunnel_failure || {};
     return { state, label: '隧道异常', detail: [failure.at ? '最近失败 ' + fmtTime(failure.at) : '', failure.reason || '连接失败'].filter(Boolean).join(' · ') };
   }
+  if (state === 'disabled') return { state, label: '已停用', detail: '未占用本地端口，可随时再启用' };
   if (state === 'stopped') return { state, label: '监听已停止', detail: '本地端口不再接受连接' };
   return { state: 'listening', label: '监听中', detail: '等待本地连接' };
 }
@@ -1254,6 +1458,15 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
     } catch { toast('凭证 JSON 解析失败，请检查格式', 'err'); return; }
   }
   if (!node_id || !tok) { toast('请提供 node_id 与 token（粘贴 JSON 或分栏填写）', 'err'); return; }
+  // 覆盖确认：已接入且换成不同的 node_id 时二次确认——更新凭证会立即断开当前连接并重连。
+  // 仅重填相同 node_id（比如换 token）不算切换目标，不打断。
+  if (curCred.configured && curCred.node_id && curCred.node_id !== node_id) {
+    const ok = await confirmModal({
+      title: '更换连接目标', danger: true, confirmText: '更新并重连',
+      body: `当前已接入 ${curCred.node_id}。更新为新的 node_id 会立即断开现有连接并用新凭证重连，进行中的隧道会中断。确定继续？`,
+    });
+    if (!ok) return;
+  }
   const r = await api('/api/credential', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ node_id, token: tok, published_targets }),
@@ -1264,6 +1477,23 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
   document.getElementById('credTokenIn').value = '';
   ioMsg('凭证已更新，正在用新凭证重连…');
   await refreshCred(); refreshTargetCatalog(); refreshStatus();
+});
+// ── 清除访问令牌：把本页内存里的 web_token 抹掉。仅在设置了 web_token（token 提示过）时可见。 ──
+// 只影响当前页面会话，不改动 server 端配置；下次请求 401 时会重新提示输入。
+function syncClearTokenBtn() {
+  const btn = document.getElementById('clearTokenBtn');
+  if (btn) btn.style.display = adminToken ? '' : 'none';
+}
+document.getElementById('clearTokenBtn').addEventListener('click', async () => {
+  if (!adminToken) return;
+  const ok = await confirmModal({
+    title: '清除访问令牌', danger: true, confirmText: '清除',
+    body: '将从当前页面内存中清除已输入的 web_token。之后的管理操作会重新要求输入令牌；不会改动 server 端配置。确定清除？',
+  });
+  if (!ok) return;
+  adminToken = '';
+  syncClearTokenBtn();
+  toast('已清除访问令牌，后续操作将重新要求输入', 'info');
 });
 
 // ── 导入 / 导出 ──
@@ -1314,6 +1544,56 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
 const SPARK_MAX = 40;
 const rateState = { rows: new Map(), totalTx: null, totalRx: null, ts: 0 };
 const sparkHist = [];
+// 展开查看连接明细的映射（按 local 记）。切页/刷新保留，删除映射时清理。
+const expandedRows = new Set();
+// 每条映射的速率历史，用于每行 sparkline；持久化到 localStorage，reload 后恢复趋势。
+const ROW_SPARK_MAX = 24;
+const ROW_SPARK_KEY = 'powermap_row_spark';
+let rowSparkHist = {};
+try { rowSparkHist = JSON.parse(localStorage.getItem(ROW_SPARK_KEY) || '{}') || {}; } catch { rowSparkHist = {}; }
+function saveRowSpark() {
+  try { localStorage.setItem(ROW_SPARK_KEY, JSON.stringify(rowSparkHist)); } catch { /* 配额满则忽略 */ }
+}
+function pushRowSpark(local, v) {
+  const arr = rowSparkHist[local] || (rowSparkHist[local] = []);
+  arr.push(Math.round(v));
+  while (arr.length > ROW_SPARK_MAX) arr.shift();
+}
+function drawRowSpark(local, canvas) {
+  if (!canvas) return;
+  const hist = rowSparkHist[local] || [];
+  const ctx = canvas.getContext('2d');
+  const w = canvas.width, h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+  if (hist.length < 2) return;
+  const max = Math.max(...hist, 1);
+  const step = w / (ROW_SPARK_MAX - 1);
+  const off = ROW_SPARK_MAX - hist.length;
+  const stroke = getComputedStyle(document.documentElement).getPropertyValue('--primary').trim() || '#3366f0';
+  ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.strokeStyle = stroke;
+  ctx.beginPath();
+  hist.forEach((val, i) => {
+    const x = (off + i) * step, y = h - (val / max) * (h - 4) - 2;
+    i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+function connDetailHTML(s) {
+  const conns = Array.isArray(s.conns) ? s.conns : [];
+  if (!conns.length) return '<div class="conn-detail"><div class="conn-detail-empty">当前没有活跃连接。</div></div>';
+  const now = Date.now();
+  const rows = conns.map(c => {
+    const dur = c.started_at ? Math.max(0, Math.round((now - c.started_at) / 1000)) : 0;
+    return `<tr><td>${esc(c.peer || '—')}</td><td>${fmtDuration(dur)}</td><td>↑ ${fmtBytes(c.tx_bytes || 0)}</td><td>↓ ${fmtBytes(c.rx_bytes || 0)}</td></tr>`;
+  }).join('');
+  return `<div class="conn-detail"><div class="conn-detail-title">活跃连接 · ${conns.length}</div>` +
+    `<table class="conn-detail-table"><thead><tr><th>来源</th><th>时长</th><th>上行</th><th>下行</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function fmtDuration(sec) {
+  if (sec < 60) return sec + 's';
+  if (sec < 3600) return Math.floor(sec / 60) + 'm' + (sec % 60 ? ' ' + (sec % 60) + 's' : '');
+  return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+}
 function fmtRate(bps) {
   if (!bps || bps < 1) return '0/s';
   const u = ['B', 'KB', 'MB', 'GB']; let i = 0, n = bps;
@@ -1374,21 +1654,73 @@ async function refresh() {
   $empty.style.display = list.length ? 'none' : 'block';
   updateOnboarding(list);
   document.getElementById('mappingCount').textContent = `${list.length} 条映射`;
+  // 搜索过滤：按本地地址 / 目标主机:端口做大小写不敏感子串匹配。空查询显示全部。
+  const query = (mappingFilter || '').trim().toLowerCase();
+  const shown = query
+    ? list.filter(m => `${m.local} ${m.host}:${m.port}`.toLowerCase().includes(query))
+    : list;
   let totalTx = 0, totalRx = 0;
   for (const m of list) {
     const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
-    const health = mappingState(s);
     totalTx += s.tx_bytes || 0; totalRx += s.rx_bytes || 0;
-    const rowRate = rowRateHTML(m.local, s, elapsed);
     nextRows.set(m.local, { tx: s.tx_bytes || 0, rx: s.rx_bytes || 0 });
+    // 每行趋势：无论是否被搜索过滤都累积历史，切换搜索时曲线不断档。
+    const prev = rateState.rows.get(m.local);
+    if (prev && elapsed > 0) {
+      const d = (Math.max(0, (s.tx_bytes || 0) - prev.tx) + Math.max(0, (s.rx_bytes || 0) - prev.rx)) / elapsed;
+      pushRowSpark(m.local, d);
+    }
+  }
+  // 清理已删除映射的历史，避免 localStorage 无限增长。
+  const localsNow = new Set(list.map(m => m.local));
+  for (const key of Object.keys(rowSparkHist)) {
+    if (!localsNow.has(key)) delete rowSparkHist[key];
+  }
+  saveRowSpark();
+  for (const m of shown) {
+    const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
+    const enabled = m.enabled !== false;
+    const health = mappingState(s);
+    const rowRate = rowRateHTML(m.local, s, elapsed);
+    const active = Number(s.active_conns || 0);
+    // 活跃时把当前连接数并到状态标签，让用户看出“哪条映射正在忙”。
+    const label = health.state === 'active' && active > 0 ? `${health.label} · ${active} 连接` : health.label;
+    const expanded = expandedRows.has(m.local);
+    // 有活跃连接时才让状态可点开明细；连接数用作可见的展开提示。
+    const connToggle = active > 0
+      ? `<button class="conn-expand${expanded ? ' open' : ''}" data-local="${esc(m.local)}" aria-expanded="${expanded ? 'true' : 'false'}" title="查看连接明细">${active} 连接 ▾</button>`
+      : '';
     const tr = document.createElement('tr');
+    if (!enabled) tr.className = 'is-disabled';
     tr.innerHTML = `<td>${esc(m.local)}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
-                   `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span>${esc(health.label)}</span><span class="status-detail">${esc(health.detail)}</span></td>` +
-                   `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}${rowRate}</td>` +
-                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-del" data-id="${esc(m.local)}">断开</button></span></td>`;
+                   `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span>${esc(label)}</span><span class="status-detail">${esc(health.detail)}</span>${connToggle}</td>` +
+                   `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}${rowRate}<canvas class="row-spark" width="108" height="30" data-local="${esc(m.local)}" aria-hidden="true"></canvas></td>` +
+                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}">${enabled ? '停用' : '启用'}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令">命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" title="以此为模板新建">克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}">复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}">编辑</button><button class="btn-del" data-id="${esc(m.local)}">断开</button></span></td>`;
     $rows.appendChild(tr);
+    // 连接明细展开行：仅在用户点开且仍有活跃连接时渲染。
+    if (expanded && active > 0) {
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'conn-detail-row';
+      detailTr.innerHTML = `<td colspan="5">${connDetailHTML(s)}</td>`;
+      $rows.appendChild(detailTr);
+    }
+    // 每行迷你趋势：把本行速率历史画成 sparkline，reload 后从 localStorage 恢复。
+    drawRowSpark(m.local, tr.querySelector('.row-spark'));
   }
+  // 空态：无映射与“有映射但被搜索过滤空”分开提示。
+  const emptyTitle = document.querySelector('#empty .empty-title');
+  const emptyDesc = document.querySelector('#empty p');
+  if (list.length && !shown.length) {
+    $empty.style.display = 'block';
+    if (emptyTitle) emptyTitle.textContent = '没有匹配的映射';
+    if (emptyDesc) emptyDesc.textContent = `没有本地地址或目标包含 “${query}” 的映射。`;
+  } else if (!list.length) {
+    if (emptyTitle) emptyTitle.textContent = '尚未创建端口映射';
+    if (emptyDesc) emptyDesc.textContent = '建立一条映射后，即可从本地地址安全访问内网服务。';
+  }
+  // 搜索框仅在映射较多时出现，少量映射无需占位。
+  document.getElementById('mappingSearchWrap').classList.toggle('hidden', list.length < 5);
   document.getElementById('mTotal').textContent = fmtBytes(totalTx + totalRx);
   document.getElementById('mTx').textContent = fmtBytes(totalTx);
   document.getElementById('mRx').textContent = fmtBytes(totalRx);
@@ -1411,7 +1743,78 @@ async function refresh() {
   rateState.rows = nextRows;
   rateState.totalTx = totalTx; rateState.totalRx = totalRx; rateState.ts = now;
 }
+// ── 搜索过滤：输入即时刷新列表；仅在映射较多时显示输入框 ──
+let mappingFilter = '';
+document.getElementById('mappingSearch').addEventListener('input', (e) => {
+  mappingFilter = e.target.value;
+  refresh();
+});
+
+// ── 连接命令：按目标端口猜测常见客户端命令，方便一键复制 ──
+// 只是便捷提示，不保证目标真的跑着该服务；未知端口回退到通用 nc。
+const PORT_CMD = {
+  6379: l => `redis-cli -h ${l.host} -p ${l.port}`,
+  5432: l => `psql -h ${l.host} -p ${l.port} -U postgres`,
+  3306: l => `mysql -h ${l.host} -P ${l.port} -u root -p`,
+  27017: l => `mongosh mongodb://${l.host}:${l.port}`,
+  5672: l => `amqp://${l.host}:${l.port}`,
+  9200: l => `curl http://${l.host}:${l.port}`,
+  80: l => `curl http://${l.host}:${l.port}`,
+  8080: l => `curl http://${l.host}:${l.port}`,
+  443: l => `curl https://${l.host}:${l.port}`,
+  22: l => `ssh -p ${l.port} user@${l.host}`,
+  5900: l => `open vnc://${l.host}:${l.port}`,
+  3389: l => `open rdp://${l.host}:${l.port}`,
+};
+function connectionCommand(local) {
+  const [host, portStr] = splitLocal(local);
+  const port = Number(portStr);
+  // 用户连的是本地入口地址，因此命令里填本地 host/port，而非内网目标。
+  const l = { host: host || '127.0.0.1', port };
+  const make = PORT_CMD[port];
+  return make ? make(l) : `nc ${l.host} ${l.port}`;
+}
+
 $rows.addEventListener('click', async (e) => {
+  // 展开/收起连接明细：仅切换本地状态并重绘，不发请求。
+  const expand = e.target.closest('button.conn-expand');
+  if (expand) {
+    const local = expand.dataset.local;
+    if (expandedRows.has(local)) expandedRows.delete(local);
+    else expandedRows.add(local);
+    refresh();
+    return;
+  }
+  const toggle = e.target.closest('button.btn-toggle');
+  if (toggle) {
+    const local = toggle.dataset.local;
+    const wasEnabled = toggle.dataset.enabled === '1';
+    if (wasEnabled) {
+      const ok = await confirmModal({
+        title: '停用映射', danger: true, confirmText: '停用',
+        body: `停用后 ${local} 会释放本地端口、断开在途连接，但保留在列表中可随时再启用。确定停用？`,
+      });
+      if (!ok) return;
+    }
+    const r = await api('/api/mappings/' + encodeURIComponent(local) + '/toggle', { method: 'POST' });
+    if (!r.ok) { toast((await r.text()) || '切换失败', 'err'); return; }
+    toast(wasEnabled ? `已停用 ${local}` : `已启用 ${local}`);
+    refresh();
+    return;
+  }
+  const clone = e.target.closest('button.btn-clone');
+  if (clone) {
+    // 克隆：以此条为模板打开新建编辑器，预填目标、清空本地端口，等待用户改地址。
+    openEditorForClone(clone.dataset.local, clone.dataset.host, Number(clone.dataset.port));
+    return;
+  }
+  const cmd = e.target.closest('button.btn-cmd');
+  if (cmd) {
+    const command = connectionCommand(cmd.dataset.local);
+    const ok = await copyText(command);
+    toast(ok ? `已复制命令：${command}` : `复制失败，命令为：${command}`, ok ? 'ok' : 'err', 5000);
+    return;
+  }
   const recover = e.target.closest('button.btn-recover');
   if (recover) {
     const body = { local: recover.dataset.local, host: recover.dataset.host, port: Number(recover.dataset.port) };
@@ -1423,6 +1826,17 @@ $rows.addEventListener('click', async (e) => {
       const result = await runPreflight(body, false);
       if (result && result.ready) toast(`${body.host}:${body.port} 已恢复可达`, 'ok');
     }
+    return;
+  }
+  const copy = e.target.closest('button.btn-copy');
+  if (copy) {
+    const ok = await copyText(copy.dataset.local);
+    toast(ok ? `已复制 ${copy.dataset.local}` : '复制失败，请手动选取', ok ? 'ok' : 'err');
+    return;
+  }
+  const edit = e.target.closest('button.btn-edit');
+  if (edit) {
+    openEditorForEdit(edit.dataset.local, edit.dataset.host, Number(edit.dataset.port));
     return;
   }
   const btn = e.target.closest('button.btn-del');
@@ -1445,14 +1859,17 @@ document.getElementById('f').addEventListener('submit', async (e) => {
     const result = await runPreflight(body, true);
     if (!result || !result.ready) return;
   }
-  const r = await api('/api/mappings', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
-  if (!r.ok) { toast((await r.text()) || '添加失败', 'err'); return; }
-  e.target.reset();
-  e.target.querySelector('[name=localAddr]').value = '127.0.0.1';
-  document.getElementById('mappingEditor').classList.remove('open');
-  toast(`已添加映射 ${body.local}`);
+  const editing = editMode !== null;
+  const r = editing
+    ? await api('/api/mappings/' + encodeURIComponent(editMode), {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })
+    : await api('/api/mappings', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+  if (!r.ok) { toast((await r.text()) || (editing ? '保存失败' : '添加失败'), 'err'); return; }
+  toast(editing ? `已保存映射 ${body.local}` : `已添加映射 ${body.local}`);
+  closeEditor();
   refresh();
 });
 document.getElementById('preflightBtn').addEventListener('click', () => {
@@ -1481,16 +1898,38 @@ document.querySelectorAll('[data-onboarding]').forEach(button => button.addEvent
 }));
 
 // ── 穿透路径徽章：direct = P2P 直连，relay = 经中继，unknown = 探测中 ──
+// 追加 RTT（往返延迟）与中继主机，让用户一眼看出“这条连接快不快、经哪个中继”。
 const PATH_LABEL = { direct: 'P2P 直连', relay: '经中继', unknown: '探测中' };
-function renderPathChip(el, path, connected) {
+function fmtRtt(ms) {
+  if (ms == null || !Number.isFinite(ms)) return '';
+  if (ms < 1) return '<1ms';
+  return Math.round(ms) + 'ms';
+}
+function renderPathChip(el, path, connected, rttMs, relay) {
   if (!el) return;
-  if (!connected || !path) { el.className = 'path-chip'; el.style.display = 'none'; el.innerHTML = ''; return; }
+  if (!connected || !path) { el.className = 'path-chip'; el.style.display = 'none'; el.innerHTML = ''; el.removeAttribute('title'); return; }
   el.className = 'path-chip show ' + path;
   el.style.display = '';
-  el.innerHTML = '<span>' + (PATH_LABEL[path] || path) + '</span>';
+  const parts = [PATH_LABEL[path] || path];
+  const rtt = fmtRtt(rttMs);
+  if (rtt) parts.push(rtt);
+  el.innerHTML = '<span>' + parts.join(' · ') + '</span>';
+  // 中继主机名较长，放进 title 悬浮提示而非徽章正文，避免撑破布局。
+  el.title = relay ? ('经中继 ' + relay) : (path === 'direct' ? 'P2P 打洞直连' : '');
 }
 
 // ── 状态：顶栏 + 指标卡 + 页脚 ──
+// 记录上一次的连接态，在“已连接 → 断开”与“断开 → 恢复”两个跃迁各提醒一次，
+// 让断开有告警、恢复有正反馈，形成闭环，同时避免每次轮询重复打扰。
+let prevConnected = null;
+function noteConnection(configured, connected) {
+  if (configured && prevConnected === true && connected === false) {
+    toast('与 server 的连接已断开，正在自动重连…', 'err', 6000);
+  } else if (configured && prevConnected === false && connected === true) {
+    toast('已重新连接到 server', 'ok', 4000);
+  }
+  prevConnected = configured ? connected : null;
+}
 async function refreshStatus() {
   const dot = document.getElementById('statusDot');
   const txt = document.getElementById('statusText');
@@ -1522,9 +1961,12 @@ async function refreshStatus() {
     document.getElementById('sideActive').textContent = s.active_tunnels ?? 0;
     fDot.className = 'status-dot ' + cls;
     fTxt.textContent = label;
-    renderPathChip(pathChip, s.path, s.connected);
-    renderPathChip(mPathChip, s.path, s.connected);
+    renderPathChip(pathChip, s.path, s.connected, s.rtt_ms, s.relay);
+    renderPathChip(mPathChip, s.path, s.connected, s.rtt_ms, s.relay);
     renderOps(s);
+    noteConnection(s.configured, s.connected);
+    // 标签页标题带状态点：多标签页时一眼可辨这个控制台是否连着。
+    setTabTitle(!s.configured ? 'idle' : s.connected ? 'ok' : 'warn');
   } catch {
     dot.className = 'status-dot err'; txt.textContent = '服务不可用';
     mDot.className = 'status-dot err'; mState.textContent = '不可用';
@@ -1532,7 +1974,15 @@ async function refreshStatus() {
     fDot.className = 'status-dot err'; fTxt.textContent = '服务不可用';
     renderPathChip(pathChip, null, false);
     renderPathChip(mPathChip, null, false);
+    prevConnected = null;
+    setTabTitle('err');
   }
+}
+// 标签页标题状态点：ok=已连接 warn=未连接 err=服务不可用 idle=未配置。
+const TITLE_DOT = { ok: '\u{1F7E2} ', warn: '\u{1F7E1} ', err: '\u{1F534} ', idle: '' };
+function setTabTitle(state) {
+  const next = (TITLE_DOT[state] || '') + 'PowerMap';
+  if (document.title !== next) document.title = next;
 }
 function renderOps(s) {
   const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v ?? 0; };
@@ -1545,11 +1995,278 @@ function renderOps(s) {
   flag('opsFailedItem', s.tunnels_failed);
   flag('opsLimitItem', s.over_limit);
 }
+// ── 近期事件：只读展示 /api/events，按类型 + 关键字筛选，可导出为文件。 ──
+// 缓存最近一次拉取的事件，让筛选/搜索/导出无需重新请求。切到事件页或点刷新时拉取。
+const EVENT_KIND = { reconnect: '连接', credential: '凭证', mapping: '映射', tunnel: '隧道' };
+let lastEvents = [];
+function eventFilterValue() { return document.getElementById('eventFilter').value || ''; }
+function eventSearchValue() { return (document.getElementById('eventSearch').value || '').trim().toLowerCase(); }
+// 按类型 + 关键字过滤。关键字对消息正文与类型标签都做大小写不敏感子串匹配。
+function filteredEvents(events) {
+  const kind = eventFilterValue();
+  const query = eventSearchValue();
+  return events.filter(e => {
+    if (kind && e.kind !== kind) return false;
+    if (!query) return true;
+    const hay = ((e.message || '') + ' ' + (EVENT_KIND[e.kind] || e.kind || '')).toLowerCase();
+    return hay.includes(query);
+  });
+}
+function renderEvents(events) {
+  const list = document.getElementById('eventList');
+  const empty = document.getElementById('eventEmpty');
+  const kind = eventFilterValue();
+  const query = eventSearchValue();
+  const shown = filteredEvents(events);
+  list.replaceChildren();
+  const emptyTitle = empty.querySelector('.empty-title');
+  const emptyDesc = empty.querySelector('p');
+  if (!shown.length) {
+    empty.style.display = 'block';
+    if (events.length && (kind || query)) {
+      if (emptyTitle) emptyTitle.textContent = '没有匹配的事件';
+      if (emptyDesc) emptyDesc.textContent = '调整类型或关键字，或清空筛选查看全部事件。';
+    } else {
+      if (emptyTitle) emptyTitle.textContent = '暂无事件';
+      if (emptyDesc) emptyDesc.textContent = '接入凭证、创建映射或连接变化后，事件会显示在这里。';
+    }
+    return;
+  }
+  empty.style.display = 'none';
+  for (const ev of shown) {
+    const row = document.createElement('div');
+    row.className = 'event-row ' + (ev.level || 'info');
+    const time = document.createElement('span');
+    time.className = 'event-time';
+    time.textContent = fmtTime(ev.at);
+    const kindEl = document.createElement('span');
+    kindEl.className = 'event-kind';
+    kindEl.textContent = EVENT_KIND[ev.kind] || ev.kind;
+    const msg = document.createElement('span');
+    msg.className = 'event-msg';
+    msg.textContent = ev.message;
+    row.append(time, kindEl, msg);
+    list.append(row);
+  }
+}
+async function refreshEvents() {
+  try {
+    const events = await (await api('/api/events')).json();
+    lastEvents = Array.isArray(events) ? events : [];
+    renderEvents(lastEvents);
+  } catch (e) { if (String(e) === 'Error: unauthorized') return; }
+}
+// 导出当前筛选后的事件为 JSON 文件；与页面所见一致，便于留存排查证据。
+function exportEvents() {
+  const rows = filteredEvents(lastEvents);
+  if (!rows.length) { toast('当前没有可导出的事件', 'info'); return; }
+  const payload = rows.map(e => ({
+    time: new Date(e.at).toISOString(),
+    level: e.level || 'info',
+    kind: e.kind,
+    message: e.message,
+  }));
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  a.href = url; a.download = `powermap-events-${stamp}.json`;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  toast(`已导出 ${rows.length} 条事件`);
+}
+document.getElementById('refreshEvents').addEventListener('click', refreshEvents);
+document.getElementById('eventFilter').addEventListener('change', () => renderEvents(lastEvents));
+document.getElementById('eventSearch').addEventListener('input', () => renderEvents(lastEvents));
+document.getElementById('exportEvents').addEventListener('click', exportEvents);
+
+// ── 命令面板（Cmd/Ctrl+K）+ 全局快捷键 ──
+// 面板只收录页面已有的动作，执行时复用既有函数，不引入新能力；纯键盘可达。
+const paletteEls = {
+  backdrop: document.getElementById('paletteBackdrop'),
+  input: document.getElementById('paletteInput'),
+  list: document.getElementById('paletteList'),
+};
+let paletteOpen = false;
+let paletteItems = [];
+let paletteActive = 0;
+// 每条命令：标题、可选副标题、匹配用关键字、run 回调。run 前面板已关闭。
+function paletteCommands() {
+  return [
+    { title: '新建映射', hint: '创建一条端口映射', keys: 'new mapping xinjian chuangjian', run: () => { selectTab('mappings'); openEditorForCreate(); } },
+    { title: '前往端口映射', hint: '切换到映射页', keys: 'mappings tab duankou', run: () => selectTab('mappings') },
+    { title: '前往连接设置', hint: '切换到连接页', keys: 'connection credential lianjie', run: () => selectTab('connection') },
+    { title: '前往事件', hint: '查看近期事件', keys: 'events shijian log', run: () => selectTab('events') },
+    { title: '立即刷新', hint: '手动刷新状态与列表', keys: 'refresh reload shuaxin', run: () => poll() },
+    { title: '导出配置', hint: '下载完整配置 JSON', keys: 'export daochu backup', run: () => document.getElementById('exportBtn').click() },
+    { title: '导入配置', hint: '从文件覆盖导入', keys: 'import daoru restore', run: () => document.getElementById('importBtn').click() },
+    { title: '切换主题', hint: '系统 / 浅色 / 深色', keys: 'theme dark light zhuti waiguan', run: () => document.getElementById('themeToggle').click() },
+    { title: '导出事件', hint: '下载当前筛选的事件', keys: 'export events shijian daochu', run: () => { selectTab('events'); exportEvents(); } },
+  ];
+}
+function renderPalette() {
+  const q = paletteEls.input.value.trim().toLowerCase();
+  const all = paletteCommands();
+  paletteItems = q
+    ? all.filter(c => (c.title + ' ' + (c.hint || '') + ' ' + (c.keys || '')).toLowerCase().includes(q))
+    : all;
+  if (paletteActive >= paletteItems.length) paletteActive = Math.max(0, paletteItems.length - 1);
+  paletteEls.list.replaceChildren();
+  if (!paletteItems.length) {
+    const empty = document.createElement('div');
+    empty.className = 'palette-empty';
+    empty.textContent = '没有匹配的命令';
+    paletteEls.list.append(empty);
+    return;
+  }
+  paletteItems.forEach((cmd, i) => {
+    const row = document.createElement('div');
+    row.className = 'palette-item' + (i === paletteActive ? ' active' : '');
+    row.setAttribute('role', 'option');
+    row.setAttribute('aria-selected', i === paletteActive ? 'true' : 'false');
+    row.dataset.index = i;
+    const title = document.createElement('span');
+    title.className = 'palette-item-title';
+    title.textContent = cmd.title;
+    row.append(title);
+    if (cmd.hint) {
+      const hint = document.createElement('span');
+      hint.className = 'palette-item-hint';
+      hint.textContent = cmd.hint;
+      row.append(hint);
+    }
+    paletteEls.list.append(row);
+  });
+}
+function openPalette() {
+  if (paletteOpen) return;
+  paletteOpen = true;
+  paletteActive = 0;
+  paletteEls.input.value = '';
+  paletteEls.backdrop.classList.add('open');
+  renderPalette();
+  requestAnimationFrame(() => paletteEls.input.focus());
+}
+function closePalette() {
+  if (!paletteOpen) return;
+  paletteOpen = false;
+  paletteEls.backdrop.classList.remove('open');
+}
+function runPaletteActive() {
+  const cmd = paletteItems[paletteActive];
+  if (!cmd) return;
+  closePalette();
+  cmd.run();
+}
+paletteEls.input.addEventListener('input', () => { paletteActive = 0; renderPalette(); });
+paletteEls.list.addEventListener('click', (e) => {
+  const row = e.target.closest('.palette-item');
+  if (!row) return;
+  paletteActive = Number(row.dataset.index) || 0;
+  runPaletteActive();
+});
+paletteEls.backdrop.addEventListener('mousedown', (e) => { if (e.target === paletteEls.backdrop) closePalette(); });
+paletteEls.input.addEventListener('keydown', (e) => {
+  if (e.key === 'ArrowDown') { e.preventDefault(); paletteActive = Math.min(paletteItems.length - 1, paletteActive + 1); renderPalette(); }
+  else if (e.key === 'ArrowUp') { e.preventDefault(); paletteActive = Math.max(0, paletteActive - 1); renderPalette(); }
+  else if (e.key === 'Enter') { e.preventDefault(); runPaletteActive(); }
+  else if (e.key === 'Escape') { e.preventDefault(); closePalette(); }
+});
+// 全局快捷键。仅在未打开模态、未打开面板、焦点不在输入框时响应单键快捷键，
+// 避免打字时误触；Cmd/Ctrl+K 与 Esc 例外。
+function inEditableTarget(t) {
+  if (!t) return false;
+  const tag = t.tagName;
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t.isContentEditable;
+}
+document.addEventListener('keydown', (e) => {
+  // Cmd/Ctrl+K：随处可开/关命令面板。
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    e.preventDefault();
+    paletteOpen ? closePalette() : openPalette();
+    return;
+  }
+  if (paletteOpen || modalResolve) return;       // 面板/模态自行处理键盘
+  if (e.metaKey || e.ctrlKey || e.altKey) return; // 不拦截系统组合键
+  if (inEditableTarget(e.target)) return;         // 打字时不触发单键
+  // n = 新建映射；g 之后按 m/c/e 跳转（简易双键导航）；? 显示快捷键说明。
+  if (e.key === 'n') { e.preventDefault(); selectTab('mappings'); openEditorForCreate(); }
+  else if (e.key === 'r') { e.preventDefault(); poll(); }
+  else if (e.key === '?') { e.preventDefault(); showShortcutHelp(); }
+  else if (e.key === '1') { e.preventDefault(); selectTab('mappings'); }
+  else if (e.key === '2') { e.preventDefault(); selectTab('connection'); }
+  else if (e.key === '3') { e.preventDefault(); selectTab('events'); }
+});
+function showShortcutHelp() {
+  openModal({
+    title: '键盘快捷键',
+    confirmText: '知道了', cancelText: '关闭',
+    body: [
+      '⌘/Ctrl + K　打开命令面板',
+      'N　新建映射',
+      'R　立即刷新',
+      '1 / 2 / 3　切换到 映射 / 连接 / 事件',
+      '?　显示本说明',
+    ].join('\n'),
+  });
+}
+
 refreshCred().then(refreshTargetCatalog);
 refresh();
 refreshStatus();
-setInterval(refreshStatus, 2000);
-setInterval(refresh, 2000);
+// ── 轮询：可选间隔 + 暂停。标签页隐藏时自动挂起以省资源，重新可见时立即刷新一次再恢复。 ──
+// 停留在事件页时一并刷新事件，让新事件自动出现。
+// 间隔与暂停态持久化到 localStorage：0 = 手动（不自动轮询，仍可手动刷新或切页触发）。
+const POLL_KEY = 'powermap_poll_interval';
+const POLL_PAUSE_KEY = 'powermap_poll_paused';
+let pollTimer = null;
+let pollInterval = Math.max(0, Number(localStorage.getItem(POLL_KEY) ?? 2000) || 0);
+let pollPaused = localStorage.getItem(POLL_PAUSE_KEY) === '1';
+function poll() {
+  refreshStatus();
+  refresh();
+  if (location.hash.slice(1) === 'events') refreshEvents();
+}
+function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+// 仅在“有正间隔 + 未暂停 + 页面可见”时开启定时器；否则只保持手动刷新能力。
+function startPolling() {
+  stopPolling();
+  if (pollInterval > 0 && !pollPaused && !document.hidden) {
+    pollTimer = setInterval(poll, pollInterval);
+  }
+}
+const refreshIntervalEl = document.getElementById('refreshInterval');
+const refreshPauseEl = document.getElementById('refreshPause');
+function syncRefreshControls() {
+  refreshIntervalEl.value = String(pollInterval);
+  const manual = pollInterval === 0;
+  // 手动模式下暂停无意义，禁用暂停按钮避免混淆。
+  refreshPauseEl.disabled = manual;
+  refreshPauseEl.classList.toggle('paused', pollPaused && !manual);
+  refreshPauseEl.setAttribute('aria-pressed', pollPaused && !manual ? 'true' : 'false');
+  refreshPauseEl.textContent = manual ? '手动' : (pollPaused ? '已暂停' : '暂停');
+}
+refreshIntervalEl.addEventListener('change', () => {
+  pollInterval = Math.max(0, Number(refreshIntervalEl.value) || 0);
+  localStorage.setItem(POLL_KEY, String(pollInterval));
+  if (pollInterval > 0 && !pollPaused) poll();
+  syncRefreshControls();
+  startPolling();
+});
+refreshPauseEl.addEventListener('click', () => {
+  if (pollInterval === 0) return;
+  pollPaused = !pollPaused;
+  localStorage.setItem(POLL_PAUSE_KEY, pollPaused ? '1' : '0');
+  if (!pollPaused) poll();
+  syncRefreshControls();
+  startPolling();
+});
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { stopPolling(); }
+  else { if (pollInterval > 0 && !pollPaused) poll(); startPolling(); }
+});
+syncRefreshControls();
+if (!document.hidden) startPolling();
 </script>
 </body>
 </html>
