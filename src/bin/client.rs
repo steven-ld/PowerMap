@@ -14,12 +14,12 @@
 //! - 可选 TLS（web_tls_cert/web_tls_key），远程管理时保护 Bearer token；
 //! - 映射条数与单映射并发连接数有上限，防止无限增长耗尽资源。
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -180,6 +180,29 @@ impl Link {
 struct Stats {
     tx: AtomicU64, // 本地 -> 远端（上行）
     rx: AtomicU64, // 远端 -> 本地（下行）
+    diagnostics: RwLock<MappingDiagnostics>,
+}
+
+#[derive(Clone, Serialize)]
+struct TunnelFailure {
+    reason: String,
+    at: u64,
+}
+
+#[derive(Clone, Copy, Default)]
+enum TunnelOutcome {
+    #[default]
+    None,
+    Success,
+    Failure,
+}
+
+#[derive(Default)]
+struct MappingDiagnostics {
+    listener_active: bool,
+    last_tunnel_failure: Option<TunnelFailure>,
+    last_tunnel_success_at: Option<u64>,
+    last_outcome: TunnelOutcome,
 }
 
 impl Stats {
@@ -187,13 +210,84 @@ impl Stats {
         Arc::new(Stats {
             tx: AtomicU64::new(0),
             rx: AtomicU64::new(0),
+            diagnostics: RwLock::new(MappingDiagnostics {
+                listener_active: true,
+                ..Default::default()
+            }),
         })
+    }
+
+    async fn record_success(&self) {
+        let mut diagnostics = self.diagnostics.write().await;
+        diagnostics.last_tunnel_success_at = Some(now_unix_millis());
+        diagnostics.last_outcome = TunnelOutcome::Success;
+    }
+
+    async fn record_failure(&self, error: &anyhow::Error) {
+        let mut diagnostics = self.diagnostics.write().await;
+        diagnostics.last_tunnel_failure = Some(TunnelFailure {
+            reason: diagnostic_reason(error),
+            at: now_unix_millis(),
+        });
+        diagnostics.last_outcome = TunnelOutcome::Failure;
+    }
+
+    async fn mark_listener_stopped(&self) {
+        self.diagnostics.write().await.listener_active = false;
+    }
+
+    async fn diagnostic_snapshot(&self) -> MappingDiagnosticSnapshot {
+        let diagnostics = self.diagnostics.read().await;
+        let state = if !diagnostics.listener_active {
+            "stopped"
+        } else {
+            match diagnostics.last_outcome {
+                TunnelOutcome::None => "listening",
+                TunnelOutcome::Success => "active",
+                TunnelOutcome::Failure => "degraded",
+            }
+        };
+        MappingDiagnosticSnapshot {
+            listener_active: diagnostics.listener_active,
+            state,
+            last_tunnel_failure: diagnostics.last_tunnel_failure.clone(),
+            last_tunnel_success_at: diagnostics.last_tunnel_success_at,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct MappingDiagnosticSnapshot {
+    listener_active: bool,
+    state: &'static str,
+    last_tunnel_failure: Option<TunnelFailure>,
+    last_tunnel_success_at: Option<u64>,
+}
+
+fn now_unix_millis() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        .try_into()
+        .unwrap_or(u64::MAX)
+}
+
+fn diagnostic_reason(error: &anyhow::Error) -> String {
+    const MAX_CHARS: usize = 240;
+    let message = error.to_string();
+    let reason: String = message.chars().take(MAX_CHARS).collect();
+    if message.chars().count() > MAX_CHARS {
+        format!("{reason}...")
+    } else {
+        reason
     }
 }
 
 /// 一条映射的运行期把手：监听任务句柄、流量统计、取消令牌（用于 drain 在途连接）。
 struct MappingHandle {
-    mapping: config::Mapping,
+    /// 监听地址不可变；目标可在导入时原子更新，无需释放并重新绑定同一端口。
+    mapping: Arc<RwLock<config::Mapping>>,
     task: JoinHandle<()>,
     stats: Arc<Stats>,
     cancel: CancellationToken,
@@ -272,6 +366,7 @@ async fn handle_tunnel(
 ) -> Result<()> {
     let (mut send, mut recv) = open_with_retry(&link, &req).await?;
     metrics.tunnel_open();
+    stats.record_success().await;
     let (mut l_read, mut l_write) = tokio::io::split(local);
     let up = async {
         tunnel::copy_count(&mut l_read, &mut send, &[&stats.tx, &metrics.bytes_tx]).await?;
@@ -283,9 +378,9 @@ async fn handle_tunnel(
         l_write.shutdown().await.ok();
         Ok::<_, anyhow::Error>(())
     };
-    let _ = tokio::try_join!(up, down);
+    let result = tokio::try_join!(up, down);
     metrics.tunnel_close();
-    Ok(())
+    result.map(|_| ())
 }
 
 // ---- HTTP handlers ----
@@ -412,6 +507,65 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn mapping_stats_reports_listener_and_the_latest_tunnel_failure() {
+        let state = test_state("").await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let app = app(state);
+
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/mappings")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+            )))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(create).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        let initial = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(initial[0]["listener_active"], true);
+        assert_eq!(initial[0]["state"], "listening");
+        assert!(initial[0]["last_tunnel_failure"].is_null());
+        assert!(initial[0]["last_tunnel_success_at"].is_null());
+
+        TcpStream::connect(local).await.unwrap();
+        let mut failed = None;
+        for _ in 0..25 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let stats = response_json(
+                app.clone()
+                    .oneshot(Request::get("/api/stats").body(Body::empty()).unwrap())
+                    .await
+                    .unwrap(),
+            )
+            .await;
+            if !stats[0]["last_tunnel_failure"].is_null() {
+                failed = Some(stats);
+                break;
+            }
+        }
+        let failed = failed.expect("the failed tunnel should be reported");
+        assert_eq!(failed[0]["listener_active"], true);
+        assert_eq!(failed[0]["state"], "degraded");
+        assert_eq!(
+            failed[0]["last_tunnel_failure"]["reason"],
+            "尚未配置凭证：请在 Web 管理页粘贴 server 端的凭证"
+        );
+        assert!(failed[0]["last_tunnel_failure"]["at"].as_u64().is_some());
+    }
+
+    #[tokio::test]
     async fn mapping_mutations_enforce_auth_and_accept_a_valid_bearer_token() {
         let state = test_state("admin-secret").await;
         let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -465,18 +619,115 @@ mod integration_tests {
             .unwrap();
         assert_eq!(removed.status(), StatusCode::NO_CONTENT);
     }
-}
 
-async fn list(State(st): State<AppState>) -> Json<Vec<config::Mapping>> {
-    Json(
-        st.inner
+    #[tokio::test]
+    async fn query_string_tokens_do_not_authorize_management_requests() {
+        let state = test_state("admin-secret").await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let app = app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings?token=admin-secret")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"local":"{local}","host":"127.0.0.1","port":80}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn failed_import_preserves_existing_mapping_and_credentials() {
+        let state = test_state("").await;
+        let old_target = state.link.endpoint.id();
+        {
+            let mut creds = state.link.creds.write().await;
+            creds.node_id = old_target.to_string();
+            creds.token = "old-token".into();
+            creds.target = Some(old_target);
+        }
+
+        let reserved_old = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let old_local = reserved_old.local_addr().unwrap();
+        drop(reserved_old);
+        let old_mapping = config::Mapping {
+            local: old_local.to_string(),
+            host: "127.0.0.1".into(),
+            port: 6379,
+        };
+        let old_handle = start_mapping_owned(&state, old_mapping.clone())
+            .await
+            .unwrap();
+        state
+            .inner
             .lock()
             .await
             .mappings
-            .values()
-            .map(|h| h.mapping.clone())
-            .collect(),
-    )
+            .insert(old_mapping.local.clone(), old_handle);
+
+        // Keep this listener occupied so the imported mapping cannot be started.
+        let blocked = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let blocked_local = blocked.local_addr().unwrap();
+        let new_target = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let app = app(state.clone());
+        let import = Request::builder()
+            .method("POST")
+            .uri("/api/import")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "node_id": new_target.id().to_string(),
+                    "token": "new-token",
+                    "mappings": [{
+                        "local": blocked_local.to_string(),
+                        "host": "127.0.0.1",
+                        "port": 5432,
+                    }],
+                })
+                .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(import).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let old_runtime_mapping = {
+            let mappings = state.inner.lock().await;
+            assert_eq!(mappings.mappings.len(), 1);
+            mappings.mappings[&old_mapping.local].mapping.clone()
+        };
+        assert_eq!(*old_runtime_mapping.read().await, old_mapping);
+        TcpStream::connect(old_local).await.unwrap();
+
+        let creds = state.link.creds.read().await;
+        assert_eq!(creds.node_id, old_target.to_string());
+        assert_eq!(creds.token, "old-token");
+    }
+}
+
+async fn list(State(st): State<AppState>) -> Json<Vec<config::Mapping>> {
+    let mappings: Vec<Arc<RwLock<config::Mapping>>> = st
+        .inner
+        .lock()
+        .await
+        .mappings
+        .values()
+        .map(|h| h.mapping.clone())
+        .collect();
+    let mut result = Vec::with_capacity(mappings.len());
+    for mapping in mappings {
+        result.push(mapping.read().await.clone());
+    }
+    Json(result)
 }
 
 #[derive(Serialize)]
@@ -486,22 +737,32 @@ struct StatItem {
     port: u16,
     tx_bytes: u64,
     rx_bytes: u64,
+    #[serde(flatten)]
+    diagnostics: MappingDiagnosticSnapshot,
 }
 
 async fn stats(State(st): State<AppState>) -> Json<Vec<StatItem>> {
-    let g = st.inner.lock().await;
-    Json(
-        g.mappings
-            .values()
-            .map(|h| StatItem {
-                local: h.mapping.local.clone(),
-                host: h.mapping.host.clone(),
-                port: h.mapping.port,
-                tx_bytes: h.stats.tx.load(Ordering::Relaxed),
-                rx_bytes: h.stats.rx.load(Ordering::Relaxed),
-            })
-            .collect(),
-    )
+    let handles: Vec<(Arc<RwLock<config::Mapping>>, Arc<Stats>)> = st
+        .inner
+        .lock()
+        .await
+        .mappings
+        .values()
+        .map(|h| (h.mapping.clone(), h.stats.clone()))
+        .collect();
+    let mut result = Vec::with_capacity(handles.len());
+    for (mapping, stats) in handles {
+        let mapping = mapping.read().await;
+        result.push(StatItem {
+            local: mapping.local.clone(),
+            host: mapping.host.clone(),
+            port: mapping.port,
+            tx_bytes: stats.tx.load(Ordering::Relaxed),
+            rx_bytes: stats.rx.load(Ordering::Relaxed),
+            diagnostics: stats.diagnostic_snapshot().await,
+        });
+    }
+    Json(result)
 }
 
 #[derive(Deserialize)]
@@ -578,9 +839,9 @@ async fn start_mapping_owned(
     })?;
     let link = st.link.clone();
     let metrics = st.metrics.clone();
-    let host = mapping.host.clone();
-    let port = mapping.port;
     let local = mapping.local.clone();
+    let runtime_mapping = Arc::new(RwLock::new(mapping));
+    let mapping_for_task = runtime_mapping.clone();
     let stats = Stats::new();
     let stats_clone = stats.clone();
     let cancel = CancellationToken::new();
@@ -613,22 +874,25 @@ async fn start_mapping_owned(
                     };
                     let link = link.clone();
                     let stats = stats_clone.clone();
+                    let stats_for_tunnel = stats.clone();
                     let metrics = metrics.clone();
                     let child = cancel_task.child_token();
-                    let host = host.clone();
+                    let mapping = mapping_for_task.clone();
                     tokio::spawn(async move {
                         let _permit = permit; // 持有至隧道结束
                         // 每条隧道建立时实时读取当前令牌，凭证轮换后新连接立即生效。
+                        let mapping = mapping.read().await;
                         let req = proto::OpenRequest {
                             token: link.token().await,
-                            host,
-                            port,
+                            host: mapping.host.clone(),
+                            port: mapping.port,
                         };
                         tokio::select! {
                             _ = child.cancelled() => {}
-                            r = handle_tunnel(link.clone(), req, tcp, stats, metrics.clone()) => {
+                            r = handle_tunnel(link.clone(), req, tcp, stats_for_tunnel, metrics.clone()) => {
                                 if let Err(e) = r {
                                     Metrics::inc(&metrics.tunnels_failed);
+                                    stats.record_failure(&e).await;
                                     tracing::warn!(error = %e, "隧道关闭");
                                 }
                             }
@@ -641,10 +905,11 @@ async fn start_mapping_owned(
                 }
             }
         }
+        stats_clone.mark_listener_stopped().await;
     });
 
     Ok(MappingHandle {
-        mapping,
+        mapping: runtime_mapping,
         task,
         stats,
         cancel,
@@ -666,7 +931,7 @@ async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> impl Into
     }
 }
 
-/// Web API 鉴权：配置了 web_token 时，要求 Authorization: Bearer 或 ?token=；
+/// Web API 鉴权：配置了 web_token 时，只接受 Authorization: Bearer；
 /// /api/health 与 /metrics 免鉴权（供健康检查与抓取；/metrics 仅暴露聚合计数，不含机密）。
 async fn require_auth(State(st): State<AppState>, req: Request, next: Next) -> Response {
     let path = req.uri().path();
@@ -678,13 +943,7 @@ async fn require_auth(State(st): State<AppState>, req: Request, next: Next) -> R
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|v| v.to_str().ok())
         .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()));
-    let from_query = req.uri().query().and_then(|q| {
-        q.split('&')
-            .filter_map(|kv| kv.split_once('='))
-            .find(|(k, _)| *k == "token")
-            .map(|(_, v)| v.to_string())
-    });
-    match from_header.or(from_query) {
+    match from_header {
         Some(t) if powermap::tunnel::token_ok(&st.web_token, &t) => next.run(req).await,
         _ => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
     }
@@ -708,7 +967,7 @@ fn app(state: AppState) -> Router {
 
 /// 从当前运行期状态构建一份完整配置（凭证 + 设置 + 映射）。save_config 与导出接口共用。
 async fn build_config(st: &AppState) -> config::AConfig {
-    let mappings: Vec<config::Mapping> = st
+    let mapping_handles: Vec<Arc<RwLock<config::Mapping>>> = st
         .inner
         .lock()
         .await
@@ -716,6 +975,10 @@ async fn build_config(st: &AppState) -> config::AConfig {
         .values()
         .map(|h| h.mapping.clone())
         .collect();
+    let mut mappings = Vec::with_capacity(mapping_handles.len());
+    for mapping in mapping_handles {
+        mappings.push(mapping.read().await.clone());
+    }
     let (node_id, token) = {
         let c = st.link.creds.read().await;
         (c.node_id.clone(), c.token.clone())
@@ -849,7 +1112,7 @@ async fn export_config(State(st): State<AppState>) -> Response {
     }
 }
 
-/// POST /api/import —— 导入整份配置：覆盖映射 + 更新凭证 + 存盘。
+/// POST /api/import —— 事务式导入整份配置：覆盖映射 + 更新凭证 + 存盘。
 /// 只接受 AConfig 结构；web_bind/web_token/TLS 等监听相关设置不热切换（需重启生效），
 /// 这里只应用凭证与映射，避免把 Web 服务在运行中改瘫。
 async fn import_config(
@@ -862,12 +1125,25 @@ async fn import_config(
     } else {
         Some(parse_target(&incoming.node_id).map_err(|m| (StatusCode::BAD_REQUEST, m))?)
     };
+    if incoming.node_id.trim().is_empty() != incoming.token.trim().is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "node_id 与 token 必须同时提供或同时留空".into(),
+        ));
+    }
     // 2) 校验所有映射合法
+    let mut locals = HashSet::new();
     for m in &incoming.mappings {
         if let Err(reason) = m.validate() {
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("映射 {} 非法: {reason}", m.local),
+            ));
+        }
+        if !locals.insert(&m.local) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("本地监听地址 {} 重复", m.local),
             ));
         }
     }
@@ -882,26 +1158,51 @@ async fn import_config(
         ));
     }
 
-    // 3) 覆盖映射：先停掉现有所有映射（drain 在途），再逐条启动新映射。
-    {
-        let mut g = st.inner.lock().await;
-        for (_, h) in g.mappings.drain() {
-            h.cancel.cancel();
-            h.task.abort();
+    // 3) 在不触碰现有映射的前提下预启动所有新增监听。相同 local 的监听保持
+    // 原 socket，仅在所有新增监听成功后更新其目标，避免重绑同一端口的竞争窗口。
+    let mut g = st.inner.lock().await;
+    let mut started_handles = HashMap::new();
+    for mapping in &incoming.mappings {
+        if g.mappings.contains_key(&mapping.local) {
+            continue;
+        }
+        match start_mapping_owned(&st, mapping.clone()).await {
+            Ok(handle) => {
+                started_handles.insert(mapping.local.clone(), handle);
+            }
+            Err(error) => {
+                drop(g);
+                for (_, handle) in started_handles {
+                    stop_mapping(handle).await;
+                }
+                return Err(error);
+            }
         }
     }
-    let mut started = 0usize;
-    let mut failed: Vec<String> = Vec::new();
-    for m in &incoming.mappings {
-        match start_mapping_owned(&st, m.clone()).await {
-            Ok(h) => {
-                st.inner.lock().await.mappings.insert(m.local.clone(), h);
-                started += 1;
-            }
-            Err((code, msg)) => {
-                failed.push(format!("{}（{}: {msg}）", m.local, code.as_u16()));
-            }
+
+    // 全部新监听都已经成功，才一次性替换运行期集合。同地址条目复用监听任务，
+    // 所以更新目标时不会因端口仍被旧监听占用而失败。
+    let mut previous = std::mem::take(&mut g.mappings);
+    let mut next = HashMap::with_capacity(incoming.mappings.len());
+    let mut reused = 0usize;
+    for mapping in &incoming.mappings {
+        if let Some(handle) = previous.remove(&mapping.local) {
+            *handle.mapping.write().await = mapping.clone();
+            next.insert(mapping.local.clone(), handle);
+            reused += 1;
+        } else {
+            let handle = started_handles
+                .remove(&mapping.local)
+                .expect("预启动的监听必须存在");
+            next.insert(mapping.local.clone(), handle);
         }
+    }
+    g.mappings = next;
+    drop(g);
+
+    // 被导入配置删除的映射在新集合提交后才停止，不会影响失败回滚路径。
+    for (_, handle) in previous {
+        stop_mapping(handle).await;
     }
 
     // 4) 更新凭证（放在映射之后，确保新映射已就绪再触发重连）
@@ -915,12 +1216,21 @@ async fn import_config(
             .await;
     }
     save_config(&st).await;
-    tracing::info!(started, failed = failed.len(), "已导入配置");
+    let started = incoming.mappings.len();
+    tracing::info!(started, reused, "已导入配置");
     Ok(Json(serde_json::json!({
         "started": started,
-        "failed": failed,
+        "failed": [],
+        "reused": reused,
         "credential_updated": new_target.is_some(),
     })))
+}
+
+/// 停止一条映射并等待监听 socket 释放，供导入失败回滚和删除的映射复用。
+async fn stop_mapping(handle: MappingHandle) {
+    handle.cancel.cancel();
+    handle.task.abort();
+    let _ = handle.task.await;
 }
 
 #[tokio::main]

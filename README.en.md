@@ -166,6 +166,7 @@ Releases include Linux x86_64 / aarch64, macOS Intel / Apple Silicon, and Window
 | Target allowlist | CIDR and port rules limit dialable targets and prevent DNS-rebinding bypasses. |
 | Multi-tenant access | `[[clients]]` supplies per-user tokens, allowlists, and concurrency caps; revoke independently. |
 | Audit and limits | JSON audit events and limits on streams, mappings, connections, and dial time protect operations. |
+| Admin API authentication | When `web_token` is set, only `Authorization: Bearer <token>` is accepted. Query-string tokens are rejected so secrets do not reach history, proxy, or access logs. |
 
 **Do not publish the admin UI to the Internet.** If you change `web_bind` to `0.0.0.0`, set `web_token`, configure TLS, and restrict sources at your reverse proxy or firewall.
 
@@ -203,7 +204,7 @@ host = "192.168.1.101"
 port = 6379
 ```
 
-An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. The client refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited.
+An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. When set, the admin API accepts only `Authorization: Bearer <token>` and never `?token=`. The UI keeps a manually entered admin token only in current-page memory, so it must be entered again after a refresh. The client refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited.
 </details>
 
 <details>

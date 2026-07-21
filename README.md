@@ -166,6 +166,7 @@ Release 提供 Linux x86_64 / aarch64、macOS Intel / Apple Silicon 与 Windows 
 | 目标白名单 | server 可用 CIDR 和端口限制可拨号目标，并避免 DNS 重绑定绕过。 |
 | 多租户 | `[[clients]]` 为每个使用者配置独立 token、白名单、并发上限，可单独吊销。 |
 | 审计与资源限制 | 每次拨号可记录 JSON 审计日志；并发流、映射数、连接数与拨号超时均有限制。 |
+| 管理 API 鉴权 | 设置 `web_token` 后，只接受 `Authorization: Bearer <token>`；不接受 URL 查询参数，避免令牌进入历史记录、代理与访问日志。 |
 
 **不要将管理页直接暴露到公网。** 如果将 `web_bind` 改为 `0.0.0.0`，请设置 `web_token`，启用 TLS，并在反向代理或防火墙层限制访问来源。
 
@@ -203,7 +204,7 @@ host = "192.168.1.101"
 port = 6379
 ```
 
-`web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。非回环 `web_bind` 未设置 token、只设置一侧 TLS 文件、或只设置 `node_id`/`token` 时，client 会拒绝启动并指出配置项。`max_conns_per_mapping = 0` 表示不限制。
+`web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。配置它后，管理 API 只能通过 `Authorization: Bearer <token>` 访问，不能使用 `?token=`。网页会在当前页面内存中临时保留手动输入的管理令牌，刷新页面后需要重新输入。非回环 `web_bind` 未设置 token、只设置一侧 TLS 文件、或只设置 `node_id`/`token` 时，client 会拒绝启动并指出配置项。`max_conns_per_mapping = 0` 表示不限制。
 </details>
 
 <details>

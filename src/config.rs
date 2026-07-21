@@ -2,13 +2,19 @@
 //! 这样重启不需要重新配置，映射规则、凭证也持久化。
 
 use std::collections::HashSet;
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use ipnet::IpNet;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+
+static SAVE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 一条端口映射：本地监听地址 → B 端所在内网里的目标 host:port。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -325,21 +331,140 @@ pub fn load_or_default<T: DeserializeOwned + Default>(path: &Path) -> Result<T> 
     }
 }
 
-/// 写入 TOML 配置（先写临时文件再原子重命名，避免半截写入）。
+/// 写入 TOML 配置（先写入私有的唯一临时文件再原子重命名，避免半截写入）。
 pub fn save<T: Serialize>(path: &Path, cfg: &T) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).ok();
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("创建配置目录失败: {}", parent.display()))?;
     }
     let s = toml::to_string_pretty(cfg).context("序列化配置失败")?;
-    let tmp = path.with_extension("toml.tmp");
-    std::fs::write(&tmp, s).with_context(|| format!("写入配置失败: {}", tmp.display()))?;
+
+    let (tmp, mut file) = create_private_temp_file(path)?;
+    let write_result = (|| -> Result<()> {
+        file.write_all(s.as_bytes())
+            .with_context(|| format!("写入配置失败: {}", tmp.display()))?;
+        file.sync_all()
+            .with_context(|| format!("同步配置失败: {}", tmp.display()))?;
+        Ok(())
+    })();
+    drop(file);
+    if let Err(error) = write_result {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(error);
+    }
+
     std::fs::rename(&tmp, path).with_context(|| format!("替换配置失败: {}", path.display()))?;
+    sync_parent_directory(path)?;
+    Ok(())
+}
+
+fn create_private_temp_file(path: &Path) -> Result<(PathBuf, File)> {
+    for _ in 0..16 {
+        let tmp = unique_temp_path(path);
+        match open_private_new_file(&tmp) {
+            Ok(file) => return Ok((tmp, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(error).with_context(|| format!("创建临时配置失败: {}", tmp.display()));
+            }
+        }
+    }
+    anyhow::bail!("无法创建唯一临时配置文件: {}", path.display())
+}
+
+fn unique_temp_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config");
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = SAVE_TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    path.with_file_name(format!(
+        ".{file_name}.{}.{}.{counter}.tmp",
+        std::process::id(),
+        timestamp
+    ))
+}
+
+#[cfg(unix)]
+fn open_private_new_file(path: &Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn open_private_new_file(path: &Path) -> std::io::Result<File> {
+    OpenOptions::new().write(true).create_new(true).open(path)
+}
+
+#[cfg(unix)]
+fn sync_parent_directory(path: &Path) -> Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    File::open(parent)
+        .with_context(|| format!("打开配置目录失败: {}", parent.display()))?
+        .sync_all()
+        .with_context(|| format!("同步配置目录失败: {}", parent.display()))
+}
+
+#[cfg(not(unix))]
+fn sync_parent_directory(_path: &Path) -> Result<()> {
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static TEST_PATH_COUNTER: AtomicUsize = AtomicUsize::new(0);
+
+    fn test_config_path(name: &str) -> PathBuf {
+        let counter = TEST_PATH_COUNTER.fetch_add(1, Ordering::Relaxed);
+        std::env::temp_dir()
+            .join(format!(
+                "powermap-config-test-{}-{counter}",
+                std::process::id()
+            ))
+            .join(name)
+    }
+
+    #[test]
+    fn save_does_not_touch_a_preexisting_legacy_temp_file() {
+        let path = test_config_path("client.toml");
+        let legacy_temp = path.with_extension("toml.tmp");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&legacy_temp, "do not overwrite").unwrap();
+
+        save(&path, &AConfig::default()).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(&legacy_temp).unwrap(),
+            "do not overwrite"
+        );
+        assert!(load_or_default::<AConfig>(&path).is_ok());
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_creates_config_with_owner_only_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = test_config_path("server.toml");
+        save(&path, &BConfig::default()).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
 
     #[test]
     fn a_config_roundtrips_through_toml() {

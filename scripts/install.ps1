@@ -1,0 +1,80 @@
+# Install released PowerMap binaries for the current Windows user.
+[CmdletBinding()]
+param(
+    [ValidatePattern('^(latest|v[0-9][0-9A-Za-z.\-+]*)$')]
+    [string]$Version = $(if ($env:POWERMAP_VERSION) { $env:POWERMAP_VERSION } else { 'latest' }),
+
+    [string]$InstallDir = $(if ($env:POWERMAP_INSTALL_DIR) {
+        $env:POWERMAP_INSTALL_DIR
+    }
+    elseif ($env:LOCALAPPDATA) {
+        Join-Path $env:LOCALAPPDATA 'PowerMap\bin'
+    }
+    else {
+        Join-Path $HOME 'AppData\Local\PowerMap\bin'
+    })
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$repository = 'steven-ld/PowerMap'
+$target = 'x86_64-pc-windows-msvc'
+$archive = "powermap-$target.zip"
+$checksumFile = "powermap-$target.sha256"
+
+if (-not [Environment]::Is64BitOperatingSystem) {
+    throw 'PowerMap currently publishes Windows binaries only for 64-bit systems.'
+}
+
+if ($Version -eq 'latest') {
+    $baseUrl = "https://github.com/$repository/releases/latest/download"
+}
+else {
+    $baseUrl = "https://github.com/$repository/releases/download/$Version"
+}
+
+$temporaryDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("powermap-install-" + [System.Guid]::NewGuid())
+New-Item -ItemType Directory -Path $temporaryDirectory | Out-Null
+
+try {
+    $archivePath = Join-Path $temporaryDirectory $archive
+    $checksumPath = Join-Path $temporaryDirectory $checksumFile
+
+    Write-Host "Downloading PowerMap $Version for $target..."
+    Invoke-WebRequest -Uri "$baseUrl/$archive" -OutFile $archivePath -UseBasicParsing
+    Invoke-WebRequest -Uri "$baseUrl/$checksumFile" -OutFile $checksumPath -UseBasicParsing
+
+    $expectedChecksum = (Get-Content -LiteralPath $checksumPath -Raw).Trim().Split([char[]]" `t", [System.StringSplitOptions]::RemoveEmptyEntries)[0]
+    if ($expectedChecksum -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw "Invalid SHA-256 checksum in $checksumFile."
+    }
+
+    $actualChecksum = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
+    if (-not $actualChecksum.Equals($expectedChecksum, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "SHA-256 mismatch for $archive. The download was not installed."
+    }
+
+    $unpackDirectory = Join-Path $temporaryDirectory 'unpacked'
+    Expand-Archive -LiteralPath $archivePath -DestinationPath $unpackDirectory -Force
+    $server = Get-ChildItem -LiteralPath $unpackDirectory -Filter 'powermap-server.exe' -File -Recurse | Select-Object -First 1
+    $client = Get-ChildItem -LiteralPath $unpackDirectory -Filter 'powermap-client.exe' -File -Recurse | Select-Object -First 1
+    if ($null -eq $server -or $null -eq $client) {
+        throw "The release archive does not contain both PowerMap executables."
+    }
+
+    New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    Copy-Item -LiteralPath $server.FullName -Destination (Join-Path $InstallDir 'powermap-server.exe') -Force
+    Copy-Item -LiteralPath $client.FullName -Destination (Join-Path $InstallDir 'powermap-client.exe') -Force
+
+    Write-Host "Installed powermap-server.exe and powermap-client.exe to $InstallDir"
+    $pathEntries = $env:Path -split [System.IO.Path]::PathSeparator
+    if ($pathEntries -notcontains $InstallDir) {
+        Write-Host "Add $InstallDir to your user PATH to run PowerMap from any terminal."
+    }
+}
+finally {
+    if (Test-Path -LiteralPath $temporaryDirectory) {
+        Remove-Item -LiteralPath $temporaryDirectory -Recurse -Force
+    }
+}
