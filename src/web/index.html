@@ -643,6 +643,24 @@
   /* ── 每行迷你趋势图 ── */
   .row-spark { display: block; width: 4.5rem; height: 1.25rem; margin-top: .3rem; opacity: .9; }
 
+  /* ── 映射名称：列表主标识，地址降为副信息 ── */
+  .mapping-name-field { margin-bottom: .75rem; }
+  td.mapcol { color: var(--foreground); }
+  td.mapcol .map-name { display: block; color: var(--foreground); font: 700 .9rem/1.3 var(--font-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 18rem; }
+  td.mapcol .map-local { display: block; margin-top: .15rem; color: var(--muted-foreground); font: 500 .78rem/1.3 var(--font-mono); }
+  td.mapcol .map-local.only { margin-top: 0; color: var(--foreground); font-weight: 600; }
+  tr.is-disabled td.mapcol { opacity: .5; }
+
+  /* ── 标签页异常计数徽章 ── */
+  .issue-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 1.15rem; height: 1.15rem; margin-left: .35rem; padding: 0 .35rem; border-radius: 9999px; background: var(--destructive); color: var(--destructive-foreground); font: 700 .68rem/1 var(--font-mono); }
+  .issue-badge.hidden { display: none; }
+
+  /* ── 列表头排序下拉：复用 .event-filter，稍加约束 ── */
+  #mappingSort.hidden, #toggleAllBtn.hidden { display: none; }
+
+  /* ── 连接时长：连接状态卡副信息 ── */
+  .stat-uptime { margin-top: .4rem; min-height: .9rem; color: var(--muted-foreground); font: 500 .74rem/1 var(--font-mono); }
+
   /* ── 启用/停用开关 ── */
   .switch { position: relative; display: inline-flex; align-items: center; width: 2.35rem; height: 1.35rem; flex: none; cursor: pointer; }
   .switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
@@ -755,7 +773,7 @@
     <aside class="app-sidebar">
       <div class="sidebar-brand">PowerMap</div>
       <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar" role="tablist" aria-label="页面">
-        <button type="button" class="tab active" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="true" aria-controls="tabMappings"><span>端口映射</span></button>
+        <button type="button" class="tab active" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="true" aria-controls="tabMappings"><span>端口映射</span><span id="issueBadge" class="issue-badge hidden" title="存在异常映射">0</span></button>
         <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>连接</span></button>
         <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件</span></button>
       </div></nav>
@@ -793,8 +811,8 @@
       <div class="stat-card">
         <div class="stat-card-title">连接状态</div>
         <div class="stat-body">
-          <div class="stat-main" role="status" aria-live="polite"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div></div>
-          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></span>
+          <div class="stat-main" role="status" aria-live="polite"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div><div class="stat-uptime" id="mUptime" title="当前连接已保持时长"></div></div>
+          <canvas class="stat-spark" id="mRttSpark" width="120" height="72" title="往返延迟趋势" aria-hidden="true" style="display:none"></canvas>
         </div>
       </div>
       <div class="stat-card">
@@ -848,6 +866,7 @@
           <div id="targetOptions" class="target-options"></div>
         </section>
         <form id="f">
+          <div class="field mapping-name-field"><span class="lbl">名称（可选）</span><input name="name" placeholder="例如 Redis 主库" maxlength="60" autocomplete="off" /></div>
           <div class="grid mapping">
             <div class="field"><span class="lbl">本地地址</span><input name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" required /></div>
             <div class="field"><span class="lbl">本地端口</span><input name="localPort" class="mono" type="number" placeholder="8080" required /></div>
@@ -860,11 +879,11 @@
         </form>
       </div>
 
-      <div class="mapping-list-head"><h2>映射列表</h2><div class="mapping-list-tools"><span id="mappingSearchWrap" class="mapping-search hidden"><input id="mappingSearch" type="search" class="mono" placeholder="搜索本地地址或目标…" aria-label="搜索映射" autocomplete="off" /></span><span id="mappingCount">0 条映射</span></div></div>
+      <div class="mapping-list-head"><h2>映射列表</h2><div class="mapping-list-tools"><span id="mappingSearchWrap" class="mapping-search hidden"><input id="mappingSearch" type="search" class="mono" placeholder="搜索名称、本地地址或目标…" aria-label="搜索映射" autocomplete="off" /></span><select id="mappingSort" class="event-filter" aria-label="排序方式"><option value="issues">异常优先</option><option value="name">按名称</option><option value="local">按本地地址</option><option value="traffic">按流量</option></select><button id="toggleAllBtn" class="btn-quiet" type="button" title="一键启用或停用全部映射">全部停用</button><span id="mappingCount">0 条映射</span></div></div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>本地地址</th><th>目标服务</th><th>运行状态</th><th class="r">流量</th><th></th>
+            <th>映射</th><th>目标服务</th><th>运行状态</th><th class="r">流量</th><th></th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -979,6 +998,9 @@
     <div id="modalField" class="modal-field" style="display:none">
       <textarea id="modalInput" class="mono" rows="4"></textarea>
     </div>
+    <div id="modalSelectField" class="modal-field" style="display:none">
+      <select id="modalSelect" class="event-filter" style="width:100%"></select>
+    </div>
     <div class="modal-actions">
       <button id="modalCancel" class="btn btn-outline btn-sm" type="button">取消</button>
       <button id="modalConfirm" class="btn btn-primary btn-sm" type="button">确定</button>
@@ -1031,6 +1053,8 @@ const modalEls = {
   body: document.getElementById('modalBody'),
   field: document.getElementById('modalField'),
   input: document.getElementById('modalInput'),
+  selectField: document.getElementById('modalSelectField'),
+  select: document.getElementById('modalSelect'),
   cancel: document.getElementById('modalCancel'),
   confirm: document.getElementById('modalConfirm'),
 };
@@ -1043,7 +1067,13 @@ function closeModal(value) {
   if (modalLastFocus && modalLastFocus.focus) modalLastFocus.focus();
   done(value);
 }
-function openModal({ title, body, danger = false, confirmText = '确定', cancelText = '取消', input = false, placeholder = '', value = '' }) {
+// 收集当前 modal 的返回值：优先 select（choice）值，其次 input 文本，都没有则 true。
+function modalValue() {
+  if (modalEls.selectField.style.display !== 'none') return modalEls.select.value;
+  if (modalEls.field.style.display !== 'none') return modalEls.input.value;
+  return true;
+}
+function openModal({ title, body, danger = false, confirmText = '确定', cancelText = '取消', input = false, placeholder = '', value = '', choices = null }) {
   return new Promise(resolve => {
     modalResolve = resolve;
     modalLastFocus = document.activeElement;
@@ -1055,25 +1085,37 @@ function openModal({ title, body, danger = false, confirmText = '确定', cancel
     modalEls.confirm.className = 'btn btn-sm ' + (danger ? 'btn-danger' : 'btn-primary');
     modalEls.field.style.display = input ? '' : 'none';
     if (input) { modalEls.input.value = value || ''; modalEls.input.placeholder = placeholder || ''; }
+    // 单选下拉：choices 为 [{value,label}]，value 指定默认项。
+    modalEls.selectField.style.display = choices ? '' : 'none';
+    if (choices) {
+      modalEls.select.replaceChildren();
+      for (const c of choices) {
+        const opt = document.createElement('option');
+        opt.value = c.value; opt.textContent = c.label;
+        modalEls.select.append(opt);
+      }
+      modalEls.select.value = value || choices[0].value;
+    }
     modalEls.backdrop.classList.add('open');
-    requestAnimationFrame(() => (input ? modalEls.input : modalEls.confirm).focus());
+    requestAnimationFrame(() => (input ? modalEls.input : choices ? modalEls.select : modalEls.confirm).focus());
   });
 }
 modalEls.cancel.addEventListener('click', () => closeModal(null));
-modalEls.confirm.addEventListener('click', () => {
-  closeModal(modalEls.field.style.display === 'none' ? true : modalEls.input.value);
-});
+modalEls.confirm.addEventListener('click', () => closeModal(modalValue()));
 modalEls.backdrop.addEventListener('mousedown', (e) => { if (e.target === modalEls.backdrop) closeModal(null); });
 document.addEventListener('keydown', (e) => {
   if (!modalResolve) return;
+  const inTextarea = modalEls.field.style.display !== 'none';
   if (e.key === 'Escape') { e.preventDefault(); closeModal(null); }
-  else if (e.key === 'Enter' && (modalEls.field.style.display === 'none' || (e.metaKey || e.ctrlKey))) {
+  else if (e.key === 'Enter' && (!inTextarea || (e.metaKey || e.ctrlKey))) {
     e.preventDefault();
-    closeModal(modalEls.field.style.display === 'none' ? true : modalEls.input.value);
+    closeModal(modalValue());
   }
 });
 function confirmModal(opts) { return openModal(opts).then(v => v === true); }
 function promptModal(opts) { return openModal(Object.assign({ input: true }, opts)).then(v => (typeof v === 'string' ? v.trim() : null)); }
+// 单选确认：返回选中的 value，取消返回 null。
+function choiceModal(opts) { return openModal(opts).then(v => (v === null || v === true ? null : v)); }
 
 // ── 主题：system / light / dark 三态循环，照抄 kiro-go ──
 const THEME_KEY = 'powermap_theme';
@@ -1151,16 +1193,19 @@ function applyEditorMode() {
 }
 function openEditorForCreate() {
   const editor = document.getElementById('mappingEditor');
+  const form = document.getElementById('f');
   editMode = null;
+  form.elements.name.value = '';
   applyEditorMode();
   editor.classList.add('open');
   editor.querySelector('[name=localPort]').focus();
 }
-function openEditorForEdit(local, host, port) {
+function openEditorForEdit(local, host, port, name) {
   const editor = document.getElementById('mappingEditor');
   const form = document.getElementById('f');
   const [addr, lport] = splitLocal(local);
   editMode = local;
+  form.elements.name.value = name || '';
   form.elements.localAddr.value = addr;
   form.elements.localPort.value = lport;
   form.elements.host.value = host;
@@ -1172,13 +1217,14 @@ function openEditorForEdit(local, host, port) {
   editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   form.elements.host.focus();
 }
-// 克隆：以某条映射为模板新建。沿用目标 host/port 与本地地址，但清空本地端口——
+// 克隆：以某条映射为模板新建。沿用目标 host/port、本地地址与名称，但清空本地端口——
 // 本地端口不能重复，必须由用户填一个新的，因此聚焦到该字段。
-function openEditorForClone(local, host, port) {
+function openEditorForClone(local, host, port, name) {
   const editor = document.getElementById('mappingEditor');
   const form = document.getElementById('f');
   const [addr] = splitLocal(local);
   editMode = null;
+  form.elements.name.value = name || '';
   form.elements.localAddr.value = addr || '127.0.0.1';
   form.elements.localPort.value = '';
   form.elements.host.value = host;
@@ -1285,7 +1331,7 @@ function mappingKey(body) { return [body.local, body.host, body.port].join('|');
 function collectMapping(form) {
   const fd = new FormData(form);
   const addr = (fd.get('localAddr') || '127.0.0.1').trim() || '127.0.0.1';
-  return { local: addr + ':' + Number(fd.get('localPort')), host: String(fd.get('host') || '').trim(), port: Number(fd.get('port')) };
+  return { local: addr + ':' + Number(fd.get('localPort')), host: String(fd.get('host') || '').trim(), port: Number(fd.get('port')), name: String(fd.get('name') || '').trim() };
 }
 function renderPreflight(result) {
   const el = document.getElementById('preflightResult');
@@ -1521,18 +1567,24 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
   try { cfg = JSON.parse(await file.text()); }
   catch { toast('配置文件不是合法 JSON', 'err'); e.target.value = ''; return; }
   e.target.value = '';
-  const ok = await confirmModal({
-    title: '导入配置', danger: true, confirmText: '覆盖并导入',
-    body: '导入将覆盖当前所有映射，并更新凭证。此操作不可撤销，确定继续？',
+  // 导入模式二选一：覆盖（替换全部映射）或合并（叠加，不删除现有其他映射）。
+  const mode = await openModal({
+    title: '导入配置', confirmText: '导入', cancelText: '取消',
+    body: '选择导入方式。凭证若包含在文件中都会被更新。',
+    choices: [
+      { value: 'overwrite', label: '覆盖：用文件中的映射替换当前全部映射' },
+      { value: 'merge', label: '合并：新增/更新文件中的映射，保留其他现有映射' },
+    ],
   });
-  if (!ok) return;
-  const r = await api('/api/import', {
+  if (!mode) return;
+  const r = await api('/api/import?mode=' + encodeURIComponent(mode), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
   });
   if (!r.ok) { toast((await r.text()) || '导入失败', 'err'); return; }
   const res = await r.json();
-  let msg = `已导入 ${res.started} 条映射`;
-  if (res.failed && res.failed.length) msg += `，${res.failed.length} 条失败`;
+  let msg = mode === 'merge'
+    ? `已合并 ${res.started} 条映射${res.kept ? `，保留 ${res.kept} 条` : ''}`
+    : `已导入 ${res.started} 条映射`;
   if (res.credential_updated) msg += '，凭证已更新';
   ioMsg(msg);
   refreshCred(); refreshStatus(); refresh();
@@ -1654,15 +1706,30 @@ async function refresh() {
   $empty.style.display = list.length ? 'none' : 'block';
   updateOnboarding(list);
   document.getElementById('mappingCount').textContent = `${list.length} 条映射`;
-  // 搜索过滤：按本地地址 / 目标主机:端口做大小写不敏感子串匹配。空查询显示全部。
+  // 搜索过滤：按名称 / 本地地址 / 目标主机:端口做大小写不敏感子串匹配。空查询显示全部。
   const query = (mappingFilter || '').trim().toLowerCase();
   const shown = query
-    ? list.filter(m => `${m.local} ${m.host}:${m.port}`.toLowerCase().includes(query))
-    : list;
-  let totalTx = 0, totalRx = 0;
+    ? list.filter(m => `${m.name || ''} ${m.local} ${m.host}:${m.port}`.toLowerCase().includes(query))
+    : list.slice();
+  // 排序：异常优先（degraded/stopped 置顶）/ 名称 / 本地地址 / 流量。
+  // 异常优先在同档内再按本地地址稳定排序，避免每次轮询顺序抖动。
+  const issueRank = st2 => ['degraded', 'stopped'].includes(mappingState(st2).state) ? 0 : 1;
+  const bytesOf = loc => { const s = statMap[loc] || {}; return (s.tx_bytes || 0) + (s.rx_bytes || 0); };
+  const cmpLocal = (a, b) => a.local.localeCompare(b.local);
+  if (mappingSort === 'name') {
+    shown.sort((a, b) => (a.name || '￿').localeCompare(b.name || '￿') || cmpLocal(a, b));
+  } else if (mappingSort === 'local') {
+    shown.sort(cmpLocal);
+  } else if (mappingSort === 'traffic') {
+    shown.sort((a, b) => bytesOf(b.local) - bytesOf(a.local) || cmpLocal(a, b));
+  } else {
+    shown.sort((a, b) => issueRank(statMap[a.local] || {}) - issueRank(statMap[b.local] || {}) || cmpLocal(a, b));
+  }
+  let totalTx = 0, totalRx = 0, issueCount = 0;
   for (const m of list) {
     const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
     totalTx += s.tx_bytes || 0; totalRx += s.rx_bytes || 0;
+    if (['degraded', 'stopped'].includes(mappingState(s).state)) issueCount++;
     nextRows.set(m.local, { tx: s.tx_bytes || 0, rx: s.rx_bytes || 0 });
     // 每行趋势：无论是否被搜索过滤都累积历史，切换搜索时曲线不断档。
     const prev = rateState.rows.get(m.local);
@@ -1692,11 +1759,15 @@ async function refresh() {
       : '';
     const tr = document.createElement('tr');
     if (!enabled) tr.className = 'is-disabled';
-    tr.innerHTML = `<td>${esc(m.local)}</td>` +
+    // 名称作为主标识，本地地址降为副信息；未命名则本地地址仍作主标识。
+    const nameCell = m.name
+      ? `<span class="map-name">${esc(m.name)}</span><span class="map-local mono">${esc(m.local)}</span>`
+      : `<span class="map-local mono only">${esc(m.local)}</span>`;
+    tr.innerHTML = `<td class="mapcol">${nameCell}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
                    `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span>${esc(label)}</span><span class="status-detail">${esc(health.detail)}</span>${connToggle}</td>` +
                    `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}${rowRate}<canvas class="row-spark" width="108" height="30" data-local="${esc(m.local)}" aria-hidden="true"></canvas></td>` +
-                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}">${enabled ? '停用' : '启用'}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令">命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" title="以此为模板新建">克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}">复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}">编辑</button><button class="btn-del" data-id="${esc(m.local)}">断开</button></span></td>`;
+                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}">${enabled ? '停用' : '启用'}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令">命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}" title="以此为模板新建">克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}">复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}">编辑</button><button class="btn-del" data-id="${esc(m.local)}">断开</button></span></td>`;
     $rows.appendChild(tr);
     // 连接明细展开行：仅在用户点开且仍有活跃连接时渲染。
     if (expanded && active > 0) {
@@ -1714,13 +1785,26 @@ async function refresh() {
   if (list.length && !shown.length) {
     $empty.style.display = 'block';
     if (emptyTitle) emptyTitle.textContent = '没有匹配的映射';
-    if (emptyDesc) emptyDesc.textContent = `没有本地地址或目标包含 “${query}” 的映射。`;
+    if (emptyDesc) emptyDesc.textContent = `没有名称、本地地址或目标包含 “${query}” 的映射。`;
   } else if (!list.length) {
     if (emptyTitle) emptyTitle.textContent = '尚未创建端口映射';
     if (emptyDesc) emptyDesc.textContent = '建立一条映射后，即可从本地地址安全访问内网服务。';
   }
-  // 搜索框仅在映射较多时出现，少量映射无需占位。
+  // 搜索框、排序、全部开关仅在映射较多时出现，少量映射无需占位。
   document.getElementById('mappingSearchWrap').classList.toggle('hidden', list.length < 5);
+  document.getElementById('mappingSort').classList.toggle('hidden', list.length < 2);
+  // 全部开关：有任一启用则显示"全部停用"，全部停用则显示"全部启用"；无映射时隐藏。
+  const toggleAllBtn = document.getElementById('toggleAllBtn');
+  const anyEnabled = list.some(m => m.enabled !== false);
+  toggleAllBtn.classList.toggle('hidden', list.length < 2);
+  toggleAllBtn.textContent = anyEnabled ? '全部停用' : '全部启用';
+  toggleAllBtn.dataset.target = anyEnabled ? 'disable' : 'enable';
+  // 映射标签页的异常计数徽章：切到其他标签也能看到"有 N 条异常"。
+  const issueBadge = document.getElementById('issueBadge');
+  if (issueBadge) {
+    issueBadge.textContent = issueCount;
+    issueBadge.classList.toggle('hidden', issueCount === 0);
+  }
   document.getElementById('mTotal').textContent = fmtBytes(totalTx + totalRx);
   document.getElementById('mTx').textContent = fmtBytes(totalTx);
   document.getElementById('mRx').textContent = fmtBytes(totalRx);
@@ -1748,6 +1832,47 @@ let mappingFilter = '';
 document.getElementById('mappingSearch').addEventListener('input', (e) => {
   mappingFilter = e.target.value;
   refresh();
+});
+
+// ── 排序：异常优先（默认）/ 名称 / 本地地址 / 流量。选择持久化到 localStorage。 ──
+const SORT_KEY = 'powermap_sort';
+let mappingSort = localStorage.getItem(SORT_KEY) || 'issues';
+const mappingSortEl = document.getElementById('mappingSort');
+if (mappingSortEl) {
+  mappingSortEl.value = mappingSort;
+  mappingSortEl.addEventListener('change', () => {
+    mappingSort = mappingSortEl.value;
+    localStorage.setItem(SORT_KEY, mappingSort);
+    refresh();
+  });
+}
+
+// ── 一键启用/停用全部映射：按钮文案随当前状态在“全部停用/全部启用”间切换。 ──
+// 全部或多数已启用 → 提供“全部停用”；否则提供“全部启用”。目标状态存在 dataset 上。
+document.getElementById('toggleAllBtn').addEventListener('click', async (e) => {
+  const btn = e.currentTarget;
+  const target = btn.dataset.target === 'enable'; // 目标启用状态
+  const verb = target ? '启用' : '停用';
+  const ok = await confirmModal({
+    title: `${verb}全部映射`, danger: !target, confirmText: `全部${verb}`,
+    body: target
+      ? '将启用全部已停用的映射，并重新绑定各自的本地端口。确定继续？'
+      : '将停用全部映射：释放所有本地端口并断开在途连接，但都保留在列表中可随时再启用。确定继续？',
+  });
+  if (!ok) return;
+  btn.disabled = true;
+  try {
+    const r = await api('/api/mappings/toggle-all', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: target }),
+    });
+    if (!r.ok) { toast((await r.text()) || '批量切换失败', 'err'); return; }
+    const res = await r.json();
+    let msg = res.changed ? `已${verb} ${res.changed} 条映射` : '没有需要切换的映射';
+    if (res.failed) msg += `，${res.failed} 条失败`;
+    toast(msg, res.failed ? 'err' : 'ok');
+    refresh();
+  } finally { btn.disabled = false; }
 });
 
 // ── 连接命令：按目标端口猜测常见客户端命令，方便一键复制 ──
@@ -1805,7 +1930,7 @@ $rows.addEventListener('click', async (e) => {
   const clone = e.target.closest('button.btn-clone');
   if (clone) {
     // 克隆：以此条为模板打开新建编辑器，预填目标、清空本地端口，等待用户改地址。
-    openEditorForClone(clone.dataset.local, clone.dataset.host, Number(clone.dataset.port));
+    openEditorForClone(clone.dataset.local, clone.dataset.host, Number(clone.dataset.port), clone.dataset.name || '');
     return;
   }
   const cmd = e.target.closest('button.btn-cmd');
@@ -1836,7 +1961,7 @@ $rows.addEventListener('click', async (e) => {
   }
   const edit = e.target.closest('button.btn-edit');
   if (edit) {
-    openEditorForEdit(edit.dataset.local, edit.dataset.host, Number(edit.dataset.port));
+    openEditorForEdit(edit.dataset.local, edit.dataset.host, Number(edit.dataset.port), edit.dataset.name || '');
     return;
   }
   const btn = e.target.closest('button.btn-del');
@@ -1922,11 +2047,39 @@ function renderPathChip(el, path, connected, rttMs, relay) {
 // 记录上一次的连接态，在“已连接 → 断开”与“断开 → 恢复”两个跃迁各提醒一次，
 // 让断开有告警、恢复有正反馈，形成闭环，同时避免每次轮询重复打扰。
 let prevConnected = null;
+// 桌面通知：用户显式开启（并授权）后才发。断线/恢复各发一条，切走标签页也能看到。
+// 通知与 toast 并存：toast 管当前页可见，通知管用户已切走的情况。开关持久化到 localStorage。
+const NOTIFY_KEY = 'powermap_notify';
+function notifyEnabled() { return localStorage.getItem(NOTIFY_KEY) === '1'; }
+// 开关：关 → 请求授权后开启；开 → 关闭。授权被拒时提示用户去浏览器设置放开。
+async function toggleNotify() {
+  if (typeof Notification === 'undefined') { toast('当前浏览器不支持桌面通知', 'err'); return; }
+  if (notifyEnabled()) {
+    localStorage.setItem(NOTIFY_KEY, '0');
+    toast('已关闭断线桌面通知', 'info');
+    return;
+  }
+  let perm = Notification.permission;
+  if (perm === 'default') { try { perm = await Notification.requestPermission(); } catch { perm = 'denied'; } }
+  if (perm !== 'granted') { toast('浏览器已拒绝通知权限，请在站点设置中允许后重试', 'err', 6000); return; }
+  localStorage.setItem(NOTIFY_KEY, '1');
+  toast('已开启断线桌面通知；切走标签页时也会收到连接变化提醒', 'ok', 5000);
+}
+function notify(title, body) {
+  try {
+    if (!notifyEnabled() || typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+    // 页面可见时不打扰：toast 已经足够，避免重复。
+    if (!document.hidden) return;
+    new Notification(title, { body, tag: 'powermap-conn', icon: document.querySelector('link[rel=icon]')?.href });
+  } catch { /* 通知不可用则静默忽略 */ }
+}
 function noteConnection(configured, connected) {
   if (configured && prevConnected === true && connected === false) {
     toast('与 server 的连接已断开，正在自动重连…', 'err', 6000);
+    notify('PowerMap 连接已断开', '与 server 的连接中断，正在自动重连…');
   } else if (configured && prevConnected === false && connected === true) {
     toast('已重新连接到 server', 'ok', 4000);
+    notify('PowerMap 已恢复连接', '已重新连接到 server。');
   }
   prevConnected = configured ? connected : null;
 }
@@ -1963,6 +2116,8 @@ async function refreshStatus() {
     fTxt.textContent = label;
     renderPathChip(pathChip, s.path, s.connected, s.rtt_ms, s.relay);
     renderPathChip(mPathChip, s.path, s.connected, s.rtt_ms, s.relay);
+    renderUptime(s.connected ? s.connected_since : null);
+    pushRttSample(s.connected ? s.rtt_ms : null);
     renderOps(s);
     noteConnection(s.configured, s.connected);
     // 标签页标题带状态点：多标签页时一眼可辨这个控制台是否连着。
@@ -1974,9 +2129,52 @@ async function refreshStatus() {
     fDot.className = 'status-dot err'; fTxt.textContent = '服务不可用';
     renderPathChip(pathChip, null, false);
     renderPathChip(mPathChip, null, false);
+    renderUptime(null);
     prevConnected = null;
     setTabTitle('err');
   }
+}
+// ── 连接时长：把 connected_since（unix 毫秒）渲染成"已连接 2h15m"。断开时清空。 ──
+function renderUptime(since) {
+  const el = document.getElementById('mUptime');
+  if (!el) return;
+  if (!since) { el.textContent = ''; return; }
+  const sec = Math.max(0, Math.round((Date.now() - since) / 1000));
+  el.textContent = '已连接 ' + fmtDuration(sec);
+}
+// ── RTT 趋势：把每次轮询的往返延迟画成迷你趋势图，看出链路是否抖动/掉速。 ──
+// null 样本（未连接或无 RTT）记为断点，趋势中以缺口体现。
+const RTT_MAX = 40;
+const rttHist = [];
+function pushRttSample(rttMs) {
+  rttHist.push(rttMs != null && Number.isFinite(rttMs) ? rttMs : null);
+  while (rttHist.length > RTT_MAX) rttHist.shift();
+  drawRttSpark();
+}
+function drawRttSpark() {
+  const c = document.getElementById('mRttSpark');
+  if (!c) return;
+  const ctx = c.getContext('2d');
+  const w = c.width, h = c.height;
+  ctx.clearRect(0, 0, w, h);
+  const pts = rttHist.filter(v => v != null);
+  // 少于两个有效样本时不画，隐藏画布（避免留一块空白）。
+  c.style.display = pts.length < 2 ? 'none' : '';
+  if (pts.length < 2) return;
+  const max = Math.max(...pts, 1);
+  const step = w / (RTT_MAX - 1);
+  const off = RTT_MAX - rttHist.length;
+  // 延迟越低越好，用 success 色；有缺口（断线）时分段画，不跨缺口连线。
+  const stroke = getComputedStyle(document.documentElement).getPropertyValue('--success').trim() || '#238465';
+  ctx.lineWidth = 1.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.strokeStyle = stroke;
+  let drawing = false;
+  ctx.beginPath();
+  rttHist.forEach((val, i) => {
+    if (val == null) { drawing = false; return; }
+    const x = (off + i) * step, y = h - (val / max) * (h - 4) - 2;
+    if (!drawing) { ctx.moveTo(x, y); drawing = true; } else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
 }
 // 标签页标题状态点：ok=已连接 warn=未连接 err=服务不可用 idle=未配置。
 const TITLE_DOT = { ok: '\u{1F7E2} ', warn: '\u{1F7E1} ', err: '\u{1F534} ', idle: '' };
@@ -2102,6 +2300,7 @@ function paletteCommands() {
     { title: '导入配置', hint: '从文件覆盖导入', keys: 'import daoru restore', run: () => document.getElementById('importBtn').click() },
     { title: '切换主题', hint: '系统 / 浅色 / 深色', keys: 'theme dark light zhuti waiguan', run: () => document.getElementById('themeToggle').click() },
     { title: '导出事件', hint: '下载当前筛选的事件', keys: 'export events shijian daochu', run: () => { selectTab('events'); exportEvents(); } },
+    { title: notifyEnabled() ? '关闭断线桌面通知' : '开启断线桌面通知', hint: '连接断开/恢复时发系统通知', keys: 'notification tongzhi desktop notify', run: () => toggleNotify() },
   ];
 }
 function renderPalette() {

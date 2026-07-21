@@ -23,7 +23,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Path, Request, State};
+use axum::extract::{Path, Query, Request, State};
 use axum::http::StatusCode;
 use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Json, Response};
@@ -86,6 +86,9 @@ struct Link {
     endpoint: Endpoint,
     creds: Arc<RwLock<Creds>>,
     conn: Arc<Mutex<Option<Connection>>>,
+    /// 当前连接建立时刻（unix 毫秒，0 = 未连接）。每次成功新建连接时刷新，
+    /// invalidate 时清零，供管理页展示"已连接时长"。
+    connected_since: Arc<AtomicU64>,
 }
 
 impl Link {
@@ -118,12 +121,15 @@ impl Link {
             .await
             .context("连接 B 失败")?;
         *g = Some(c.clone());
+        self.connected_since
+            .store(now_unix_millis(), Ordering::Relaxed);
         tracing::info!("已（重）连到 B");
         Ok(c)
     }
 
     async fn invalidate(&self) {
         *self.conn.lock().await = None;
+        self.connected_since.store(0, Ordering::Relaxed);
     }
 
     /// 切换连接目标：更新凭证并断开当前连接，下次 get() 用新凭证重连。
@@ -638,6 +644,8 @@ struct Status {
     reconnects: u64,
     /// 因并发上限被拒累计数。
     over_limit: u64,
+    /// 当前连接建立时刻（unix 毫秒）；未连接时为 null，供管理页展示"已连接时长"。
+    connected_since: Option<u64>,
 }
 
 async fn status(State(st): State<AppState>) -> Json<Status> {
@@ -649,8 +657,17 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
         Some(p) => (Some(p.path), p.rtt_ms, p.relay),
         None => (None, None, None),
     };
+    let connected = st.link.is_alive().await;
+    let connected_since = if connected {
+        match st.link.connected_since.load(Ordering::Relaxed) {
+            0 => None,
+            since => Some(since),
+        }
+    } else {
+        None
+    };
     Json(Status {
-        connected: st.link.is_alive().await,
+        connected,
         configured: creds.target.is_some(),
         node_id: creds.node_id.clone(),
         mappings: n,
@@ -663,6 +680,7 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
         tunnels_failed: m.tunnels_failed.load(Ordering::Relaxed),
         reconnects: m.reconnects.load(Ordering::Relaxed),
         over_limit: m.over_limit.load(Ordering::Relaxed),
+        connected_since,
     })
 }
 
@@ -689,6 +707,7 @@ mod integration_tests {
                 endpoint,
                 creds: Arc::new(RwLock::new(Creds::default())),
                 conn: Arc::new(Mutex::new(None)),
+                connected_since: Arc::new(AtomicU64::new(0)),
             },
             web_bind: "127.0.0.1:0".into(),
             web_token: web_token.into(),
@@ -904,6 +923,164 @@ mod integration_tests {
         assert_eq!(response_json(enabled).await["enabled"], true);
         // 重新启用后端口被映射占用，外部不能再绑定。
         assert!(TcpListener::bind(local).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_and_list_preserve_the_optional_mapping_name() {
+        let state = test_state("").await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let app = app(state);
+
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/mappings")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                r#"{{"local":"{local}","host":"127.0.0.1","port":6379,"name":"Redis 主库"}}"#
+            )))
+            .unwrap();
+        let created = response_json(app.clone().oneshot(create).await.unwrap()).await;
+        assert_eq!(created["name"], "Redis 主库");
+
+        let listed = response_json(
+            app.oneshot(Request::get("/api/mappings").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(listed[0]["name"], "Redis 主库");
+    }
+
+    #[tokio::test]
+    async fn toggle_all_disables_every_mapping_and_reports_counts() {
+        let state = test_state("").await;
+        let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let first_local = first.local_addr().unwrap();
+        drop(first);
+        let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second_local = second.local_addr().unwrap();
+        drop(second);
+        let app = app(state);
+
+        for local in [first_local, second_local] {
+            let create = Request::builder()
+                .method("POST")
+                .uri("/api/mappings")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(format!(
+                    r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                )))
+                .unwrap();
+            assert_eq!(
+                app.clone().oneshot(create).await.unwrap().status(),
+                StatusCode::OK
+            );
+        }
+
+        // 全部停用：两条都从启用切到停用，changed=2。
+        let disabled = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings/toggle-all")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(disabled.status(), StatusCode::OK);
+        let body = response_json(disabled).await;
+        assert_eq!(body["enabled"], false);
+        assert_eq!(body["changed"], 2);
+        assert_eq!(body["failed"], 0);
+
+        // 两个本地端口都应已释放。
+        TcpListener::bind(first_local).await.unwrap();
+        TcpListener::bind(second_local).await.unwrap();
+
+        // 再次全部停用：都已是停用态，changed=0、unchanged=2。
+        let again = response_json(
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings/toggle-all")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(again["changed"], 0);
+        assert_eq!(again["unchanged"], 2);
+    }
+
+    #[tokio::test]
+    async fn merge_import_keeps_existing_mappings_and_adds_new_ones() {
+        let state = test_state("").await;
+        let existing = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let existing_local = existing.local_addr().unwrap();
+        drop(existing);
+        let incoming = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let incoming_local = incoming.local_addr().unwrap();
+        drop(incoming);
+        let app = app(state);
+
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/mappings")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                r#"{{"local":"{existing_local}","host":"127.0.0.1","port":6379}}"#
+            )))
+            .unwrap();
+        assert_eq!(
+            app.clone().oneshot(create).await.unwrap().status(),
+            StatusCode::OK
+        );
+
+        // 合并导入一条新映射：不带凭证，只叠加映射。
+        let import = Request::builder()
+            .method("POST")
+            .uri("/api/import?mode=merge")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "mappings": [{
+                        "local": incoming_local.to_string(),
+                        "host": "127.0.0.1",
+                        "port": 5432,
+                    }],
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let result = response_json(app.clone().oneshot(import).await.unwrap()).await;
+        assert_eq!(result["merged"], true);
+        assert_eq!(result["kept"], 1); // 既有映射被保留
+        assert_eq!(result["started"], 1); // 导入里 1 条
+
+        // 合并后两条都在：既有的没有被删除。
+        let listed = response_json(
+            app.oneshot(Request::get("/api/mappings").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        let locals: Vec<&str> = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|m| m["local"].as_str().unwrap())
+            .collect();
+        assert_eq!(locals.len(), 2);
+        assert!(locals.contains(&existing_local.to_string().as_str()));
+        assert!(locals.contains(&incoming_local.to_string().as_str()));
     }
 
     #[tokio::test]
@@ -1199,6 +1376,7 @@ mod integration_tests {
             host: "127.0.0.1".into(),
             port: 6379,
             enabled: true,
+            name: String::new(),
         };
         let old_handle = start_mapping_owned(&state, old_mapping.clone())
             .await
@@ -1323,6 +1501,9 @@ struct CreateBody {
     /// 是否启用；创建时省略默认启用，编辑时省略则沿用原状态。
     #[serde(default)]
     enabled: Option<bool>,
+    /// 可选的可读名称；省略时按空字符串处理。
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1348,6 +1529,7 @@ async fn preflight(
         host: body.host,
         port: body.port,
         enabled: true,
+        name: body.name.unwrap_or_default().trim().to_string(),
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
@@ -1450,6 +1632,7 @@ async fn create(
         host: body.host,
         port: body.port,
         enabled: body.enabled.unwrap_or(true),
+        name: body.name.unwrap_or_default().trim().to_string(),
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
@@ -1653,12 +1836,17 @@ async fn update(
         .get(&id)
         .ok_or((StatusCode::NOT_FOUND, format!("{id} 不存在映射")))?;
     // 编辑表单不改变启用状态：省略 enabled 时沿用原值，启用/停用走专门的 toggle 接口。
-    let was_enabled = existing.mapping.read().await.enabled;
+    // name 同理：省略时沿用原名称，避免编辑目标时把名称清空。
+    let (was_enabled, was_name) = {
+        let m = existing.mapping.read().await;
+        (m.enabled, m.name.clone())
+    };
     let mapping = config::Mapping {
         local: body.local,
         host: body.host,
         port: body.port,
         enabled: body.enabled.unwrap_or(was_enabled),
+        name: body.name.unwrap_or(was_name),
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
@@ -1722,6 +1910,96 @@ async fn toggle(
     Ok(Json(mapping))
 }
 
+#[derive(Deserialize)]
+struct ToggleAllBody {
+    /// 目标启用状态：true 启用全部，false 停用全部。
+    enabled: bool,
+}
+
+#[derive(Serialize)]
+struct ToggleAllResult {
+    /// 目标启用状态。
+    enabled: bool,
+    /// 本次实际切换（状态发生变化）的映射数。
+    changed: usize,
+    /// 已处于目标状态、无需切换的映射数。
+    unchanged: usize,
+    /// 尝试启用但绑定本地端口失败、保持原样的映射数。
+    failed: usize,
+}
+
+/// POST /api/mappings/toggle-all —— 一键启用/停用全部映射。
+/// 逐条重建把手：启用时绑定本地端口，停用时释放端口并 drain 在途连接。
+/// 某条启用失败（端口被占用等）不影响其余映射，计入 failed 返回。
+async fn toggle_all(
+    State(st): State<AppState>,
+    Json(body): Json<ToggleAllBody>,
+) -> Json<ToggleAllResult> {
+    let target = body.enabled;
+    // 先取出需要切换的 local 列表，避免持锁期间跨 await 重建监听。
+    let to_switch: Vec<String> = {
+        let g = st.inner.lock().await;
+        let mut locals = Vec::new();
+        for (local, handle) in g.mappings.iter() {
+            if handle.mapping.read().await.enabled != target {
+                locals.push(local.clone());
+            }
+        }
+        locals
+    };
+    let unchanged = st.inner.lock().await.mappings.len() - to_switch.len();
+    let mut changed = 0usize;
+    let mut failed = 0usize;
+    for id in to_switch {
+        // 逐条加锁重建：读当前映射、翻转 enabled、建新把手、替换、停旧的。
+        let mut g = st.inner.lock().await;
+        let Some(existing) = g.mappings.get(&id) else {
+            continue; // 中途被删，跳过
+        };
+        let mut mapping = existing.mapping.read().await.clone();
+        if mapping.enabled == target {
+            continue; // 已被其他请求切换
+        }
+        mapping.enabled = target;
+        match start_mapping_owned(&st, mapping.clone()).await {
+            Ok(handle) => {
+                let old = g.mappings.remove(&id).expect("已确认存在");
+                g.mappings.insert(mapping.local.clone(), handle);
+                drop(g);
+                stop_mapping(old).await;
+                changed += 1;
+            }
+            Err(_) => {
+                drop(g);
+                failed += 1;
+            }
+        }
+    }
+    if changed > 0 {
+        save_config(&st).await;
+        st.events.push(
+            "info",
+            "mapping",
+            format!(
+                "已{}全部映射：{} 条{}",
+                if target { "启用" } else { "停用" },
+                changed,
+                if failed > 0 {
+                    format!("，{failed} 条失败")
+                } else {
+                    String::new()
+                },
+            ),
+        );
+    }
+    Json(ToggleAllResult {
+        enabled: target,
+        changed,
+        unchanged,
+        failed,
+    })
+}
+
 /// Web API 鉴权：配置了 web_token 时，只接受 Authorization: Bearer；
 /// /api/health 与 /metrics 免鉴权（供健康检查与抓取；/metrics 仅暴露聚合计数，不含机密）。
 async fn require_auth(State(st): State<AppState>, req: Request, next: Next) -> Response {
@@ -1752,6 +2030,7 @@ fn app(state: AppState) -> Router {
         .route("/api/mappings", get(list).post(create))
         .route("/api/mappings/{id}", put(update).delete(remove))
         .route("/api/mappings/{id}/toggle", post(toggle))
+        .route("/api/mappings/toggle-all", post(toggle_all))
         .route("/api/credential", get(get_credential).post(set_credential))
         .route("/api/export", get(export_config))
         .route("/api/import", post(import_config))
@@ -1917,13 +2196,33 @@ async fn export_config(State(st): State<AppState>) -> Response {
     }
 }
 
-/// POST /api/import —— 事务式导入整份配置：覆盖映射 + 更新凭证 + 存盘。
+/// 导入模式：覆盖（默认）或合并。
+#[derive(Deserialize, Default, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ImportMode {
+    /// 用导入的映射整体替换现有映射（未出现在导入里的映射会被删除）。
+    #[default]
+    Overwrite,
+    /// 把导入的映射叠加到现有映射上：新增缺失的、按 local 更新同名的，不删除现有其他映射。
+    Merge,
+}
+
+#[derive(Deserialize)]
+struct ImportQuery {
+    #[serde(default)]
+    mode: ImportMode,
+}
+
+/// POST /api/import —— 事务式导入配置：应用映射 + 更新凭证 + 存盘。
+/// `?mode=overwrite`（默认）整体替换映射；`?mode=merge` 只叠加，不删除现有其他映射。
 /// 只接受 AConfig 结构；web_bind/web_token/TLS 等监听相关设置不热切换（需重启生效），
 /// 这里只应用凭证与映射，避免把 Web 服务在运行中改瘫。
 async fn import_config(
     State(st): State<AppState>,
+    Query(query): Query<ImportQuery>,
     Json(incoming): Json<config::AConfig>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let merge = query.mode == ImportMode::Merge;
     // 1) 先校验凭证（若带了 node_id）
     let new_target = if incoming.node_id.trim().is_empty() {
         None
@@ -1952,20 +2251,27 @@ async fn import_config(
             ));
         }
     }
-    if st.max_mappings > 0 && incoming.mappings.len() > st.max_mappings {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            format!(
-                "导入映射数 {} 超过上限 {}",
-                incoming.mappings.len(),
-                st.max_mappings
-            ),
-        ));
-    }
 
     // 3) 在不触碰现有映射的前提下预启动所有新增监听。相同 local 的监听保持
     // 原 socket，仅在所有新增监听成功后更新其目标，避免重绑同一端口的竞争窗口。
     let mut g = st.inner.lock().await;
+    // 上限检查：覆盖模式看导入条数；合并模式看合并后的并集大小（现有 + 导入新增）。
+    let merged_total = if merge {
+        let added = incoming
+            .mappings
+            .iter()
+            .filter(|m| !g.mappings.contains_key(&m.local))
+            .count();
+        g.mappings.len() + added
+    } else {
+        incoming.mappings.len()
+    };
+    if st.max_mappings > 0 && merged_total > st.max_mappings {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("映射数 {merged_total} 超过上限 {}", st.max_mappings),
+        ));
+    }
     let mut started_handles = HashMap::new();
     for mapping in &incoming.mappings {
         if g.mappings.contains_key(&mapping.local) {
@@ -1988,7 +2294,7 @@ async fn import_config(
     // 全部新监听都已经成功，才一次性替换运行期集合。同地址条目复用监听任务，
     // 所以更新目标时不会因端口仍被旧监听占用而失败。
     let mut previous = std::mem::take(&mut g.mappings);
-    let mut next = HashMap::with_capacity(incoming.mappings.len());
+    let mut next = HashMap::with_capacity(merged_total);
     let mut reused = 0usize;
     for mapping in &incoming.mappings {
         if let Some(handle) = previous.remove(&mapping.local) {
@@ -2002,10 +2308,19 @@ async fn import_config(
             next.insert(mapping.local.clone(), handle);
         }
     }
+    // 合并模式：保留导入里未提及的现有映射，原样搬进新集合，不停止它们。
+    let mut kept = 0usize;
+    if merge {
+        for (local, handle) in std::mem::take(&mut previous) {
+            next.insert(local, handle);
+            kept += 1;
+        }
+    }
     g.mappings = next;
     drop(g);
 
-    // 被导入配置删除的映射在新集合提交后才停止，不会影响失败回滚路径。
+    // 覆盖模式下被导入删除的映射在新集合提交后才停止，不会影响失败回滚路径。
+    // 合并模式下 previous 已被清空，这里不会停止任何映射。
     for (_, handle) in previous {
         stop_mapping(handle).await;
     }
@@ -2023,12 +2338,13 @@ async fn import_config(
     }
     save_config(&st).await;
     let started = incoming.mappings.len();
-    tracing::info!(started, reused, "已导入配置");
+    tracing::info!(started, reused, kept, merge, "已导入配置");
     st.events.push(
         "info",
         "mapping",
         format!(
-            "已导入配置：{started} 条映射{}",
+            "已{}配置：{started} 条映射{}",
+            if merge { "合并" } else { "导入" },
             if new_target.is_some() {
                 "，凭证已更新"
             } else {
@@ -2040,6 +2356,8 @@ async fn import_config(
         "started": started,
         "failed": [],
         "reused": reused,
+        "kept": kept,
+        "merged": merge,
         "credential_updated": new_target.is_some(),
     })))
 }
@@ -2141,6 +2459,7 @@ async fn main() -> Result<()> {
             published_targets: cfg.published_targets.clone(),
         })),
         conn: Arc::new(Mutex::new(None)),
+        connected_since: Arc::new(AtomicU64::new(0)),
     };
     let state = AppState {
         link: link.clone(),

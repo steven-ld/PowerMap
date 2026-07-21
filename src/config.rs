@@ -29,6 +29,10 @@ pub struct Mapping {
     /// 旧配置没有此字段时默认启用，保持向后兼容。
     #[serde(default = "default_enabled")]
     pub enabled: bool,
+    /// 可选的可读名称，例如 "Redis 主库"。仅用于管理页展示与搜索，不影响连接行为。
+    /// 旧配置没有此字段时为空，保持向后兼容。
+    #[serde(default)]
+    pub name: String,
 }
 
 fn default_enabled() -> bool {
@@ -84,6 +88,9 @@ impl Mapping {
         }
         if self.port == 0 {
             return Err("目标端口不能为 0".into());
+        }
+        if self.name.chars().count() > 60 {
+            return Err("映射名称不能超过 60 个字符".into());
         }
         Ok(())
     }
@@ -571,6 +578,7 @@ mod tests {
                 host: "10.0.0.1".into(),
                 port: 80,
                 enabled: true,
+                name: String::new(),
             }],
             ..Default::default()
         };
@@ -782,6 +790,7 @@ revoked = false
             host: host.into(),
             port,
             enabled: true,
+            name: String::new(),
         };
         assert!(m("127.0.0.1:8080", "10.0.0.1", 80).validate().is_ok());
         assert!(m("not-an-addr", "10.0.0.1", 80).validate().is_err());

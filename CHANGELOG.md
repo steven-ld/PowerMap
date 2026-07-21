@@ -4,8 +4,17 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-21
+
 ### Added
 
+- 映射命名：`Mapping` 新增可选 `name` 字段（旧配置默认为空，向后兼容）。列表以名称为主标识、本地地址降为副信息，搜索同时覆盖名称。
+- 一键启用/停用全部映射（`POST /api/mappings/toggle-all`）：逐条重建把手，单条失败不影响其余并计入返回；列表头按钮随当前状态在“全部停用/全部启用”间切换。
+- 映射列表排序（异常优先/名称/本地地址/流量，选择持久化）；端口映射标签页新增异常映射计数徽章，切换到其他标签也能看到有几条映射异常。
+- 导入合并模式（`POST /api/import?mode=merge`）：只叠加新增、按本地地址更新同名，保留导入未提及的现有映射；导入时可选择“覆盖”或“合并”。
+- 连接时长：`/api/status` 暴露 `connected_since`，连接状态卡显示当前连接已保持时长。
+- 连接质量趋势：连接状态卡以迷你趋势图展示往返延迟（RTT）历史，断线以缺口体现，便于看出链路抖动。
+- 断线桌面通知（可选开启）：连接断开/恢复且页面不可见时发系统通知，与页内提示互补。
 - 就地编辑映射（`PUT /api/mappings/{id}`）：仅改目标时复用原监听、不中断已建隧道；改本地地址时先绑新址再停旧址。管理页新增编辑模式与每行“复制本地地址”。
 - 连接从“已连接”跌为断开时提醒一次；标签页隐藏时暂停轮询、重新可见时立即刷新。
 - 映射启用/停用（`POST /api/mappings/{id}/toggle`）：停用释放本地端口并 drain 在途连接、保留配置可随时再启用；`Mapping` 新增持久化 `enabled` 字段，旧配置默认启用。
@@ -50,6 +59,7 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/steven-ld/PowerMap/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/steven-ld/PowerMap/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/steven-ld/PowerMap/releases/tag/v0.1.0
