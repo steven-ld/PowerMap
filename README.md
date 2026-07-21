@@ -37,7 +37,22 @@ redis-cli ──> 127.0.0.1:6379 ──> PowerMap ──> 192.168.1.101:6379
 
 ### 1. 下载或构建
 
-从 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台的二进制。也可以自行构建：
+从 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台的预编译包。以 macOS Apple Silicon 为例：
+
+```bash
+VERSION=v0.1.0
+TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin；Linux: x86_64/aarch64-unknown-linux-gnu
+BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
+
+curl -LO $BASE/powermap-$TARGET.tar.gz
+curl -LO $BASE/powermap-$TARGET.sha256
+shasum -a 256 -c powermap-$TARGET.sha256   # 校验完整性
+tar xzf powermap-$TARGET.tar.gz
+```
+
+解包得到 `powermap-server` 与 `powermap-client` 两个可执行文件。Windows 用户下载 `powermap-x86_64-pc-windows-msvc.zip`。
+
+也可以自行构建（需要 Rust 1.85+）：
 
 ```bash
 git clone https://github.com/steven-ld/PowerMap.git
@@ -45,7 +60,7 @@ cd PowerMap
 cargo build --release
 ```
 
-构建产物为 `target/release/powermap-server` 和 `target/release/powermap-client`。本地构建需要 Rust 1.85+。
+构建产物为 `target/release/powermap-server` 和 `target/release/powermap-client`。
 
 ### 2. 在内网设备启动 server
 
@@ -108,11 +123,12 @@ flowchart LR
 
 ## 界面
 
+管理页默认仅绑定本地回环，实时显示连接状态、传输路径（P2P 直连 / 经中继）与流量指标，并支持浅色 / 深色主题。
+
 | 端口映射 | 连接设置 |
 |---|---|
-| ![端口映射页面](assets/screenshots/light-mappings.png) | ![连接设置页面](assets/screenshots/light-connection.png) |
-
-管理页默认仅绑定 `127.0.0.1:8088`，并显示连接状态、传输路径和流量指标。
+| ![端口映射页面（浅色）](assets/screenshots/light-mappings.png) | ![连接设置页面（浅色）](assets/screenshots/light-connection.png) |
+| ![端口映射页面（深色）](assets/screenshots/dark-mappings.png) | ![连接设置页面（深色）](assets/screenshots/dark-connection.png) |
 
 ## 部署
 

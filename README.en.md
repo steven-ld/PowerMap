@@ -37,7 +37,22 @@ redis-cli ──> 127.0.0.1:6379 ──> PowerMap ──> 192.168.1.101:6379
 
 ### 1. Download or build
 
-Download a prebuilt archive from [Releases](https://github.com/steven-ld/PowerMap/releases), or build it yourself:
+Download a prebuilt archive for your platform from [Releases](https://github.com/steven-ld/PowerMap/releases). For macOS Apple Silicon:
+
+```bash
+VERSION=v0.1.0
+TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin; Linux: x86_64/aarch64-unknown-linux-gnu
+BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
+
+curl -LO $BASE/powermap-$TARGET.tar.gz
+curl -LO $BASE/powermap-$TARGET.sha256
+shasum -a 256 -c powermap-$TARGET.sha256   # verify integrity
+tar xzf powermap-$TARGET.tar.gz
+```
+
+This yields the `powermap-server` and `powermap-client` executables. On Windows, download `powermap-x86_64-pc-windows-msvc.zip`.
+
+Or build it yourself (requires Rust 1.85+):
 
 ```bash
 git clone https://github.com/steven-ld/PowerMap.git
@@ -45,7 +60,7 @@ cd PowerMap
 cargo build --release
 ```
 
-The build produces `target/release/powermap-server` and `target/release/powermap-client`. Local builds require Rust 1.85+.
+The build produces `target/release/powermap-server` and `target/release/powermap-client`.
 
 ### 2. Start the server on an intranet machine
 
@@ -108,11 +123,12 @@ Each local TCP connection becomes a bidirectional QUIC stream on an existing con
 
 ## Admin UI
 
+The UI binds to loopback only by default and shows connection state, transport path (direct P2P / relayed), and traffic metrics in real time, with light and dark themes.
+
 | Port mappings | Connection settings |
 |---|---|
-| ![Port mappings](assets/screenshots/light-mappings.png) | ![Connection settings](assets/screenshots/light-connection.png) |
-
-The UI binds to `127.0.0.1:8088` by default and shows connection state, transport path, and traffic metrics.
+| ![Port mappings (light)](assets/screenshots/light-mappings.png) | ![Connection settings (light)](assets/screenshots/light-connection.png) |
+| ![Port mappings (dark)](assets/screenshots/dark-mappings.png) | ![Connection settings (dark)](assets/screenshots/dark-connection.png) |
 
 ## Deploy
 
