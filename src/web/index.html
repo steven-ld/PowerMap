@@ -6,63 +6,63 @@
 <title>PowerMap</title>
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
 <style>
-  /* ── 设计系统：照抄 Kiro-Go admin ──
-     扁平黑白 + 中性灰阶，teal 作 success；无阴影、无渐变；Geist / Geist Mono；亮暗双主题。 */
+  /* ── PowerMap product system: shared with the public site ── */
   :root {
-    --background: #fcfcfc;
-    --foreground: #000000;
+    --background: #f6f5f0;
+    --foreground: #121212;
     --card: #ffffff;
     --card-foreground: #000000;
-    --popover: #fcfcfc;
-    --primary: #000000;
+    --popover: #ffffff;
+    --primary: #3366f0;
     --primary-foreground: #ffffff;
-    --secondary: #ebebeb;
-    --secondary-foreground: #000000;
-    --muted: #f5f5f5;
-    --muted-foreground: #525252;
-    --accent: #ebebeb;
-    --accent-foreground: #000000;
-    --destructive: #e54b4f;
+    --secondary: #ecebe6;
+    --secondary-foreground: #121212;
+    --muted: #efeee9;
+    --muted-foreground: #66645e;
+    --accent: #dce4ff;
+    --accent-foreground: #254ab0;
+    --destructive: #d54a4a;
     --destructive-foreground: #ffffff;
-    --border: #e4e4e4;
-    --border-focus: #a3a3a3;
-    --input: #ebebeb;
-    --ring: #a3a3a3;
-    --success: #0f766e;
+    --border: #deddd6;
+    --border-focus: #3366f0;
+    --input: #dfded8;
+    --ring: #3366f0;
+    --success: #238465;
     --success-foreground: #ffffff;
-    --warning: #b45309;
+    --warning: #a85a00;
     --warning-foreground: #ffffff;
-    --info: #2563eb;
-    --radius-sm: 0.25rem;
-    --radius-md: 0.375rem;
-    --radius-lg: 0.5rem;
-    --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
-    --font-mono: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+    --info: #3366f0;
+    --radius-sm: 0.5rem;
+    --radius-md: 0.625rem;
+    --radius-lg: 0.875rem;
+    --font-sans: "Noto Sans SC", "PingFang SC", system-ui, sans-serif;
+    --font-display: "Noto Sans SC", "Plus Jakarta Sans", "PingFang SC", sans-serif;
+    --font-mono: "DM Mono", ui-monospace, Menlo, Consolas, monospace;
     color-scheme: light;
   }
   html.dark {
-    --background: #000000;
-    --foreground: #ffffff;
-    --card: #090909;
+    --background: #11110f;
+    --foreground: #f7f6f1;
+    --card: #1a1a18;
     --card-foreground: #ffffff;
-    --popover: #121212;
-    --primary: #ffffff;
-    --primary-foreground: #000000;
-    --secondary: #222222;
-    --secondary-foreground: #ffffff;
-    --muted: #1d1d1d;
-    --muted-foreground: #a4a4a4;
-    --accent: #333333;
-    --accent-foreground: #ffffff;
-    --destructive: #ff5b5b;
+    --popover: #20201e;
+    --primary: #84a2ff;
+    --primary-foreground: #101010;
+    --secondary: #292927;
+    --secondary-foreground: #f7f6f1;
+    --muted: #242422;
+    --muted-foreground: #aaa8a0;
+    --accent: #25355f;
+    --accent-foreground: #dce4ff;
+    --destructive: #ff7770;
     --destructive-foreground: #ffffff;
-    --border: #242424;
-    --border-focus: #525252;
-    --input: #333333;
-    --ring: #525252;
-    --success: #2dd4bf;
+    --border: #3b3a37;
+    --border-focus: #84a2ff;
+    --input: #42413d;
+    --ring: #84a2ff;
+    --success: #79d9b5;
     --success-foreground: #001f1d;
     --warning: #ffae04;
     --warning-foreground: #000000;
@@ -178,6 +178,170 @@
 
   #mainPage { flex: 1 0 auto; display: flex; flex-direction: column; }
   .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; width: 100%; flex: 1 0 auto; }
+
+  /* ── Product-console refinement ── */
+  .app-header { border-bottom: 1px solid var(--border); }
+  .app-header-inner { max-width: 1240px; height: 5.375rem; padding: 0 1.75rem; }
+  .brand { gap: .625rem; font-family: var(--font-display); font-size: 1.125rem; font-weight: 800; letter-spacing: -.04em; }
+  .brand .brand-icon { width: 1.9rem; height: 1.9rem; padding: .32rem; border-radius: .5rem; background: var(--foreground); color: #c6f25c; }
+  .brand-text b { color: var(--primary); }
+  .tabs { gap: .3rem; padding: .25rem; border: 1px solid var(--border); border-radius: .75rem; background: var(--card); }
+  .tab { height: 2.5rem; padding: 0 1rem; border-radius: .5rem; font-weight: 700; color: var(--muted-foreground); }
+  .tab:hover { color: var(--foreground); background: var(--muted); }
+  .tab.active { color: var(--accent-foreground); background: var(--accent); }
+  .topbar-actions { gap: .625rem; }
+  .conn { height: 2.5rem; padding: 0 .875rem; border-radius: .7rem; background: var(--card); color: var(--muted-foreground); }
+  .conn b { color: var(--foreground); }
+  .icon-btn { width: 2.5rem; height: 2.5rem; border-radius: .7rem; background: var(--card); }
+  .container { max-width: 1240px; padding: 2.25rem 1.75rem 4.5rem; }
+  .workspace-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 1.5rem; margin: 0 0 1.75rem; }
+  .workspace-eyebrow { margin: 0 0 .5rem; color: var(--primary); font: 500 .7rem/1 var(--font-mono); letter-spacing: .09em; text-transform: uppercase; }
+  .workspace-title { margin: 0; color: var(--foreground); font: 800 clamp(1.75rem, 3vw, 2.5rem)/1 var(--font-display); letter-spacing: -.055em; }
+  .workspace-subtitle { max-width: 28rem; margin: 0; color: var(--muted-foreground); font-size: .94rem; line-height: 1.55; }
+  .stats-grid { gap: .875rem; margin-bottom: 1.5rem; }
+  .stat-card { min-height: 8.25rem; padding: 1.125rem 1.25rem; border-radius: var(--radius-lg); box-shadow: 0 10px 22px rgba(36, 35, 29, .045) !important; }
+  .stat-card-title { font: 500 .72rem/1.2 var(--font-mono); letter-spacing: .055em; text-transform: uppercase; }
+  .stat-value { font-family: var(--font-display); font-size: 1.9rem; letter-spacing: -.05em; }
+  .stat-value.mono { font-family: var(--font-mono); font-size: 1.55rem; letter-spacing: -.04em; }
+  .stat-icon { color: var(--primary); opacity: .75; }
+  .tab-content { gap: 1.25rem; }
+  .card, .table-wrap { border-radius: .9rem; box-shadow: 0 12px 26px rgba(36, 35, 29, .045) !important; }
+  .card { padding: 1.5rem; }
+  .card-header { padding-bottom: 1.125rem; margin-bottom: 1.125rem; }
+  .card-title { font: 700 1.05rem/1 var(--font-display); letter-spacing: -.025em; }
+  .hint { max-width: 51rem; font-size: .875rem; line-height: 1.65; }
+  .hint kbd { padding: 3px 6px; border-radius: .35rem; }
+  .field { gap: .5rem; }
+  .field > .lbl { color: var(--foreground); font: 700 .78rem/1 var(--font-sans); }
+  input, textarea { min-height: 2.75rem; border-radius: .625rem; background: var(--background); padding: .65rem .8rem; transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
+  textarea { min-height: 6.5rem; }
+  input:focus, textarea:focus { border-color: var(--primary); background: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent) !important; }
+  .grid.mapping { gap: .75rem; grid-template-columns: 1.2fr .82fr 26px 1.4fr .82fr auto; }
+  .grid.mapping .arrow { padding-bottom: 13px; color: var(--primary); font-size: 1.1rem; opacity: 1; }
+  .btn { height: 2.75rem; border-radius: .625rem; font-weight: 700; transition: transform .18s ease, background .18s ease, border-color .18s ease; }
+  .btn:hover { transform: translateY(-1px); }
+  .btn-primary { background: var(--primary); border-color: var(--primary); }
+  .btn-primary:hover { background: color-mix(in srgb, var(--primary) 88%, #000); }
+  .btn-outline { background: var(--card); }
+  .btn-sm { height: 2.5rem; }
+  .cred-status { padding: 1rem; border-radius: .75rem; background: var(--muted); }
+  .badge { padding: .25rem .55rem; border-radius: .45rem; }
+  .table-wrap { overflow-x: auto; }
+  thead th { padding: .9rem 1.1rem; background: var(--muted); }
+  tbody td { padding: 1rem 1.1rem; }
+  tbody tr:hover td { background: color-mix(in srgb, var(--accent) 40%, var(--card)); }
+  .empty { padding: 4.25rem 1.25rem; }
+  .app-footer { border-top: 1px solid var(--border); }
+  .app-footer-inner { max-width: 1240px; padding: 1.75rem; }
+  .footer-icon { width: 2.75rem; height: 2.75rem; }
+  .footer-title { font-family: var(--font-display); font-weight: 800; }
+  .footer-meta { margin-top: 1rem; }
+  @media (max-width: 720px) {
+    .app-header-inner { padding: 1rem; }
+    .brand .brand-icon { width: 1.75rem; height: 1.75rem; }
+    .tabs { border-radius: .75rem; }
+    .tab { min-height: 2.6rem; border-radius: .5rem; }
+    .container { padding: 1.5rem 1rem 3rem; }
+    .workspace-head { align-items: flex-start; flex-direction: column; gap: .75rem; margin-bottom: 1.25rem; }
+    .workspace-subtitle { font-size: .875rem; }
+    .stats-grid { gap: .625rem; }
+    .stat-card { min-height: 7.3rem; padding: 1rem; }
+    .stat-card:first-child .stat-value { gap: .3rem; font-size: 1.35rem; white-space: nowrap; }
+    .stat-card:first-child .stat-icon { display: none; }
+    .stat-card:first-child .path-chip { height: 1.4rem; padding: 0 .4rem; font-size: .62rem; }
+    .card { padding: 1.1rem; }
+    .card-header { align-items: flex-start; flex-direction: column; }
+    .grid.mapping { grid-template-columns: 1fr 1fr; }
+    .grid.mapping .arrow { display: none; }
+    .grid.mapping .btn { grid-column: 1 / -1; }
+    .card-actions { width: 100%; }
+    .card-actions .btn { flex: 1 1 0; padding: 0 .65rem; }
+  }
+
+  /* ── PowerMap console shell ── */
+  body { min-width: 320px; background: var(--background); padding: 0; }
+  #mainPage { min-height: 100vh; overflow: hidden; background: var(--card); }
+  .app-header { height: 4.75rem; border-bottom: 1px solid var(--border); background: var(--card); }
+  .app-header-inner { display: flex; align-items: center; justify-content: space-between; max-width: none; height: 100%; padding: 0 2rem; }
+  .console-brand { display: inline-flex; align-items: center; gap: .7rem; color: var(--foreground); text-decoration: none; font: 800 1.08rem/1 var(--font-display); letter-spacing: -.04em; }
+  .console-mark { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: .55rem; background: var(--foreground); color: #c6f25c; font: 500 .78rem/1 var(--font-mono); }
+  .console-brand small { padding-left: .7rem; border-left: 1px solid var(--border); color: var(--muted-foreground); font: 500 .72rem/1 var(--font-mono); letter-spacing: .04em; }
+  .console-meta { color: var(--muted-foreground); font: 500 .75rem/1 var(--font-mono); }
+  .app-shell { display: grid; grid-template-columns: 22rem minmax(0, 1fr); min-height: calc(100vh - 4.75rem); }
+  .app-sidebar { display: flex; flex-direction: column; padding: 2.35rem 1.5rem; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--card) 92%, var(--background)); }
+  .sidebar-brand { padding: 0 .75rem 1.25rem; color: var(--muted-foreground); font: 500 .82rem/1 var(--font-mono); letter-spacing: .08em; }
+  .header-nav { display: block; justify-self: auto; }
+  .tabs { display: grid; gap: .45rem; padding: 0; border: 0; border-radius: 0; background: transparent; }
+  .tab { justify-content: flex-start; width: 100%; height: 4.55rem; padding: 0 1.15rem; border-radius: .85rem; font: 700 1.25rem/1 var(--font-display); letter-spacing: -.03em; color: var(--muted-foreground); }
+  .tab.active { color: #2451bd; background: #dce4ff; }
+  .tab:hover { color: var(--foreground); background: var(--muted); }
+  .tab-icon { width: 1.35rem; height: 1.35rem; opacity: 1; }
+  .sidebar-static { display: flex; align-items: center; gap: .75rem; height: 4.55rem; padding: 0 1.15rem; color: var(--muted-foreground); font: 700 1.25rem/1 var(--font-display); letter-spacing: -.03em; }
+  .sidebar-static svg { width: 1.35rem; height: 1.35rem; }
+  .sidebar-bottom { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: auto; padding: 1.25rem .75rem 0; border-top: 1px solid var(--border); }
+  .sidebar-bottom .conn { height: 2.25rem; padding: 0; border: 0; background: transparent; }
+  .sidebar-bottom .path-chip { display: none !important; }
+  .workarea { min-width: 0; padding: clamp(2rem, 4vw, 4.4rem); background: var(--card); }
+  .container { max-width: 100%; padding: 0; }
+  .workspace-head { align-items: flex-start; margin: 0 0 3rem; }
+  .workspace-eyebrow { display: none; }
+  .workspace-title { font-size: clamp(2.5rem, 4vw, 4rem); }
+  .workspace-subtitle { margin-top: .9rem; max-width: 42rem; font-size: 1.18rem; }
+  .workspace-head .btn { margin-top: .15rem; }
+  .stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.1rem; margin-bottom: 2.75rem; }
+  .stat-card { min-height: 10rem; padding: 1.6rem; border: 1px solid var(--border); border-radius: 1.05rem; box-shadow: none !important; }
+  .stat-card:nth-child(4) { display: none; }
+  .stat-card-title { font-size: .9rem; letter-spacing: 0; text-transform: none; }
+  .stat-value { margin-top: .95rem; font-size: 2.6rem; }
+  .stat-value.mono { font-family: var(--font-display); font-size: 2.6rem; }
+  .stat-icon { display: none; }
+  .stat-card:first-child .stat-value { color: var(--success); }
+  .tab-content { gap: 1.25rem; }
+  .mapping-editor { display: none; }
+  .mapping-editor.open { display: block; }
+  .card { padding: 1.5rem; border-radius: 1rem; box-shadow: none !important; }
+  .card-title { font-size: 1.25rem; }
+  .table-wrap { border-radius: 1rem; box-shadow: none !important; }
+  thead th { padding: 1.25rem 1.55rem; font-family: var(--font-sans); font-size: .93rem; letter-spacing: 0; text-transform: none; }
+  tbody td { padding: 1.45rem 1.55rem; font-family: var(--font-sans); font-size: 1rem; font-weight: 600; }
+  td.target { color: var(--foreground); }
+  td.target .to { display: none; }
+  td.num { color: var(--foreground); }
+  td.status { color: var(--success); font-size: .9rem; }
+  td.status::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .55rem; border-radius: 50%; background: currentColor; }
+  .btn-del { height: 2rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: .5rem; background: var(--card); }
+  .btn-del:hover { color: var(--destructive-foreground); }
+  .app-footer { display: none; }
+  @media (max-width: 900px) {
+    .app-header { height: 4rem; }
+    .app-header-inner { padding: 0 1rem; }
+    .console-brand small, .console-meta { display: none; }
+    .app-shell { grid-template-columns: 1fr; min-height: calc(100vh - 4rem); }
+    .app-sidebar { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: 1fr auto; padding: .75rem 1rem; border-right: 0; border-bottom: 1px solid var(--border); }
+    .sidebar-brand { display: none; }
+    .header-nav { grid-column: 1; min-width: 0; }
+    .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; }
+    .tab { justify-content: center; height: 2.75rem; padding: 0 .5rem; font-family: var(--font-sans); font-size: .82rem; }
+    .tab-icon { width: 1rem; height: 1rem; }
+    .sidebar-static { display: none; }
+    .sidebar-bottom { grid-column: 2; grid-row: 1; margin: 0; padding: 0; border: 0; }
+    .sidebar-bottom .conn { display: none; }
+    .workarea { padding: 1.75rem 1rem 3rem; }
+    .workspace-head { display: block; margin-bottom: 1.6rem; }
+    .workspace-title { font-size: 2.25rem; }
+    .workspace-subtitle { margin-top: .6rem; font-size: .94rem; }
+    .workspace-head .btn { width: 100%; margin-top: 1.1rem; }
+    .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1.5rem; }
+    .stat-card { min-height: 7.85rem; padding: 1.05rem; }
+    .stat-card:nth-child(3) { display: flex; }
+    .stat-card-title { font-size: .75rem; }
+    .stat-value, .stat-value.mono { margin-top: .55rem; font-size: 1.7rem; }
+    .stat-card:first-child .stat-value { font-size: 1.45rem; white-space: nowrap; }
+    .stat-card:first-child .path-chip { font-size: .58rem; }
+    .table-wrap { border-radius: .8rem; }
+    table { min-width: 40rem; }
+    thead th, tbody td { padding: 1rem; font-size: .82rem; }
+  }
 
   /* ── 指标卡（照抄 kiro-go .stat-card）── */
   .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0.625rem; margin-bottom: 1.125rem; }
@@ -348,47 +512,51 @@
     .footer-panel { flex-direction: column; gap: 1rem; }
     .container { padding-left: 1rem; padding-right: 1rem; }
   }
+  /* ── Final console density and typography ── */
+  .console-mark, .console-meta, .tab-icon { display: none !important; }
+  .console-actions { display: flex; align-items: center; gap: 1.4rem; color: var(--muted-foreground); font: 500 .75rem/1 var(--font-mono); }
+  .console-actions a { color: var(--foreground); text-decoration: none; }
+  .console-actions a:hover { color: var(--primary); }
+  .header-version { display: inline-flex; gap: .4rem; }
+  .header-version strong { color: var(--foreground); font-weight: 500; }
+  .sidebar-static { gap: 0; }
+  .theme-toggle { min-height: 2.25rem; padding: 0 .7rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--foreground); font: 700 .72rem/1 var(--font-sans); cursor: pointer; }
+  .theme-toggle:hover { background: var(--muted); }
+  .mapping-list-head { display: flex; align-items: center; justify-content: space-between; margin: .25rem 0 .85rem; }
+  .mapping-list-head h2 { margin: 0; color: var(--foreground); font: 700 1.05rem/1 var(--font-display); letter-spacing: -.025em; }
+  .mapping-list-head span { color: var(--muted-foreground); font: .72rem/1 var(--font-mono); }
+  .empty { padding: 3.25rem 1.25rem; }
+  .empty-title { color: var(--foreground); font: 700 1.15rem/1.2 var(--font-display); }
+  .empty p { max-width: 25rem; margin: .6rem auto 1.2rem; color: var(--muted-foreground); font: .88rem/1.6 var(--font-sans); }
+  .empty .btn { height: 2.5rem; }
+  @media (max-width: 900px) {
+    .console-brand small, .header-version { display: none; }
+    .console-actions { gap: .75rem; }
+    .sidebar-bottom { display: none; }
+    .mapping-list-head { margin-top: 1rem; }
+    .empty { padding: 2.5rem 1rem; }
+  }
 </style>
 </head>
 <body>
 
 <div id="mainPage">
-  <header class="app-header">
-    <div class="app-header-inner">
-      <div class="brand-wrap">
-        <a class="brand" href="#">
-          <svg class="brand-icon" viewBox="0 0 140 140" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M36 108V34h39c25 0 40 14 40 35s-15 35-40 35H58" stroke-width="18"/><path d="M58 69h43" stroke-width="7" opacity="0.5"/><circle cx="36" cy="108" r="10" fill="currentColor" stroke="none"/><circle cx="115" cy="69" r="10" fill="currentColor" stroke="none"/></svg>
-          <span class="brand-text">Power<b>Map</b></span>
-        </a>
-      </div>
-      <nav class="header-nav" aria-label="页面">
-        <div class="tabs" id="tabBar">
-          <button type="button" class="tab active" data-tab="mappings">
-            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
-            <span>端口映射</span>
-          </button>
-          <button type="button" class="tab" data-tab="connection">
-            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-            <span>连接</span>
-          </button>
-        </div>
-      </nav>
-      <div class="topbar-actions">
-        <span class="conn">
-          <span id="statusDot" class="status-dot"></span>
-          <span id="statusText">查询中</span>
-          <span id="pathChip" class="path-chip" style="display:none"></span>
-        </span>
-        <button id="themeToggle" class="icon-btn theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">
-          <svg class="ico-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>
-          <svg class="ico-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
-          <svg class="ico-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-        </button>
-      </div>
+  <header class="app-header"><div class="app-header-inner"><a class="console-brand" href="#mappings">PowerMap <small>内网穿透控制台</small></a><div class="console-actions"><a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">官网</a><span class="header-version">当前版本 <strong id="headerVer">加载中</strong></span><button id="themeToggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">外观</button></div></div></header>
+  <div class="app-shell">
+    <aside class="app-sidebar">
+      <div class="sidebar-brand">PowerMap</div>
+      <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar">
+        <button type="button" class="tab active" data-tab="mappings"><span>端口映射</span></button>
+        <button type="button" class="tab" data-tab="connection"><span>连接</span></button>
+      </div></nav>
+      <div class="sidebar-static">实时指标</div>
+      <div class="sidebar-bottom"><span class="conn"><span id="statusDot" class="status-dot"></span><span id="statusText">查询中</span><span id="pathChip" class="path-chip" style="display:none"></span></span></div>
+    </aside>
+    <main class="workarea"><div class="container">
+    <div class="workspace-head">
+      <div><p class="workspace-eyebrow">PowerMap / local control</p><h1 class="workspace-title" id="workspaceTitle">端口映射</h1><p class="workspace-subtitle" id="workspaceSubtitle">将本地端口安全地映射至内网服务。</p></div>
+      <button id="newMappingBtn" class="btn btn-primary" type="button">+ 新建映射</button>
     </div>
-  </header>
-
-  <div class="container">
     <!-- 指标卡 -->
     <div class="stats-grid">
       <div class="stat-card">
@@ -406,7 +574,7 @@
         </div>
       </div>
       <div class="stat-card">
-        <div class="stat-card-title">总上行</div>
+          <div class="stat-card-title">传输流量</div>
         <div class="stat-body">
           <div class="stat-main"><div class="stat-value mono" id="mTx">0</div></div>
           <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></span>
@@ -423,7 +591,7 @@
 
     <!-- Tab: 端口映射 -->
     <div id="tabMappings" class="tab-content">
-      <div class="card">
+      <div class="card mapping-editor" id="mappingEditor">
         <div class="card-header"><span class="card-title">添加映射</span></div>
         <p class="hint">
           本地地址默认 <kbd>127.0.0.1</kbd>，也可填 <kbd>127.0.0.2</kbd> 这类 127/8 虚拟 IP。
@@ -444,14 +612,15 @@
         </form>
       </div>
 
+      <div class="mapping-list-head"><h2>映射列表</h2><span id="mappingCount">0 条映射</span></div>
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>本地监听</th><th>目标</th><th class="r">↑ 上行</th><th class="r">↓ 下行</th><th></th>
+            <th>本地地址</th><th>目标服务</th><th>状态</th><th class="r">流量</th><th></th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
-        <div id="empty" class="empty">暂无映射 · 在上方添加一条</div>
+        <div id="empty" class="empty"><div class="empty-title">尚未创建端口映射</div><p>建立一条映射后，即可从本地地址安全访问内网服务。</p><button id="emptyNewMappingBtn" class="btn btn-primary" type="button">创建第一条映射</button></div>
       </div>
     </div>
 
@@ -495,8 +664,7 @@
         <hr class="divider-h" />
         <span id="ioMsg"></span>
       </div>
-    </div>
-  </div>
+    </div></main></div>
 
   <footer class="app-footer">
     <div class="app-footer-inner">
@@ -557,6 +725,13 @@ function selectTab(name) {
   document.querySelectorAll('#tabBar .tab').forEach(b => {
     b.classList.toggle('active', b.dataset.tab === name);
   });
+  const mapping = name === 'mappings';
+  document.getElementById('workspaceTitle').textContent = mapping ? '端口映射' : '连接设置';
+  document.getElementById('workspaceSubtitle').textContent = mapping
+    ? '将本地端口安全地映射至内网服务。'
+    : '管理穿透端凭证与连接状态。';
+  const newMapping = document.getElementById('newMappingBtn');
+  newMapping.style.display = mapping ? '' : 'none';
   localStorage.setItem(TAB_KEY, name);
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
 }
@@ -566,6 +741,17 @@ document.getElementById('tabBar').addEventListener('click', (e) => {
 });
 window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
 selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'mappings');
+
+document.getElementById('newMappingBtn').addEventListener('click', () => {
+  const editor = document.getElementById('mappingEditor');
+  editor.classList.toggle('open');
+  if (editor.classList.contains('open')) editor.querySelector('[name=localPort]').focus();
+});
+document.getElementById('emptyNewMappingBtn').addEventListener('click', () => {
+  const editor = document.getElementById('mappingEditor');
+  editor.classList.add('open');
+  editor.querySelector('[name=localPort]').focus();
+});
 
 document.getElementById('footerYear').textContent = new Date().getFullYear();
 
@@ -702,6 +888,7 @@ async function refresh() {
   const statMap = Object.fromEntries((st||[]).map(s => [s.local, s]));
   $rows.innerHTML = '';
   $empty.style.display = list.length ? 'none' : 'block';
+  document.getElementById('mappingCount').textContent = `${list.length} 条映射`;
   let totalTx = 0, totalRx = 0;
   for (const m of list) {
     const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
@@ -709,12 +896,12 @@ async function refresh() {
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${esc(m.local)}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
-                   `<td class="num r">${fmtBytes(s.tx_bytes)}</td>` +
-                   `<td class="num r">${fmtBytes(s.rx_bytes)}</td>` +
+                   `<td class="status">已启用</td>` +
+                   `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}</td>` +
                    `<td class="act"><button class="btn-del" data-id="${esc(m.local)}">断开</button></td>`;
     $rows.appendChild(tr);
   }
-  document.getElementById('mTx').textContent = fmtBytes(totalTx);
+  document.getElementById('mTx').textContent = fmtBytes(totalTx + totalRx);
   document.getElementById('mRx').textContent = fmtBytes(totalRx);
 }
 $rows.addEventListener('click', async (e) => {
@@ -735,20 +922,18 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   if (!r.ok) { alert((await r.text()) || '添加失败'); return; }
   e.target.reset();
   e.target.querySelector('[name=localAddr]').value = '127.0.0.1';
+  document.getElementById('mappingEditor').classList.remove('open');
   refresh();
 });
 
 // ── 穿透路径徽章：direct = P2P 直连，relay = 经中继，unknown = 探测中 ──
-const PATH_ICONS =
-  '<svg class="ico-direct" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>' +
-  '<svg class="ico-relay" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2"/><path d="M4.93 19.07a10 10 0 0 1 0-14.14"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M7.76 16.24a6 6 0 0 1 0-8.49"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49"/></svg>';
 const PATH_LABEL = { direct: 'P2P 直连', relay: '经中继', unknown: '探测中' };
 function renderPathChip(el, path, connected) {
   if (!el) return;
   if (!connected || !path) { el.className = 'path-chip'; el.style.display = 'none'; el.innerHTML = ''; return; }
   el.className = 'path-chip show ' + path;
   el.style.display = '';
-  el.innerHTML = PATH_ICONS + '<span>' + (PATH_LABEL[path] || path) + '</span>';
+  el.innerHTML = '<span>' + (PATH_LABEL[path] || path) + '</span>';
 }
 
 // ── 状态：顶栏 + 指标卡 + 页脚 ──
@@ -763,9 +948,11 @@ async function refreshStatus() {
   const pathChip = document.getElementById('pathChip');
   const mPathChip = document.getElementById('mPathChip');
   const fVer = document.getElementById('footerVer');
+  const hVer = document.getElementById('headerVer');
   try {
     const s = await (await fetch('/api/status', { headers: authHeaders() })).json();
     if (fVer && s.version) { fVer.textContent = 'v' + s.version; fVer.style.display = ''; }
+    if (hVer && s.version) hVer.textContent = 'v' + s.version;
     let cls, label;
     if (!s.configured) { cls = ''; label = '未配置'; }
     else if (s.connected) { cls = 'ok'; label = '已连接'; }
