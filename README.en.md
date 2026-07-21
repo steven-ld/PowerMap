@@ -20,23 +20,23 @@ A NAT-traversal tunnel built on [iroh](https://iroh.computer) (P2P / QUIC). Two 
 
 ## 💡 Design Philosophy
 
-PowerMap solves one concrete pain point: **you're at home, the service is on an intranet**. You don't want to buy a public IP, set up a VPN, or open router ports for that. Hence these principles:
+Remote access to an intranet service typically requires a public IP, a VPN, or router port forwarding — each carrying cost, exposure, or changes to network infrastructure. PowerMap establishes an end-to-end encrypted tunnel between the two sides via iroh's P2P hole punching, requiring none of them. The design follows four principles.
 
 ### 1. Zero Inbound Exposure
 
-The intranet side (the tunnel server) **listens on no inbound port** — it only dials out to the iroh relay network. No scannable attack surface. Works behind firewalls, behind NAT, on dorm networks.
+The tunnel server listens on no inbound port; it only dials out to the iroh relay network, leaving no scannable attack surface. It operates correctly behind firewalls, NAT, and even carrier-grade NAT.
 
 ### 2. End-to-End Encryption
 
-Everything is QUIC + rustls encrypted. The credential is the only way in. Relays forward ciphertext and never see your data.
+The entire link is encrypted with QUIC + rustls, and the access credential is the only entry point. Relay nodes forward ciphertext alone and cannot inspect tunnel contents.
 
 ### 3. Out of the Box
 
-Download binaries, run once on the intranet side to generate a credential, paste it on the home side, click a few buttons in the web UI. No database, no central server, no account signup.
+No database, no central server, no account system. The tunnel server generates a credential on first run; the client pastes it and establishes mappings through the web admin UI.
 
 ### 4. Production-Grade Control
 
-Target allowlists (CIDR + port), per-tenant tokens, audit logging, resource caps, graceful shutdown — not a toy, but something you can keep running long-term.
+Target allowlists (CIDR + port), per-tenant tokens, audit logging, resource caps, and graceful shutdown — built for sustained operation rather than a one-off demo.
 
 ---
 
@@ -61,17 +61,28 @@ Target allowlists (CIDR + port), per-tenant tokens, audit logging, resource caps
 
 ## 🏗️ Architecture
 
-```
-     Intranet side (office / dorm / on-site)          Home side
- ┌──────────────────────────────┐            ┌──────────────────────────────┐
- │  powermap-server (server B)   │            │  powermap-client (client A)   │
- │                              │    iroh    │                              │
- │   ALPN service (relay) ◀─────┼── P2P ─────┼──▶ Web admin UI :8088         │
- │        │                     │  punch/relay│                              │
- │        │ intranet dial       │            │   local 127.0.0.1:6379        │
- │        ▼                     │            │   access it = access intranet │
- │  192.168.1.101:6379 etc.      │            │                              │
- └──────────────────────────────┘            └──────────────────────────────┘
+```mermaid
+flowchart LR
+    subgraph intranet["Intranet side (office / dorm / on-site)"]
+        B["powermap-server (server B)<br/>exposes ALPN service · no inbound port"]
+        SVC["intranet service<br/>192.168.1.101:6379 etc."]
+        B -->|intranet dial| SVC
+    end
+
+    subgraph home["Home side"]
+        A["powermap-client (client A)<br/>Web admin UI :8088"]
+        LOCAL["local port<br/>127.0.0.1:6379"]
+        A -->|listen| LOCAL
+    end
+
+    USER(["you / redis-cli etc."]) -->|connect local port| LOCAL
+    A <-->|"iroh P2P punch / relay<br/>QUIC + rustls end-to-end encryption"| B
+
+    style B fill:#3370ff,stroke:#2451b8,color:#fff
+    style A fill:#3370ff,stroke:#2451b8,color:#fff
+    style SVC fill:#e8f0ff,stroke:#3370ff,color:#1a1a1a
+    style LOCAL fill:#e8f0ff,stroke:#3370ff,color:#1a1a1a
+    style USER fill:#f0f0f0,stroke:#999,color:#1a1a1a
 ```
 
 | Side | Runs on | Role |
@@ -315,6 +326,31 @@ Exposes tunnel counts (opened / active / failed), handshake and target-rejection
 ---
 
 ## 🔬 How It Works
+
+```mermaid
+sequenceDiagram
+    participant App as Local client<br/>(redis-cli etc.)
+    participant A as powermap-client (A)
+    participant Relay as iroh relay / DNS
+    participant B as powermap-server (B)
+    participant Target as Intranet target<br/>(192.168.1.101:6379)
+
+    Note over B,Relay: Startup: bind node identity, register relay, expose ALPN /powermap/tcp/0
+    A->>Relay: Discover B by node_id
+    Relay-->>A: Locate via relay + DNS
+    A->>B: Hole-punch a QUIC connection (mostly direct, relay on fallback)
+    Note over A,B: Connection kept and reused long-term
+
+    App->>A: TCP connect to the mapped local port
+    A->>B: Open a QUIC bidi stream on the reused connection<br/>handshake header {token, host, port}
+    B->>B: Validate token + allowlist (CIDR / port)
+    B->>Target: Dial host:port on the intranet
+    Target-->>B: Connection ready
+    B-->>A: Status 0 (success)
+    App->>Target: Bidirectional TCP relay (half-close supported)
+
+    Note over A,B: Watchdog keeps the hot connection; reconnects with exponential backoff (1→30s + jitter)
+```
 
 1. B binds a node identity via iroh, registers with the N0 relay network, and exposes ALPN `/powermap/tcp/0`.
 2. With just B's `node_id`, A discovers B via relay + DNS and hole-punches (direct in most cases, relay when it can't).
