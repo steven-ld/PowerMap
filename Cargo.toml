@@ -35,3 +35,6 @@ path = "src/bin/client.rs"
 [profile.release]
 lto = true
 codegen-units = 1
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }

@@ -331,6 +331,106 @@ async fn health() -> impl IntoResponse {
     StatusCode::OK
 }
 
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use axum::body::{Body, to_bytes};
+    use axum::http::{Request, header};
+    use serde_json::Value;
+    use tower::ServiceExt;
+
+    async fn test_state(web_token: &str) -> AppState {
+        let endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        AppState {
+            link: Link {
+                endpoint,
+                creds: Arc::new(RwLock::new(Creds::default())),
+                conn: Arc::new(Mutex::new(None)),
+            },
+            web_bind: "127.0.0.1:0".into(),
+            web_token: web_token.into(),
+            web_tls_cert: String::new(),
+            web_tls_key: String::new(),
+            max_mappings: 8,
+            max_conns_per_mapping: 8,
+            config_path: std::env::temp_dir().join(format!("powermap-client-test-{suffix}.toml")),
+            metrics: Metrics::new(),
+            inner: Arc::new(Mutex::new(Inner {
+                mappings: HashMap::new(),
+            })),
+        }
+    }
+
+    async fn response_json(response: Response) -> Value {
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    #[tokio::test]
+    async fn mappings_api_creates_lists_and_removes_a_real_listener() {
+        let state = test_state("").await;
+        let app = app(state);
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+
+        let create = Request::builder()
+            .method("POST")
+            .uri("/api/mappings")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(format!(
+                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+            )))
+            .unwrap();
+        let response = app.clone().oneshot(create).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let listed = app
+            .clone()
+            .oneshot(Request::get("/api/mappings").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let mappings = response_json(listed).await;
+        assert_eq!(mappings.as_array().unwrap().len(), 1);
+        assert_eq!(mappings[0]["local"], local.to_string());
+
+        let delete = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/mappings/{local}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(delete.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn mapping_mutations_require_a_bearer_token_when_configured() {
+        let app = app(test_state("admin-secret").await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:18080","host":"127.0.0.1","port":80}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+}
+
 async fn list(State(st): State<AppState>) -> Json<Vec<config::Mapping>> {
     Json(
         st.inner
@@ -552,6 +652,22 @@ async fn require_auth(State(st): State<AppState>, req: Request, next: Next) -> R
         Some(t) if powermap::tunnel::token_ok(&st.web_token, &t) => next.run(req).await,
         _ => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
     }
+}
+
+fn app(state: AppState) -> Router {
+    Router::new()
+        .route("/", get(index))
+        .route("/metrics", get(metrics_handler))
+        .route("/api/health", get(health))
+        .route("/api/status", get(status))
+        .route("/api/stats", get(stats))
+        .route("/api/mappings", get(list).post(create))
+        .route("/api/mappings/{id}", delete(remove))
+        .route("/api/credential", get(get_credential).post(set_credential))
+        .route("/api/export", get(export_config))
+        .route("/api/import", post(import_config))
+        .with_state(state.clone())
+        .layer(from_fn_with_state(state, require_auth))
 }
 
 /// 从当前运行期状态构建一份完整配置（凭证 + 设置 + 映射）。save_config 与导出接口共用。
@@ -942,19 +1058,7 @@ async fn main() -> Result<()> {
         }
     });
 
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/metrics", get(metrics_handler))
-        .route("/api/health", get(health))
-        .route("/api/status", get(status))
-        .route("/api/stats", get(stats))
-        .route("/api/mappings", get(list).post(create))
-        .route("/api/mappings/{id}", delete(remove))
-        .route("/api/credential", get(get_credential).post(set_credential))
-        .route("/api/export", get(export_config))
-        .route("/api/import", post(import_config))
-        .with_state(state.clone())
-        .layer(from_fn_with_state(state.clone(), require_auth));
+    let app = app(state.clone());
 
     let bind_addr: SocketAddr = cfg
         .web_bind
