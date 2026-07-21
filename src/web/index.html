@@ -290,12 +290,13 @@
   .workspace-head .btn { margin-top: .15rem; }
   .stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1.1rem; margin-bottom: 2.75rem; }
   .stat-card { min-height: 10rem; padding: 1.6rem; border: 1px solid var(--border); border-radius: 1.05rem; box-shadow: none !important; }
-  .stat-card:nth-child(4) { display: none; }
   .stat-card-title { font-size: .9rem; letter-spacing: 0; text-transform: none; }
   .stat-value { margin-top: .95rem; font-size: 2.6rem; }
   .stat-value.mono { font-family: var(--font-display); font-size: 2.6rem; }
   .stat-icon { display: none; }
   .stat-card:first-child .stat-value { color: var(--success); }
+  .stat-traffic { display: flex; gap: 1.1rem; margin-top: .7rem; color: var(--muted-foreground); font: 500 .95rem/1 var(--font-mono); }
+  .stat-traffic span { display: inline-flex; align-items: baseline; gap: .3rem; }
   .tab-content { gap: 1.25rem; }
   .mapping-editor { display: none; }
   .mapping-editor.open { display: block; }
@@ -308,7 +309,10 @@
   td.target .to { display: none; }
   td.num { color: var(--foreground); }
   td.status { color: var(--success); font-size: .9rem; }
+  td.status.listening { color: var(--muted-foreground); }
+  td.status.degraded, td.status.stopped { color: var(--destructive); }
   td.status::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .55rem; border-radius: 50%; background: currentColor; }
+  td.status .status-detail { display: block; max-width: 18rem; margin: .35rem 0 0 1.2rem; overflow: hidden; color: var(--muted-foreground); font: 500 .72rem/1.35 var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
   .btn-del { height: 2rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: .5rem; background: var(--card); }
   .btn-del:hover { color: var(--destructive-foreground); }
   .app-footer { display: none; }
@@ -333,7 +337,6 @@
     .workspace-head .btn { width: 100%; margin-top: 1.1rem; }
     .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1.5rem; }
     .stat-card { min-height: 7.85rem; padding: 1.05rem; }
-    .stat-card:nth-child(3) { display: flex; }
     .stat-card-title { font-size: .75rem; }
     .stat-value, .stat-value.mono { margin-top: .55rem; font-size: 1.7rem; }
     .stat-card:first-child .stat-value { font-size: 1.45rem; white-space: nowrap; }
@@ -344,7 +347,7 @@
   }
 
   /* ── 指标卡（照抄 kiro-go .stat-card）── */
-  .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0.625rem; margin-bottom: 1.125rem; }
+  .stats-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 0.625rem; margin-bottom: 1.125rem; }
   @media (max-width: 640px) { .stats-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
   .stat-card {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
@@ -414,6 +417,8 @@
   .btn-secondary:hover { background: var(--accent); color: var(--accent-foreground); }
   .btn-outline { background: var(--background); color: var(--foreground); border-color: var(--border); }
   .btn-outline:hover { background: var(--muted); border-color: color-mix(in oklab, var(--border) 82%, var(--muted-foreground)); }
+  .btn-danger { background: var(--destructive); color: var(--destructive-foreground); border-color: var(--destructive); }
+  .btn-danger:hover { background: color-mix(in oklab, var(--destructive) 88%, #000); }
   .btn-sm { height: 2.25rem; padding: 0 0.875rem; font-size: 0.8125rem; }
   .btn-del {
     height: 1.75rem; padding: 0 0.625rem; font-size: 0.75rem; border-radius: var(--radius-sm);
@@ -536,6 +541,56 @@
     .mapping-list-head { margin-top: 1rem; }
     .empty { padding: 2.5rem 1rem; }
   }
+
+  /* ── Toast ── */
+  .toast-stack {
+    position: fixed; z-index: 60; right: 1.25rem; bottom: 1.25rem;
+    display: flex; flex-direction: column; gap: .625rem;
+    max-width: min(24rem, calc(100vw - 2rem)); pointer-events: none;
+  }
+  .toast {
+    display: flex; align-items: flex-start; gap: .625rem;
+    padding: .75rem .875rem; border-radius: var(--radius-md);
+    border: 1px solid var(--border); background: var(--popover); color: var(--foreground);
+    font: 500 .8125rem/1.45 var(--font-sans); pointer-events: auto;
+    box-shadow: 0 10px 30px rgba(0,0,0,.14) !important;
+    opacity: 0; transform: translateY(.5rem); transition: opacity .18s ease, transform .18s ease;
+  }
+  .toast.in { opacity: 1; transform: translateY(0); }
+  .toast .toast-ico { flex: none; width: 1.05rem; height: 1.05rem; margin-top: .05rem; }
+  .toast.ok .toast-ico { color: var(--success); }
+  .toast.err .toast-ico { color: var(--destructive); }
+  .toast.info .toast-ico { color: var(--info); }
+  .toast .toast-msg { min-width: 0; word-break: break-word; }
+  @media (prefers-reduced-motion: reduce) {
+    .toast { transition: none; opacity: 1; transform: none; }
+  }
+
+  /* ── Modal（内联确认 / 输入）── */
+  .modal-backdrop {
+    position: fixed; inset: 0; z-index: 55; display: none;
+    align-items: center; justify-content: center; padding: 1.25rem;
+    background: color-mix(in srgb, #0a0a0a 46%, transparent);
+    opacity: 0; transition: opacity .16s ease;
+  }
+  .modal-backdrop.open { display: flex; opacity: 1; }
+  .modal {
+    width: min(26rem, 100%); padding: 1.5rem;
+    background: var(--popover); color: var(--foreground);
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    box-shadow: 0 24px 60px rgba(0,0,0,.24) !important;
+    transform: translateY(.5rem) scale(.98); transition: transform .16s ease;
+  }
+  .modal-backdrop.open .modal { transform: none; }
+  .modal-title { margin: 0 0 .5rem; font: 700 1.15rem/1.25 var(--font-display); letter-spacing: -.025em; }
+  .modal-body { margin: 0 0 1.25rem; color: var(--muted-foreground); font-size: .9rem; line-height: 1.6; }
+  .modal-body b { color: var(--foreground); font-weight: 600; }
+  .modal-field { margin: 0 0 1.25rem; }
+  .modal-actions { display: flex; justify-content: flex-end; gap: .625rem; }
+  @media (prefers-reduced-motion: reduce) {
+    .modal-backdrop, .modal { transition: none; }
+    .modal { transform: none; }
+  }
 </style>
 </head>
 <body>
@@ -545,9 +600,9 @@
   <div class="app-shell">
     <aside class="app-sidebar">
       <div class="sidebar-brand">PowerMap</div>
-      <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar">
-        <button type="button" class="tab active" data-tab="mappings"><span>端口映射</span></button>
-        <button type="button" class="tab" data-tab="connection"><span>连接</span></button>
+      <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar" role="tablist" aria-label="页面">
+        <button type="button" class="tab active" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="true" aria-controls="tabMappings"><span>端口映射</span></button>
+        <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>连接</span></button>
       </div></nav>
       <div class="sidebar-static">实时指标</div>
       <div class="sidebar-bottom"><span class="conn"><span id="statusDot" class="status-dot"></span><span id="statusText">查询中</span><span id="pathChip" class="path-chip" style="display:none"></span></span></div>
@@ -562,7 +617,7 @@
       <div class="stat-card">
         <div class="stat-card-title">连接状态</div>
         <div class="stat-body">
-          <div class="stat-main"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div></div>
+          <div class="stat-main" role="status" aria-live="polite"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div></div>
           <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></span>
         </div>
       </div>
@@ -574,23 +629,19 @@
         </div>
       </div>
       <div class="stat-card">
-          <div class="stat-card-title">传输流量</div>
+        <div class="stat-card-title">总流量</div>
         <div class="stat-body">
-          <div class="stat-main"><div class="stat-value mono" id="mTx">0</div></div>
-          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></span>
-        </div>
-      </div>
-      <div class="stat-card">
-        <div class="stat-card-title">总下行</div>
-        <div class="stat-body">
-          <div class="stat-main"><div class="stat-value mono" id="mRx">0</div></div>
-          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg></span>
+          <div class="stat-main">
+            <div class="stat-value mono" id="mTotal">0</div>
+            <div class="stat-traffic"><span title="上行">↑ <span id="mTx" class="mono">0</span></span><span title="下行">↓ <span id="mRx" class="mono">0</span></span></div>
+          </div>
+          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 11 21 7 17 3"/><line x1="21" y1="7" x2="9" y2="7"/><polyline points="7 21 3 17 7 13"/><line x1="15" y1="17" x2="3" y2="17"/></svg></span>
         </div>
       </div>
     </div>
 
     <!-- Tab: 端口映射 -->
-    <div id="tabMappings" class="tab-content">
+    <div id="tabMappings" class="tab-content" role="tabpanel" aria-labelledby="tab-mappings" tabindex="0">
       <div class="card mapping-editor" id="mappingEditor">
         <div class="card-header"><span class="card-title">添加映射</span></div>
         <p class="hint">
@@ -616,7 +667,7 @@
       <div class="table-wrap">
         <table>
           <thead><tr>
-            <th>本地地址</th><th>目标服务</th><th>状态</th><th class="r">流量</th><th></th>
+            <th>本地地址</th><th>目标服务</th><th>运行状态</th><th class="r">流量</th><th></th>
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
@@ -625,7 +676,7 @@
     </div>
 
     <!-- Tab: 连接 -->
-    <div id="tabConnection" class="tab-content hidden">
+    <div id="tabConnection" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-connection" tabindex="0">
       <div class="card">
         <div class="card-header">
           <span class="card-title">连接设置</span>
@@ -693,9 +744,102 @@
   </footer>
 </div>
 
+<div id="toastStack" class="toast-stack" role="region" aria-live="polite" aria-label="通知"></div>
+
+<div id="modalBackdrop" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="modalTitle" aria-describedby="modalBody">
+  <div class="modal">
+    <h2 id="modalTitle" class="modal-title"></h2>
+    <p id="modalBody" class="modal-body"></p>
+    <div id="modalField" class="modal-field" style="display:none">
+      <textarea id="modalInput" class="mono" rows="4"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button id="modalCancel" class="btn btn-outline btn-sm" type="button">取消</button>
+      <button id="modalConfirm" class="btn btn-primary btn-sm" type="button">确定</button>
+    </div>
+  </div>
+</div>
+
 <script>
 const $rows = document.getElementById('rows');
 const $empty = document.getElementById('empty');
+
+// ── Toast：右下角非阻塞提示 ──
+const TOAST_ICON = {
+  ok: '<path d="M20 6 9 17l-5-5"/>',
+  err: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>',
+  info: '<circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/>',
+};
+function toast(msg, kind = 'ok', ttl = 4000) {
+  const stack = document.getElementById('toastStack');
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.setAttribute('role', kind === 'err' ? 'alert' : 'status');
+  el.innerHTML = '<svg class="toast-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+    + (TOAST_ICON[kind] || TOAST_ICON.info) + '</svg><span class="toast-msg"></span>';
+  el.querySelector('.toast-msg').textContent = msg;
+  stack.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('in'));
+  const close = () => {
+    el.classList.remove('in');
+    el.addEventListener('transitionend', () => el.remove(), { once: true });
+    setTimeout(() => el.remove(), 300);
+  };
+  if (ttl > 0) setTimeout(close, ttl);
+  el.addEventListener('click', close);
+  return close;
+}
+
+// ── Modal：确认 / 输入，替代 confirm()/prompt() ──
+const modalEls = {
+  backdrop: document.getElementById('modalBackdrop'),
+  title: document.getElementById('modalTitle'),
+  body: document.getElementById('modalBody'),
+  field: document.getElementById('modalField'),
+  input: document.getElementById('modalInput'),
+  cancel: document.getElementById('modalCancel'),
+  confirm: document.getElementById('modalConfirm'),
+};
+let modalResolve = null;
+let modalLastFocus = null;
+function closeModal(value) {
+  if (!modalResolve) return;
+  const done = modalResolve; modalResolve = null;
+  modalEls.backdrop.classList.remove('open');
+  if (modalLastFocus && modalLastFocus.focus) modalLastFocus.focus();
+  done(value);
+}
+function openModal({ title, body, danger = false, confirmText = '确定', cancelText = '取消', input = false, placeholder = '', value = '' }) {
+  return new Promise(resolve => {
+    modalResolve = resolve;
+    modalLastFocus = document.activeElement;
+    modalEls.title.textContent = title || '';
+    modalEls.body.textContent = body || '';
+    modalEls.body.style.display = body ? '' : 'none';
+    modalEls.confirm.textContent = confirmText;
+    modalEls.cancel.textContent = cancelText;
+    modalEls.confirm.className = 'btn btn-sm ' + (danger ? 'btn-danger' : 'btn-primary');
+    modalEls.field.style.display = input ? '' : 'none';
+    if (input) { modalEls.input.value = value || ''; modalEls.input.placeholder = placeholder || ''; }
+    modalEls.backdrop.classList.add('open');
+    requestAnimationFrame(() => (input ? modalEls.input : modalEls.confirm).focus());
+  });
+}
+modalEls.cancel.addEventListener('click', () => closeModal(null));
+modalEls.confirm.addEventListener('click', () => {
+  closeModal(modalEls.field.style.display === 'none' ? true : modalEls.input.value);
+});
+modalEls.backdrop.addEventListener('mousedown', (e) => { if (e.target === modalEls.backdrop) closeModal(null); });
+document.addEventListener('keydown', (e) => {
+  if (!modalResolve) return;
+  if (e.key === 'Escape') { e.preventDefault(); closeModal(null); }
+  else if (e.key === 'Enter' && (modalEls.field.style.display === 'none' || (e.metaKey || e.ctrlKey))) {
+    e.preventDefault();
+    closeModal(modalEls.field.style.display === 'none' ? true : modalEls.input.value);
+  }
+});
+function confirmModal(opts) { return openModal(opts).then(v => v === true); }
+function promptModal(opts) { return openModal(Object.assign({ input: true }, opts)).then(v => (typeof v === 'string' ? v.trim() : null)); }
 
 // ── 主题：system / light / dark 三态循环，照抄 kiro-go ──
 const THEME_KEY = 'powermap_theme';
@@ -723,7 +867,10 @@ function selectTab(name) {
     document.getElementById(id).classList.toggle('hidden', k !== name);
   }
   document.querySelectorAll('#tabBar .tab').forEach(b => {
-    b.classList.toggle('active', b.dataset.tab === name);
+    const on = b.dataset.tab === name;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+    b.tabIndex = on ? 0 : -1;
   });
   const mapping = name === 'mappings';
   document.getElementById('workspaceTitle').textContent = mapping ? '端口映射' : '连接设置';
@@ -738,6 +885,20 @@ function selectTab(name) {
 document.getElementById('tabBar').addEventListener('click', (e) => {
   const b = e.target.closest('.tab');
   if (b) selectTab(b.dataset.tab);
+});
+document.getElementById('tabBar').addEventListener('keydown', (e) => {
+  const keys = ['ArrowRight', 'ArrowLeft', 'ArrowDown', 'ArrowUp', 'Home', 'End'];
+  if (!keys.includes(e.key)) return;
+  e.preventDefault();
+  const tabs = [...document.querySelectorAll('#tabBar .tab')];
+  const cur = Math.max(0, tabs.findIndex(t => t.classList.contains('active')));
+  let next;
+  if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = tabs.length - 1;
+  else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = (cur + 1) % tabs.length;
+  else next = (cur - 1 + tabs.length) % tabs.length;
+  selectTab(tabs[next].dataset.tab);
+  tabs[next].focus();
 });
 window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
 selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'mappings');
@@ -755,14 +916,33 @@ document.getElementById('emptyNewMappingBtn').addEventListener('click', () => {
 
 document.getElementById('footerYear').textContent = new Date().getFullYear();
 
-// ── 鉴权：URL 里的 ?token= 存到 localStorage，之后请求带上 Bearer 头 ──
-const TOKEN_KEY = 'powermap_token';
-(function pickUpToken() {
-  const p = new URLSearchParams(location.search);
-  const t = p.get('token');
-  if (t) { localStorage.setItem(TOKEN_KEY, t); history.replaceState(null, '', location.pathname); }
+// ── 鉴权：仅显式 Bearer header；管理令牌只保留在当前页面内存 ──
+let adminToken = '';
+let tokenPrompt = null;
+(function removeLegacyQueryToken() {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('token')) return;
+  url.searchParams.delete('token');
+  history.replaceState(null, '', url.pathname + url.search + url.hash);
+  toast('已从 URL 移除访问令牌，请在提示中重新输入；令牌只保留在当前页面内存中。', 'info', 6000);
 })();
-function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
+function token() { return adminToken; }
+function requestAdminToken() {
+  if (tokenPrompt) return tokenPrompt;
+  tokenPrompt = promptModal({
+    title: '需要访问令牌',
+    body: '该管理页启用了 web_token 鉴权。请粘贴 web_token，令牌只保留在当前页面内存中。',
+    placeholder: 'web_token',
+    confirmText: '确认',
+  })
+    .then(value => {
+      const valueTrimmed = (value || '').trim();
+      if (valueTrimmed) adminToken = valueTrimmed;
+      return Boolean(valueTrimmed);
+    })
+    .finally(() => { tokenPrompt = null; });
+  return tokenPrompt;
+}
 function authHeaders(extra) {
   const h = Object.assign({}, extra || {});
   const t = token();
@@ -772,8 +952,7 @@ function authHeaders(extra) {
 async function api(path, opts) {
   const r = await fetch(path, Object.assign({}, opts, { headers: authHeaders((opts||{}).headers) }));
   if (r.status === 401) {
-    const t = prompt('需要访问令牌（web_token）：');
-    if (t) { localStorage.setItem(TOKEN_KEY, t); return api(path, opts); }
+    if (await requestAdminToken()) return api(path, opts);
     throw new Error('unauthorized');
   }
   return r;
@@ -786,6 +965,20 @@ function fmtBytes(n) {
   return n.toFixed(n < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
 }
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+function fmtTime(ms) {
+  if (!ms) return '';
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(ms));
+}
+function mappingState(s) {
+  const state = s.state || (s.listener_active ? 'listening' : 'stopped');
+  if (state === 'active') return { state, label: '已活动', detail: s.last_tunnel_success_at ? '最近成功 ' + fmtTime(s.last_tunnel_success_at) : '隧道已建立' };
+  if (state === 'degraded') {
+    const failure = s.last_tunnel_failure || {};
+    return { state, label: '隧道异常', detail: [failure.at ? '最近失败 ' + fmtTime(failure.at) : '', failure.reason || '连接失败'].filter(Boolean).join(' · ') };
+  }
+  if (state === 'stopped') return { state, label: '监听已停止', detail: '本地端口不再接受连接' };
+  return { state: 'listening', label: '监听中', detail: '等待本地连接' };
+}
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); return true; }
   catch { return false; }
@@ -824,14 +1017,14 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
       const j = JSON.parse(raw);
       node_id = (j.node_id || '').trim();
       tok = (j.token || '').trim();
-    } catch { alert('凭证 JSON 解析失败，请检查格式'); return; }
+    } catch { toast('凭证 JSON 解析失败，请检查格式', 'err'); return; }
   }
-  if (!node_id || !tok) { alert('请提供 node_id 与 token（粘贴 JSON 或分栏填写）'); return; }
+  if (!node_id || !tok) { toast('请提供 node_id 与 token（粘贴 JSON 或分栏填写）', 'err'); return; }
   const r = await api('/api/credential', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ node_id, token: tok }),
   });
-  if (!r.ok) { alert((await r.text()) || '接入失败'); return; }
+  if (!r.ok) { toast((await r.text()) || '接入失败', 'err'); return; }
   document.getElementById('credJson').value = '';
   document.getElementById('credNodeIn').value = '';
   document.getElementById('credTokenIn').value = '';
@@ -840,14 +1033,12 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
 });
 
 // ── 导入 / 导出 ──
-function ioMsg(t) {
-  const el = document.getElementById('ioMsg');
-  el.textContent = t || '';
-  if (t) setTimeout(() => { if (el.textContent === t) el.textContent = ''; }, 4000);
+function ioMsg(t, kind = 'ok') {
+  if (t) toast(t, kind);
 }
 document.getElementById('exportBtn').addEventListener('click', async () => {
   const r = await api('/api/export');
-  if (!r.ok) { alert((await r.text()) || '导出失败'); return; }
+  if (!r.ok) { toast((await r.text()) || '导出失败', 'err'); return; }
   const blob = await r.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -864,13 +1055,17 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
   if (!file) return;
   let cfg;
   try { cfg = JSON.parse(await file.text()); }
-  catch { alert('配置文件不是合法 JSON'); e.target.value = ''; return; }
-  if (!confirm('导入将覆盖当前所有映射，并更新凭证。确定继续？')) { e.target.value = ''; return; }
+  catch { toast('配置文件不是合法 JSON', 'err'); e.target.value = ''; return; }
+  e.target.value = '';
+  const ok = await confirmModal({
+    title: '导入配置', danger: true, confirmText: '覆盖并导入',
+    body: '导入将覆盖当前所有映射，并更新凭证。此操作不可撤销，确定继续？',
+  });
+  if (!ok) return;
   const r = await api('/api/import', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
   });
-  e.target.value = '';
-  if (!r.ok) { alert((await r.text()) || '导入失败'); return; }
+  if (!r.ok) { toast((await r.text()) || '导入失败', 'err'); return; }
   const res = await r.json();
   let msg = `已导入 ${res.started} 条映射`;
   if (res.failed && res.failed.length) msg += `，${res.failed.length} 条失败`;
@@ -892,22 +1087,32 @@ async function refresh() {
   let totalTx = 0, totalRx = 0;
   for (const m of list) {
     const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
+    const health = mappingState(s);
     totalTx += s.tx_bytes || 0; totalRx += s.rx_bytes || 0;
     const tr = document.createElement('tr');
     tr.innerHTML = `<td>${esc(m.local)}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
-                   `<td class="status">已启用</td>` +
+                   `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span>${esc(health.label)}</span><span class="status-detail">${esc(health.detail)}</span></td>` +
                    `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}</td>` +
                    `<td class="act"><button class="btn-del" data-id="${esc(m.local)}">断开</button></td>`;
     $rows.appendChild(tr);
   }
-  document.getElementById('mTx').textContent = fmtBytes(totalTx + totalRx);
+  document.getElementById('mTotal').textContent = fmtBytes(totalTx + totalRx);
+  document.getElementById('mTx').textContent = fmtBytes(totalTx);
   document.getElementById('mRx').textContent = fmtBytes(totalRx);
 }
 $rows.addEventListener('click', async (e) => {
   const btn = e.target.closest('button.btn-del');
   if (!btn) return;
-  await api('/api/mappings/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' });
+  const id = btn.dataset.id;
+  const ok = await confirmModal({
+    title: '断开映射', danger: true, confirmText: '断开',
+    body: `将停止本地监听 ${id} 并关闭其隧道。确定断开？`,
+  });
+  if (!ok) return;
+  const r = await api('/api/mappings/' + encodeURIComponent(id), { method: 'DELETE' });
+  if (!r.ok) { toast((await r.text()) || '断开失败', 'err'); return; }
+  toast(`已断开 ${id}`);
   refresh();
 });
 document.getElementById('f').addEventListener('submit', async (e) => {
@@ -919,10 +1124,11 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   const r = await api('/api/mappings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
-  if (!r.ok) { alert((await r.text()) || '添加失败'); return; }
+  if (!r.ok) { toast((await r.text()) || '添加失败', 'err'); return; }
   e.target.reset();
   e.target.querySelector('[name=localAddr]').value = '127.0.0.1';
   document.getElementById('mappingEditor').classList.remove('open');
+  toast(`已添加映射 ${body.local}`);
   refresh();
 });
 
@@ -950,7 +1156,7 @@ async function refreshStatus() {
   const fVer = document.getElementById('footerVer');
   const hVer = document.getElementById('headerVer');
   try {
-    const s = await (await fetch('/api/status', { headers: authHeaders() })).json();
+    const s = await (await api('/api/status')).json();
     if (fVer && s.version) { fVer.textContent = 'v' + s.version; fVer.style.display = ''; }
     if (hVer && s.version) hVer.textContent = 'v' + s.version;
     let cls, label;
