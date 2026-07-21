@@ -48,7 +48,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。需要固定版本时使用 `sh install.sh v0.1.0`，或设置 `POWERMAP_VERSION`。也可继续使用下方的手动下载和源码构建方式。
+安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。需要固定版本时使用 `sh install.sh v0.2.0`，或设置 `POWERMAP_VERSION`。也可继续使用下方的手动下载和源码构建方式。
 
 ## 适用边界
 
@@ -74,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 从 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台的预编译包。以 macOS Apple Silicon 为例：
 
 ```bash
-VERSION=v0.1.0
+VERSION=v0.2.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin；Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 

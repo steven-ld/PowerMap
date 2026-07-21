@@ -48,7 +48,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.1.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
+The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.2.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
 
 ## Where It Fits
 
@@ -74,7 +74,7 @@ The installers download the Release SHA-256 file and validate the archive before
 Download a prebuilt archive for your platform from [Releases](https://github.com/steven-ld/PowerMap/releases). For macOS Apple Silicon:
 
 ```bash
-VERSION=v0.1.0
+VERSION=v0.2.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin; Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 
