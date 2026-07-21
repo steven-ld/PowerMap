@@ -412,22 +412,58 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn mapping_mutations_require_a_bearer_token_when_configured() {
-        let app = app(test_state("admin-secret").await);
-        let response = app
+    async fn mapping_mutations_enforce_auth_and_accept_a_valid_bearer_token() {
+        let state = test_state("admin-secret").await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let app = app(state);
+
+        let unauthorized = app
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
                     .uri("/api/mappings")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        r#"{"local":"127.0.0.1:18080","host":"127.0.0.1","port":80}"#,
-                    ))
+                    .body(Body::from(format!(
+                        r#"{{"local":"{local}","host":"127.0.0.1","port":80}}"#
+                    )))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
+
+        let authorized = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .header(header::AUTHORIZATION, "Bearer admin-secret")
+                    .body(Body::from(format!(
+                        r#"{{"local":"{local}","host":"127.0.0.1","port":80}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(authorized.status(), StatusCode::OK);
+
+        let removed = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri(format!("/api/mappings/{local}"))
+                    .header(header::AUTHORIZATION, "Bearer admin-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(removed.status(), StatusCode::NO_CONTENT);
     }
 }
 
@@ -922,6 +958,7 @@ async fn main() -> Result<()> {
     if let Some(k) = args.web_tls_key {
         cfg.web_tls_key = k;
     }
+    cfg.validate().map_err(anyhow::Error::msg)?;
 
     // 允许无凭证启动：凭证可后续通过 Web 管理页粘贴接入。
     // 若配置里已带 node_id，则解析为连接目标；否则 target 为 None，看门狗不会尝试重连。
@@ -941,21 +978,14 @@ async fn main() -> Result<()> {
         );
     }
 
-    let tls_enabled = !cfg.web_tls_cert.is_empty() && !cfg.web_tls_key.is_empty();
+    let tls_enabled = !cfg.web_tls_cert.is_empty();
 
-    // 远程管理（非回环）却没设 web_token，强烈提醒
+    // 非回环管理已由配置校验强制要求 web_token；TLS 仍可由可信 HTTPS 反代提供。
     let is_loopback = cfg
         .web_bind
-        .split(':')
-        .next()
-        .map(|h| h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "[::1]")
+        .parse::<SocketAddr>()
+        .map(|addr| addr.ip().is_loopback())
         .unwrap_or(false);
-    if !is_loopback && cfg.web_token.is_empty() {
-        tracing::warn!(
-            "Web 监听 {} 非回环且未设置 web_token，任何人都能管理映射！建议设置 web_token。",
-            cfg.web_bind
-        );
-    }
     if !is_loopback && !tls_enabled {
         tracing::warn!(
             "Web 监听 {} 非回环且未启用 TLS，Bearer token 将以明文传输！建议配置 web_tls_cert/web_tls_key 或置于 HTTPS 反代之后。",

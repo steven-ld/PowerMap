@@ -50,3 +50,74 @@ jobs:
           # 生成 .sha256 校验和
           checksum: sha256
           token: ${{ secrets.GITHUB_TOKEN }}
+
+  verify-release-assets:
+    name: smoke test ${{ matrix.target }} release archive
+    needs: upload-assets
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive_extension: tar.gz
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive_extension: tar.gz
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive_extension: tar.gz
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive_extension: tar.gz
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive_extension: zip
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Download uploaded archive and checksum
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+          EXTENSION: ${{ matrix.archive_extension }}
+        shell: bash
+        run: |
+          mkdir dist
+          gh release download "$TAG" \
+            --pattern "powermap-${TARGET}.${EXTENSION}" \
+            --pattern "powermap-${TARGET}.sha256" \
+            --dir dist
+
+      - name: Verify checksum and execute help (Unix)
+        if: runner.os != 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+          EXTENSION: ${{ matrix.archive_extension }}
+        shell: bash
+        run: |
+          cd dist
+          shasum -a 256 -c "powermap-${TARGET}.sha256"
+          mkdir unpacked
+          tar -xzf "powermap-${TARGET}.${EXTENSION}" -C unpacked
+          ./unpacked/powermap-server --help
+          ./unpacked/powermap-client --help
+
+      - name: Verify checksum and execute help (Windows)
+        if: runner.os == 'Windows'
+        env:
+          TARGET: ${{ matrix.target }}
+          EXTENSION: ${{ matrix.archive_extension }}
+        shell: pwsh
+        run: |
+          $archive = "dist/powermap-$env:TARGET.$env:EXTENSION"
+          $checksum = (Get-Content "dist/powermap-$env:TARGET.sha256" -Raw).Trim().Split()[0]
+          $actual = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $checksum.ToLowerInvariant()) {
+            throw "SHA-256 mismatch for $archive"
+          }
+          Expand-Archive -Path $archive -DestinationPath dist/unpacked
+          & dist/unpacked/powermap-server.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & dist/unpacked/powermap-client.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

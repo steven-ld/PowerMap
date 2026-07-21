@@ -1,9 +1,12 @@
 //! 固定配置：A/B 两端各自一份 TOML，首次运行生成、之后自动复用，
 //! 这样重启不需要重新配置，映射规则、凭证也持久化。
 
+use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use ipnet::IpNet;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -86,6 +89,37 @@ impl Default for AConfig {
             max_conns_per_mapping: default_max_conns_per_mapping(),
             mappings: Vec::new(),
         }
+    }
+}
+
+impl AConfig {
+    /// 检查启动前必须明确处理的配置。空凭证仍可用于首次启动，由 Web 管理页完成接入。
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let web_bind: SocketAddr = self
+            .web_bind
+            .parse()
+            .map_err(|_| format!("web_bind 不是合法地址: {}", self.web_bind))?;
+        if !web_bind.ip().is_loopback() && self.web_token.trim().is_empty() {
+            return Err(format!(
+                "Web 监听 {} 非回环，必须设置 web_token 以保护管理接口",
+                self.web_bind
+            ));
+        }
+        if self.web_tls_cert.is_empty() != self.web_tls_key.is_empty() {
+            return Err("web_tls_cert 与 web_tls_key 必须同时设置或同时留空".into());
+        }
+        if self.node_id.trim().is_empty() != self.token.trim().is_empty() {
+            return Err("node_id 与 token 必须同时设置；也可同时留空并在管理页完成接入".into());
+        }
+
+        let mut locals = HashSet::new();
+        for mapping in &self.mappings {
+            mapping.validate()?;
+            if !locals.insert(&mapping.local) {
+                return Err(format!("本地监听地址 {} 重复", mapping.local));
+            }
+        }
+        Ok(())
     }
 }
 
@@ -194,6 +228,67 @@ impl BConfig {
         }
         out
     }
+
+    /// 顶层 token 仍是兼容的单租户配置格式，而非一次性的自动迁移结果。
+    pub fn uses_legacy_single_token(&self) -> bool {
+        !self.token.is_empty()
+    }
+
+    /// 检查 B 端策略是否会被静默忽略或产生歧义。
+    ///
+    /// 顶层 `token`、`allow_networks` 和 `allow_ports` 是仍受支持的旧单租户格式；
+    /// 运行时会继续将其归一化为 id 为 `default` 的客户。
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.identity.trim().is_empty() {
+            return Err("identity 不能为空".into());
+        }
+        if self.dial_timeout_secs == 0 {
+            return Err("dial_timeout_secs 必须大于 0".into());
+        }
+
+        validate_policy("默认客户", &self.allow_networks, &self.allow_ports)?;
+        let mut ids = HashSet::new();
+        let mut tokens = HashSet::new();
+        if !self.token.is_empty() {
+            ids.insert("default".to_string());
+            tokens.insert(self.token.as_str());
+        }
+        for client in &self.clients {
+            if client.id.trim().is_empty() {
+                return Err("clients 中的 id 不能为空".into());
+            }
+            if client.token.trim().is_empty() {
+                return Err(format!("客户 {} 的 token 不能为空", client.id));
+            }
+            if !ids.insert(client.id.clone()) {
+                return Err(format!("客户 id {} 重复", client.id));
+            }
+            if !tokens.insert(client.token.as_str()) {
+                return Err(format!("客户 {} 使用了重复 token", client.id));
+            }
+            validate_policy(
+                &format!("客户 {}", client.id),
+                &client.allow_networks,
+                &client.allow_ports,
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn validate_policy(
+    owner: &str,
+    allow_networks: &[String],
+    allow_ports: &[u16],
+) -> std::result::Result<(), String> {
+    for cidr in allow_networks {
+        cidr.parse::<IpNet>()
+            .map_err(|_| format!("{owner} 的 allow_networks 包含无效 CIDR: {cidr}"))?;
+    }
+    if allow_ports.contains(&0) {
+        return Err(format!("{owner} 的 allow_ports 不能包含 0"));
+    }
+    Ok(())
 }
 
 fn default_identity() -> String {
@@ -488,5 +583,69 @@ revoked = false
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn a_config_rejects_unsafe_or_incomplete_runtime_settings() {
+        let cases = [
+            AConfig {
+                web_bind: "0.0.0.0:8088".into(),
+                ..Default::default()
+            },
+            AConfig {
+                web_tls_cert: "cert.pem".into(),
+                ..Default::default()
+            },
+            AConfig {
+                node_id: "node".into(),
+                ..Default::default()
+            },
+        ];
+
+        for cfg in cases {
+            assert!(cfg.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_single_token_server_config_stays_valid() {
+        let cfg: BConfig = toml::from_str(
+            r#"
+token = "legacy-token"
+allow_networks = ["10.0.0.0/8"]
+allow_ports = [443]
+"#,
+        )
+        .unwrap();
+
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn b_config_rejects_ambiguous_or_invalid_client_policies() {
+        let invalid_cidr: BConfig = toml::from_str(
+            r#"
+[[clients]]
+id = "alice"
+token = "token-a"
+allow_networks = ["not-a-cidr"]
+"#,
+        )
+        .unwrap();
+        assert!(invalid_cidr.validate().is_err());
+
+        let duplicate_token: BConfig = toml::from_str(
+            r#"
+[[clients]]
+id = "alice"
+token = "shared-token"
+
+[[clients]]
+id = "bob"
+token = "shared-token"
+"#,
+        )
+        .unwrap();
+        assert!(duplicate_token.validate().is_err());
     }
 }

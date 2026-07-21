@@ -148,6 +148,7 @@ async fn main() -> Result<()> {
     if let Some(t) = args.token.clone() {
         cfg.token = t;
     }
+    cfg.validate().map_err(anyhow::Error::msg)?;
 
     let identity_path = resolve_identity(&config_path, &cfg.identity);
     let secret_key = load_or_create_key(&identity_path)?;
@@ -162,6 +163,11 @@ async fn main() -> Result<()> {
     // 归一化多租户客户端列表（顶层单 token 折叠为 id="default"）
     let clients = cfg.effective_clients();
     let default_token = cfg.token.clone();
+    if cfg.uses_legacy_single_token() {
+        tracing::info!(
+            "检测到兼容的顶层 token 单租户配置；它会继续作为 id=default 的客户生效。迁移到 [[clients]] 是可选的。"
+        );
+    }
     let registry = Arc::new(tunnel::ClientRegistry::from_configs(&clients));
     if registry.is_empty() {
         anyhow::bail!("没有任何可用客户端凭证（token 均为空或全部吊销）");
@@ -269,4 +275,114 @@ async fn main() -> Result<()> {
     tracing::info!("正在关闭…");
     let _ = router.shutdown().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod integration_tests {
+    use super::*;
+    use std::sync::atomic::Ordering;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    async fn start_server(allow_ports: Vec<u16>) -> (Router, iroh::EndpointAddr, Arc<Metrics>) {
+        let metrics = Metrics::new();
+        let registry = Arc::new(tunnel::ClientRegistry::from_configs(&[
+            config::ClientCred {
+                id: "test-client".into(),
+                token: "test-token".into(),
+                allow_networks: vec!["127.0.0.0/8".into()],
+                allow_ports,
+                max_streams: 0,
+                revoked: false,
+            },
+        ]));
+        let handler = TunnelHandler {
+            registry,
+            metrics: metrics.clone(),
+            audit: tunnel::Audit::disabled(),
+            dial_timeout: Duration::from_secs(2),
+            max_streams_per_conn: 0,
+        };
+        let endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let addr = endpoint.addr();
+        let router = Router::builder(endpoint)
+            .accept(proto::ALPN, handler)
+            .spawn();
+        (router, addr, metrics)
+    }
+
+    async fn connect(addr: iroh::EndpointAddr) -> (Endpoint, Connection) {
+        let endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let connection =
+            tokio::time::timeout(Duration::from_secs(5), endpoint.connect(addr, proto::ALPN))
+                .await
+                .expect("iroh connection timed out")
+                .expect("iroh connection failed");
+        (endpoint, connection)
+    }
+
+    #[tokio::test]
+    async fn iroh_tunnel_relays_bytes_to_an_allowed_local_target() {
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let echo = tokio::spawn(async move {
+            let (mut socket, _) = target.accept().await.unwrap();
+            let mut request = [0; 9];
+            socket.read_exact(&mut request).await.unwrap();
+            assert_eq!(&request, b"PowerMap!");
+            socket.write_all(b"relayed").await.unwrap();
+            socket.shutdown().await.unwrap();
+        });
+
+        let (router, server_addr, _) = start_server(vec![target_addr.port()]).await;
+        let (client_endpoint, connection) = connect(server_addr).await;
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        proto::write_open(
+            &mut send,
+            &proto::OpenRequest {
+                token: "test-token".into(),
+                host: "127.0.0.1".into(),
+                port: target_addr.port(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(proto::read_status(&mut recv).await.unwrap(), Ok(()));
+
+        send.write_all(b"PowerMap!").await.unwrap();
+        send.shutdown().await.unwrap();
+        assert_eq!(recv.read_to_end(64).await.unwrap(), b"relayed");
+
+        echo.await.unwrap();
+        connection.close(0u8.into(), b"test complete");
+        client_endpoint.close().await;
+        router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn iroh_tunnel_rejects_a_target_port_outside_the_server_allowlist() {
+        let (router, server_addr, metrics) = start_server(vec![443]).await;
+        let (client_endpoint, connection) = connect(server_addr).await;
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        proto::write_open(
+            &mut send,
+            &proto::OpenRequest {
+                token: "test-token".into(),
+                host: "127.0.0.1".into(),
+                port: 6379,
+            },
+        )
+        .await
+        .unwrap();
+
+        let status = proto::read_status(&mut recv).await.unwrap();
+        assert!(
+            matches!(status, Err(message) if message.contains("6379") && message.contains("允许列表"))
+        );
+        assert_eq!(metrics.target_denied.load(Ordering::Relaxed), 1);
+
+        connection.close(0u8.into(), b"test complete");
+        client_endpoint.close().await;
+        router.shutdown().await.unwrap();
+    }
 }

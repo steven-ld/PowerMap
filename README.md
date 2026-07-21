@@ -203,7 +203,7 @@ host = "192.168.1.101"
 port = 6379
 ```
 
-`web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。`max_conns_per_mapping = 0` 表示不限制。
+`web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。非回环 `web_bind` 未设置 token、只设置一侧 TLS 文件、或只设置 `node_id`/`token` 时，client 会拒绝启动并指出配置项。`max_conns_per_mapping = 0` 表示不限制。
 </details>
 
 <details>
@@ -229,7 +229,7 @@ allow_networks = ["10.0.0.0/8"]
 revoked = true
 ```
 
-顶层 `token` 也可用于单租户部署；它会兼容地映射为 `default` 客户。变更 `[[clients]]`、白名单或吊销状态后需要重启 server。
+顶层 `token` 也可用于单租户部署；它会兼容地映射为 `default` 客户，并在启动日志中明确提示，无需立刻迁移到 `[[clients]]`。为避免策略被静默覆盖，server 会拒绝无效 CIDR、端口 `0`、空或重复的客户 id/token。变更 `[[clients]]`、白名单或吊销状态后需要重启 server。
 </details>
 
 ## 排错

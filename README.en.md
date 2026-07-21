@@ -203,7 +203,7 @@ host = "192.168.1.101"
 port = 6379
 ```
 
-An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. `max_conns_per_mapping = 0` means unlimited.
+An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. The client refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited.
 </details>
 
 <details>
@@ -229,7 +229,7 @@ allow_networks = ["10.0.0.0/8"]
 revoked = true
 ```
 
-A top-level `token` remains valid for a single-tenant server and is normalized to a `default` client. Restart the server after changing `[[clients]]`, allowlists, or revocation state.
+A top-level `token` remains valid for a single-tenant server and is normalized to a `default` client; startup logs make this compatibility mode explicit, so migration to `[[clients]]` is optional. To prevent silently ineffective policies, the server rejects invalid CIDRs, port `0`, and empty or duplicate client ids/tokens. Restart the server after changing `[[clients]]`, allowlists, or revocation state.
 </details>
 
 ## Troubleshooting

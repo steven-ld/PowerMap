@@ -1,0 +1,50 @@
+# Import this file with Prometheus rule_files. These rules assume the client
+# /metrics endpoint is scraped as job="powermap-client". Adjust labels and
+# thresholds for the service's normal traffic before paging on them.
+groups:
+  - name: powermap-client
+    rules:
+      - alert: PowerMapClientUnavailable
+        expr: up{job="powermap-client"} == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PowerMap client is not being scraped"
+          description: "Prometheus has been unable to scrape {{ $labels.instance }} for 5 minutes. Check the process, listener, and scrape network path."
+
+      - alert: PowerMapReconnectStorm
+        expr: increase(powermap_reconnects_total[15m]) > 5
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PowerMap client is reconnecting repeatedly"
+          description: "{{ $labels.instance }} reconnected more than five times in 15 minutes. Investigate peer reachability, NAT traversal, and relay availability."
+
+      - alert: PowerMapDialFailures
+        expr: increase(powermap_dial_failed_total[15m]) + increase(powermap_dial_timeout_total[15m]) > 10
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PowerMap cannot reliably reach target services"
+          description: "{{ $labels.instance }} recorded more than ten target dial failures or timeouts in 15 minutes. Check the target host, port, and server allowlist."
+
+      - alert: PowerMapTargetAccessDenied
+        expr: increase(powermap_target_denied_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: info
+        annotations:
+          summary: "PowerMap target access was denied"
+          description: "{{ $labels.instance }} rejected one or more requested targets. Confirm the mapping and server-side allowlist match the intended policy."
+
+      - alert: PowerMapHandshakeDenied
+        expr: increase(powermap_handshake_denied_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "PowerMap rejected repeated client handshakes"
+          description: "{{ $labels.instance }} rejected more than three handshakes in 15 minutes. Check for stale credentials or unexpected clients."
