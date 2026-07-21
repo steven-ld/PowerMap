@@ -2,257 +2,184 @@
 
 <div align="center">
 
-<img src="assets/powermap-logo.svg" alt="PowerMap" width="420" />
+<img src="assets/powermap-logo.svg" alt="PowerMap" width="360" />
 
-![PowerMap](https://img.shields.io/badge/PowerMap-P2P%20Tunnel-3370ff?style=for-the-badge)
-![License](https://img.shields.io/badge/License-MIT%20OR%20Apache--2.0-green?style=for-the-badge)
-![Rust](https://img.shields.io/badge/Rust-1.85+-orange?style=for-the-badge&logo=rust&logoColor=white)
-![iroh](https://img.shields.io/badge/Built%20on-iroh-black?style=for-the-badge)
-
-基于 [iroh](https://iroh.computer)（P2P / QUIC）的内网穿透工具。两台机器打洞直连或经中继转发，把**内网设备上的服务映射到你家里的电脑**——不用公网 IP、不用 VPN、不用改路由器。
+**把内网服务安全地带回本地。无需公网 IP、VPN 或路由器配置。**
 
 [![CI](https://github.com/steven-ld/PowerMap/actions/workflows/ci.yml/badge.svg)](https://github.com/steven-ld/PowerMap/actions/workflows/ci.yml)
-[![Release](https://github.com/steven-ld/PowerMap/actions/workflows/release.yml/badge.svg)](https://github.com/steven-ld/PowerMap/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/v/release/steven-ld/PowerMap?display_name=tag&sort=semver)](https://github.com/steven-ld/PowerMap/releases)
+[![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
+[![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-**🌐 官网：[powermap.ga666666.com](https://powermap.ga666666.com)**
-
-**简体中文** • [English](README.en.md)
+[官网](https://powermap.ga666666.com) · **简体中文** · [English](README.en.md) · [下载](https://github.com/steven-ld/PowerMap/releases) · [贡献](CONTRIBUTING.md)
 
 </div>
 
----
+PowerMap 是基于 [iroh](https://iroh.computer) 和 QUIC 的点对点内网访问工具。它让两台机器优先直连，必要时通过加密中继回退，把内网服务映射为家中电脑上的本地端口。
 
-## 💡 设计理念
-
-内网服务的远程访问通常意味着公网 IP、VPN 或路由器端口转发，每一种都伴随成本、暴露面或对网络设施的改动。PowerMap 借助 iroh 的 P2P 打洞在两端之间建立端到端加密隧道，无需其中任何一项。整体设计围绕四条原则展开。
-
-### 1. 零公网暴露
-
-穿透端不监听任何入站端口，仅主动连出至 iroh 中继网络，因此不存在可被扫描的攻击面。防火墙、NAT 乃至运营商级 NAT 之后均可正常工作。
-
-### 2. 端到端加密
-
-链路全程经 QUIC + rustls 加密，访问凭证是唯一入口。中继节点仅转发密文，无法窥知隧道内容。
-
-### 3. 开箱即用
-
-无数据库、无中心服务器、无账号体系。穿透端首次运行即生成凭证，用户端粘贴凭证后经 Web 管理页即可建立映射。
-
-### 4. 生产级可控
-
-目标白名单（CIDR + 端口）、多租户独立令牌、审计日志、资源上限与优雅关闭，面向长期稳定运行而非临时演示。
-
----
-
-## ✨ 特性
-
-- **P2P 直连** —— iroh 自动打洞，多数网络下直连，打不通自动回退中继
-- **零入站端口** —— 内网侧不暴露任何监听端口，无攻击面
-- **Web 管理页** —— 两页式界面：端口映射 + 连接管理，实时流量指标
-- **端到端加密** —— 全程 QUIC + rustls，中继不可见明文
-- **目标白名单** —— CIDR 网段 + 端口双重限制，防 DNS 重绑定（TOCTOU）
-- **多租户** —— 每个客户独立 token / 白名单 / 并发上限，可单独轮换、吊销
-- **审计日志** —— 每次拨号（放行/拒绝/超时/失败）落一行 JSON
-- **虚拟 IP 映射** —— 把多台内网设备映射到不同本地回环地址
-- **Prometheus 指标** —— `/metrics` 端点，隧道/流量/重连全覆盖
-- **自动重连** —— 后台看门狗 + 指数退避，断线 ~15s 内察觉并恢复
-- **凭证持久化** —— 一次接入，重启自动恢复
-- **HTTPS 管理页** —— 可选 TLS，复用 iroh 的 ring 后端，无额外 C 依赖
-- **跨平台** —— Linux / macOS / Windows 预编译二进制
-- **Docker Ready** —— 内网侧完美适配容器部署
-
----
-
-## 🖥️ 界面预览
-
-Web 管理页扁平双主题、两页式布局，实时显示连接状态与穿透路径（P2P 直连 / 经中继）。
-
-| 端口映射（主页） | 连接设置 |
-|---|---|
-| ![端口映射](assets/screenshots/light-mappings.png) | ![连接设置](assets/screenshots/light-connection.png) |
-
----
-
-## 🏗️ 架构
-
-```mermaid
-flowchart LR
-    subgraph intranet["内网侧（公司 / 宿舍 / 现场）"]
-        B["powermap-server（穿透端 B）<br/>暴露 ALPN 服务 · 无入站端口"]
-        SVC["内网服务<br/>192.168.1.101:6379 等"]
-        B -->|内网拨号| SVC
-    end
-
-    subgraph home["家里侧"]
-        A["powermap-client（用户端 A）<br/>Web 管理页 :8088"]
-        LOCAL["本地端口<br/>127.0.0.1:6379"]
-        A -->|监听| LOCAL
-    end
-
-    USER(["你 / redis-cli 等客户端"]) -->|连本地端口| LOCAL
-    A <-->|"iroh P2P 打洞 / 中继<br/>QUIC + rustls 端到端加密"| B
-
-    style B fill:#3370ff,stroke:#2451b8,color:#fff
-    style A fill:#3370ff,stroke:#2451b8,color:#fff
-    style SVC fill:#e8f0ff,stroke:#3370ff,color:#1a1a1a
-    style LOCAL fill:#e8f0ff,stroke:#3370ff,color:#1a1a1a
-    style USER fill:#f0f0f0,stroke:#999,color:#1a1a1a
+```text
+redis-cli ──> 127.0.0.1:6379 ──> PowerMap ──> 192.168.1.101:6379
+             家中电脑             加密 P2P 隧道       内网服务
 ```
 
-| 端 | 部署位置 | 作用 |
-|---|---|---|
-| **powermap-server**（穿透端 **B**） | 内网设备上 | 用 iroh 暴露一个 ALPN 服务，生成凭证；按客户端请求在内网拨号目标并双向转发 |
-| **powermap-client**（用户端 **A**） | 家里电脑 | 输入凭证，提供 Web 管理页，把本地端口映射到内网目标 |
+## 为什么用它？
 
-内网设备上装了 **B**，家里的 **A** 就能访问**同内网任意设备**——比如把内网 `192.168.1.101:6379` 映射到本地 `127.0.0.1:6379`，由 B 去代访问那台机器。
-
----
-
-## 🚀 快速开始
-
-### 前置要求
-
-- 预编译二进制：无（下载即用）
-- 本地编译：Rust ≥ 1.85（`cargo --version`）
-
-### 方式一：预编译二进制（推荐）
-
-到 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台压缩包，解压即得 `powermap-server`、`powermap-client` 两个二进制。每个包旁附 `.sha256` 校验文件。
-
-| 平台 | 目标三元组 |
+| 你需要的 | PowerMap 的做法 |
 |---|---|
-| Linux x86_64 | `x86_64-unknown-linux-gnu` |
-| Linux aarch64 | `aarch64-unknown-linux-gnu` |
-| macOS x86_64（Intel） | `x86_64-apple-darwin` |
-| macOS aarch64（Apple Silicon） | `aarch64-apple-darwin` |
-| Windows x86_64 | `x86_64-pc-windows-msvc` |
+| 不开公网端口 | 内网侧只主动连出，不监听可扫描的入站端口 |
+| 不维护 VPN | 两端通过 iroh 自动 NAT 打洞；直连失败时才经中继 |
+| 不改变现有工具 | 服务映射为 `127.0.0.1:端口`，继续使用浏览器、CLI、IDE 或数据库 GUI |
+| 不把安全交给默认设置 | QUIC + rustls 加密、目标白名单、独立 token、审计日志和资源上限 |
 
-### 方式二：本地编译
+> PowerMap 适合远程访问你有权限管理的内网服务。它不是公网暴露工具，也不是替代组织级 VPN 的身份与网络策略系统。
+
+## 三分钟跑通
+
+### 1. 下载或构建
+
+从 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台的二进制。也可以自行构建：
 
 ```bash
 git clone https://github.com/steven-ld/PowerMap.git
 cd PowerMap
 cargo build --release
-# 产物：target/release/powermap-server、target/release/powermap-client
 ```
 
-<details>
-<summary>国内网络拉不到 crates.io？换 rsproxy 源</summary>
+构建产物为 `target/release/powermap-server` 和 `target/release/powermap-client`。本地构建需要 Rust 1.85+。
 
-在 `~/.cargo/config.toml` 里加：
-
-```toml
-[source.crates-io]
-replace-with = "rsproxy-sparse"
-[source.rsproxy-sparse]
-registry = "sparse+https://rsproxy.cn/index/"
-```
-</details>
-
-### 三步跑通
-
-**第 1 步 · 内网设备上启动穿透端 B**
+### 2. 在内网设备启动 server
 
 ```bash
 ./powermap-server
 ```
 
-首次运行在配置目录生成三个文件：
+首次启动会生成以下文件：
 
-| 文件 | 说明 |
+| 文件 | 用途 |
 |---|---|
-| `powermap-server.key` | 节点身份（**持久化，保证 node id 稳定**） |
-| `powermap-server.toml` | 配置（含随机生成的 token） |
-| `powermap-server.credential.json` | **凭证，交给家里侧 A** |
+| `powermap-server.key` | 持久化节点身份，保持 node id 稳定 |
+| `powermap-server.toml` | server 配置和访问控制 |
+| `powermap-server.credential.json` | 交给 client 的连接凭证 |
 
-之后每次启动复用同一份配置，node id 和 token 都不变，A 端**无需重新拿凭证**。
+把 `powermap-server.credential.json` 安全地传给家中电脑。它包含访问内网的凭证，不要提交到 Git、聊天群或日志。
 
-**第 2 步 · 家里电脑上启动用户端 A**
-
-```bash
-./powermap-client
-```
-
-启动即打开 <http://127.0.0.1:8088> ，Web 管理页分**两页**：
-
-- **端口映射**（主页）：连接状态、流量指标、添加与管理映射
-- **连接**：粘贴凭证接入
-
-进 **连接** 页，把 B 生成的 `powermap-server.credential.json` 整段粘进「凭证 JSON」框（或分栏填 `node_id` 与 `token`），点「接入 / 更新」——凭证写入 `powermap-client.toml`，**重启自动恢复**。
-
-<details>
-<summary>也可以用 CLI 首次注入凭证（效果等同网页填写）</summary>
+### 3. 在家中电脑启动 client 并创建映射
 
 ```bash
 ./powermap-client --credential /path/to/powermap-server.credential.json
 ```
-</details>
 
-**第 3 步 · 添加映射**
+打开 <http://127.0.0.1:8088>，在“端口映射”中创建：
 
-回 **端口映射** 页填表，或用 API：
+```text
+本地监听：127.0.0.1:6379
+目标服务：192.168.1.101:6379
+```
+
+之后照常使用服务：
 
 ```bash
-# 本地 6379 → 内网 192.168.1.101:6379
+redis-cli -h 127.0.0.1 -p 6379
+```
+
+也可以通过 API 添加映射：
+
+```bash
 curl -X POST http://127.0.0.1:8088/api/mappings \
   -H 'Content-Type: application/json' \
   -d '{"local":"127.0.0.1:6379","host":"192.168.1.101","port":6379}'
-
-# 虚拟 IP：本地 127.0.0.2:6379 → 另一台内网设备
-curl -X POST http://127.0.0.1:8088/api/mappings \
-  -H 'Content-Type: application/json' \
-  -d '{"local":"127.0.0.2:6379","host":"192.168.1.101","port":6379}'
-
-curl http://127.0.0.1:8088/api/mappings                       # 列表
-curl -X DELETE http://127.0.0.1:8088/api/mappings/127.0.0.1%3A6379
 ```
 
-搞定。`redis-cli -h 127.0.0.1 -p 6379` 就连到了内网的 Redis。
+## 架构
 
----
+```mermaid
+flowchart LR
+    U["本地工具<br/>redis-cli / browser / IDE"] --> L["127.0.0.1:6379"]
+    L --> A["powermap-client<br/>家中电脑"]
+    A <-->|"iroh P2P · QUIC + rustls<br/>优先直连，失败回退中继"| B["powermap-server<br/>内网设备"]
+    B --> S["内网服务<br/>192.168.1.101:6379"]
+```
 
-## 🐳 Docker 部署
+- **client（A）**：监听本地端口，提供管理页，维护到 server 的加密连接。
+- **server（B）**：验证凭证与目标白名单后，在所在内网拨号目标服务。
+- **中继**：仅在无法直连时转发密文，无法读取隧道内容。
 
-镜像同时包含两个二进制，用 `command` 选择端。**穿透端 B 是 Docker 部署的理想对象**——跑在内网盒子上，不暴露任何入站端口。
+每一条本地 TCP 连接都在已建立的 QUIC 连接上复用双向流。连接断开时，client 会通过看门狗与指数退避恢复连接。
+
+## 界面
+
+| 端口映射 | 连接设置 |
+|---|---|
+| ![端口映射页面](assets/screenshots/light-mappings.png) | ![连接设置页面](assets/screenshots/light-connection.png) |
+
+管理页默认仅绑定 `127.0.0.1:8088`，并显示连接状态、传输路径和流量指标。
+
+## 部署
+
+### Docker：推荐只部署 server
+
+server 适合部署在内网设备或盒子中。`--network host` 通常能提高 NAT 打洞成功率。
 
 ```bash
 docker build -t powermap .
 
-# powermap-server：挂载 ./data 持久化身份与配置；host 网络提升打洞成功率
 docker run -d --name powermap-server --network host \
   -v "$PWD/data:/data" \
   -e RUST_LOG=info \
   powermap powermap-server --config /data/powermap-server.toml
-
-# 取出凭证给家里侧 A
-cat data/powermap-server.credential.json
 ```
 
-或用 Compose：
+或使用 Compose：
 
 ```bash
 docker compose up -d --build
 ```
 
-> ⚠️ **用户端 A 建议原生运行，别放进 Docker**：A 映射的本地端口在容器**内**，要从宿主机访问得逐个 `-p` 发布，很麻烦。A 跑在家里电脑本机最省事。
+client 建议原生运行：映射的本地端口位于 client 所在网络命名空间，放入 Docker 会额外增加逐端口发布的管理成本。
 
----
+### 支持的平台
 
-## ⚙️ 配置
+Release 提供 Linux x86_64 / aarch64、macOS Intel / Apple Silicon 与 Windows x86_64 的预编译包，并附带 SHA-256 校验文件。
 
-两端各自一份 TOML，默认在 `<系统配置目录>/powermap/`（Linux `~/.config/powermap/`，macOS `~/Library/Application Support/powermap/`），用 `--config` 覆盖。命令行参数（`--help`）优先级高于配置文件。
+## 安全模型
 
-### `powermap-client.toml`（用户端 A）
+| 控制项 | 说明 |
+|---|---|
+| 访问凭证 | `node_id + token` 是访问入口。像密码一样保存 `credential.json`。 |
+| 端到端加密 | iroh 的 QUIC + rustls 加密所有链路；中继只见密文。 |
+| 目标白名单 | server 可用 CIDR 和端口限制可拨号目标，并避免 DNS 重绑定绕过。 |
+| 多租户 | `[[clients]]` 为每个使用者配置独立 token、白名单、并发上限，可单独吊销。 |
+| 审计与资源限制 | 每次拨号可记录 JSON 审计日志；并发流、映射数、连接数与拨号超时均有限制。 |
+
+**不要将管理页直接暴露到公网。** 如果将 `web_bind` 改为 `0.0.0.0`，请设置 `web_token`，启用 TLS，并在反向代理或防火墙层限制访问来源。
+
+## 运维
+
+client 暴露 Prometheus 指标和健康检查：
+
+```bash
+curl http://127.0.0.1:8088/metrics
+curl http://127.0.0.1:8088/api/health
+```
+
+指标包含隧道、握手、拒绝、拨号失败、重连和收发字节。`/metrics` 与 `/api/health` 不要求管理页 token，仅输出聚合数据；若监听到非本地地址，请在网络层限制抓取来源。
+
+## 配置参考
+
+默认配置目录：Linux 为 `~/.config/powermap/`，macOS 为 `~/Library/Application Support/powermap/`。使用 `--config` 指定其他路径；命令行参数优先于配置文件。
+
+<details>
+<summary><strong>client 配置</strong></summary>
 
 ```toml
-node_id = "a5d40b0a8d24..."    # B 的 EndpointId
-token = "991fd0a3..."          # B 生成的访问令牌
+node_id = "a5d40b0a8d24..."
+token = "991fd0a3..."
 web_bind = "127.0.0.1:8088"
-web_token = ""                 # Web 管理页访问令牌；留空不鉴权
-web_tls_cert = ""              # TLS 证书路径（PEM）
-web_tls_key = ""               # TLS 私钥路径（PEM）
-max_mappings = 256             # 最大映射条数上限
-max_conns_per_mapping = 512    # 单条映射的最大并发连接数（0 = 不限）
+web_token = ""
+web_tls_cert = ""
+web_tls_key = ""
+max_mappings = 256
+max_conns_per_mapping = 512
 
 [[mappings]]
 local = "127.0.0.1:6379"
@@ -260,31 +187,11 @@ host = "192.168.1.101"
 port = 6379
 ```
 
-| 字段 | 说明 | 默认 |
-|---|---|---|
-| `node_id` | B 的 EndpointId | - |
-| `token` | B 生成的访问令牌 | - |
-| `web_bind` | Web 管理页监听地址 | `127.0.0.1:8088` |
-| `web_token` | 管理页访问令牌，留空不鉴权（绑 `0.0.0.0` 远程管理时**务必设置**） | `""` |
-| `web_tls_cert` / `web_tls_key` | 两者同时非空则启用 HTTPS | `""` |
-| `max_mappings` | 最大映射条数，防止无限添加耗尽本地端口 | `256` |
-| `max_conns_per_mapping` | 单条映射的最大并发连接数（0 = 不限） | `512` |
+`web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。`max_conns_per_mapping = 0` 表示不限制。
+</details>
 
-### `powermap-server.toml`（穿透端 B · 单租户）
-
-```toml
-identity = "powermap-server.key"   # 相对于本配置文件所在目录
-token = "991fd0a3..."              # 留空且无 clients 时首次随机生成并回填
-allow_networks = []                # 允许拨号的目标网段（CIDR），留空 = 允许全部
-allow_ports = []                   # 允许拨号的目标端口，留空 = 允许全部
-max_streams_per_conn = 256         # 单连接上的最大并发隧道数（0 = 不限）
-dial_timeout_secs = 10             # 内网拨号超时（秒）
-audit_log = ""                     # 审计日志文件路径；留空则只输出到 tracing
-```
-
-### `powermap-server.toml`（穿透端 B · 多租户）
-
-用 `[[clients]]` 给每个客户独立 token 与白名单，可单独轮换 / 吊销：
+<details>
+<summary><strong>server 配置与多租户</strong></summary>
 
 ```toml
 identity = "powermap-server.key"
@@ -293,129 +200,41 @@ dial_timeout_secs = 10
 audit_log = "/var/log/powermap/audit.jsonl"
 
 [[clients]]
-id = "alice"                       # 客户标识，用于审计日志与指标标签（非机密）
+id = "alice"
 token = "alice-token-..."
 allow_networks = ["192.168.1.0/24"]
 allow_ports = [6379, 5432]
-max_streams = 32                   # 该客户的最大并发隧道数（0 = 不限）
+max_streams = 32
 
 [[clients]]
 id = "bob"
 token = "bob-token-..."
 allow_networks = ["10.0.0.0/8"]
-revoked = true                     # 吊销：保留在配置留痕，但拒绝接入
+revoked = true
 ```
 
-> 顶层单 `token` 会被归一化为一个 id 为 `default` 的客户，可与 `[[clients]]` 并存——旧配置无需改动即可继续用。轮换或吊销客户后需**重启 B** 生效。
+顶层 `token` 也可用于单租户部署；它会兼容地映射为 `default` 客户。变更 `[[clients]]`、白名单或吊销状态后需要重启 server。
+</details>
 
----
+## 排错
 
-## 🔐 安全
-
-| 机制 | 说明 |
+| 现象 | 处理方式 |
 |---|---|
-| **访问凭证** | `token` 是唯一入口，常量时间比较防计时侧信道。拿到 `node_id + token` 就能让 B 在其内网拨号——请像密码一样保管 `credential.json` |
-| **端到端加密** | 全程 QUIC + rustls（iroh 内置），中继只转发密文 |
-| **目标白名单** | `allow_networks`（CIDR）+ `allow_ports` 限定可拨号范围。B **一次性解析主机名并只对通过白名单的 IP 直接拨号**，杜绝 DNS 重绑定（TOCTOU）绕过 |
-| **多租户隔离** | `[[clients]]` 给不同使用者发独立 token，各自绑定白名单与并发上限；`revoked = true` 单独吊销 |
-| **审计日志** | 每次拨号（放行 / 拒绝 / 超时 / 失败）落一行 JSON，含时间戳、客户 id、目标、结果 |
-| **资源上限** | `max_streams_per_conn`、每客户 `max_streams`、`dial_timeout_secs`，及 A 端 `max_mappings` / `max_conns_per_mapping`，防止耗尽资源 |
-| **管理页鉴权** | 设了 `web_token` 后所有 API 需 `Authorization: Bearer <token>` 或 `?token=`；绑 `0.0.0.0` 远程管理时务必设置 |
-| **管理页 HTTPS** | 同时配 `web_tls_cert` + `web_tls_key` 即启用 TLS |
+| 无法连接或被 server 拒绝 | 核对 client 使用的 `node_id` 与 `token` 是否来自该 server 的凭证文件。 |
+| 本地端口绑定失败 | 端口已被占用；更换端口，或删除已有的同名映射。 |
+| 中继连接超时 | 网络或中继可能短暂波动；iroh 会尝试切换中继，稍候重试。 |
+| 修改配置后没有生效 | 配置在启动时读取。运行期映射请通过管理页或 API 维护；改 server 白名单后重启 server。 |
 
----
-
-## 📊 可观测与运维
-
-**Prometheus 指标** —— A 端 `/metrics`，文本格式直接抓取：
+## 开发与贡献
 
 ```bash
-curl http://127.0.0.1:8088/metrics
+cargo fmt --all
+cargo clippy --all-targets -- -D warnings
+cargo test
 ```
 
-暴露隧道计数（打开 / 活跃 / 失败）、握手与目标拒绝数、超限、拨号失败 / 超时、重连次数、收发字节数等。`/metrics` 与 `/api/health` **免鉴权**（只暴露聚合计数，不含机密）；绑 `0.0.0.0` 时如需限制来源请在反代层做。B 端不暴露入站端口，改为**周期性（60s）把指标打进 tracing 日志**。
+CI 会在每个 push 和 PR 上运行相同检查。提交 Issue 或 PR 前请阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。安全问题请不要公开提交 Issue，而应私下联系维护者。
 
-**优雅关闭** —— A 收到 `SIGINT` / `SIGTERM` 后停止接受新连接，通过 `CancellationToken` **drain 在途隧道**再退出；运行期 `DELETE` 一条映射也会主动断开该映射下的在途连接。
+## License
 
----
-
-## 🔬 工作原理
-
-```mermaid
-sequenceDiagram
-    participant App as 本地客户端<br/>(redis-cli 等)
-    participant A as powermap-client (A)
-    participant Relay as iroh 中继 / DNS
-    participant B as powermap-server (B)
-    participant Target as 内网目标<br/>(192.168.1.101:6379)
-
-    Note over B,Relay: 启动：绑定节点身份，注册中继，暴露 ALPN /powermap/tcp/0
-    A->>Relay: 凭 node_id 发现 B
-    Relay-->>A: 中继 + DNS 定位
-    A->>B: 打洞建立 QUIC 连接（多数直连，失败回退中继）
-    Note over A,B: 连接建立后长期复用
-
-    App->>A: TCP 连接到映射的本地端口
-    A->>B: 复用连接开一条 QUIC 双向流<br/>握手头 {token, host, port}
-    B->>B: 校验 token + 白名单（CIDR / 端口）
-    B->>Target: 在内网拨号 host:port
-    Target-->>B: 连接就绪
-    B-->>A: 状态码 0（成功）
-    App->>Target: 双向透传 TCP（支持半关闭）
-
-    Note over A,B: 看门狗保持热连接；断线按指数退避（1→30s + 抖动）重连
-```
-
-1. B 用 iroh 绑定节点身份、注册到 N0 中继网络，对外暴露 ALPN `/powermap/tcp/0`。
-2. A 只凭 B 的 `node_id`，iroh 通过中继 + DNS 发现 B 并打洞（多数直连，打不通走中继）。
-3. 每条映射 = A 上的一个 TCP 监听。每个进来的连接，A **复用同一条到 B 的 iroh 连接**开一条 QUIC 双向流（QUIC 天然多路复用），握手头带 `{token, host, port}`。
-4. B 校验 token、按白名单校验目标，在内网拨号 `host:port`，之后双向透传 TCP，支持**半关闭**（HTTP keep-alive 等协议正常工作）。
-5. A 后台**看门狗**保持热连接，断线按指数退避（1→30s + 抖动）主动重连；两端 QUIC 参数为 5s keepalive + 15s 空闲超时，对端失联 ~15s 内察觉。
-
-> QUIC 传输参数已调优：单连接并发双向流上限提到 1024，放大流量窗口，配合 64KB 转发缓冲，支撑高并发映射下的吞吐。
-
----
-
-## 🩺 排错
-
-| 现象 | 处理 |
-|---|---|
-| A 连不上 / `B 拒绝` | 确认 `node_id`、`token` 与 B 一致（看 `powermap-server.credential.json`） |
-| `Failed to connect to relay server: timeout` | N0 中继偶发抖动，iroh 会自动切换中继（如 `euc1` → `aps1`），首条隧道多等几秒或重试一次（A 已内置一次重连重试） |
-| 绑定本地端口失败 | 端口被占用；换端口，或检查是否已有同名映射 |
-| 配置改了不生效 | 配置只在启动时读入；运行期增删映射走 Web/API（自动回写）。改 B 端 `[[clients]]` 需**重启 B** |
-| 不想让 `/metrics` 对外可见 | 它免鉴权（只有聚合计数）；绑 `0.0.0.0` 时在反代层限制抓取来源 |
-
----
-
-## 🧭 局限
-
-- 凭证只携带 `node_id`，连接依赖 iroh 的中继 / DNS 发现。极端 NAT 下若发现不畅，可考虑改为携带完整 `EndpointAddr`（含中继 URL + 直连地址）。
-- A 端每个本地 TCP 连接复用共享 iroh 连接开流；连接断开会懒重连，但已建立的隧道会随之中断，需客户端重连。
-
----
-
-## 🛠️ 开发
-
-```bash
-cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
-```
-
-CI（[`ci.yml`](.github/workflows/ci.yml)）在每次 push / PR 跑 fmt + clippy（`-D warnings`）+ test。想参与贡献请看 [CONTRIBUTING.md](CONTRIBUTING.md)。
-
-### 发布
-
-推送形如 `v1.2.3` 的 tag 触发 [`release.yml`](.github/workflows/release.yml)，为全部 5 个平台交叉编译并把压缩包 + 校验和上传到对应的 GitHub Release：
-
-```bash
-git tag v0.1.0
-git push origin v0.1.0
-```
-
----
-
-## 📄 许可证
-
-本项目采用 [MIT](LICENSE-MIT) 或 [Apache-2.0](LICENSE-APACHE) 双许可，任选其一。
-
-除非你明确声明，否则你有意提交进本项目的任何贡献（按 Apache-2.0 定义）都将以上述双许可授权，无附加条款。
+PowerMap 采用 [MIT](LICENSE-MIT) 或 [Apache-2.0](LICENSE-APACHE) 双许可，你可以任选其一。
