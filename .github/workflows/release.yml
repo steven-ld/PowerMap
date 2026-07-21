@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/create-gh-release-action@v1
+        with:
+          # 从 tag 名生成 Release；正文自动取 CHANGELOG.md 对应版本段（若有）
+          changelog: CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-assets:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          # 两个二进制打进同一个压缩包
+          bin: powermap-server,powermap-client
+          target: ${{ matrix.target }}
+          # 归档名：powermap-<target>.tar.gz（Windows 为 .zip）
+          archive: powermap-$target
+          # 随包附带的文件（LICENSE* / README* 默认已含，这里显式列出更清晰）
+          include: LICENSE-MIT,LICENSE-APACHE,README.md
+          # 生成 .sha256 校验和
+          checksum: sha256
+          token: ${{ secrets.GITHUB_TOKEN }}

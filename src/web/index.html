@@ -1,0 +1,738 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PowerMap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  /* ── 设计系统：照抄 Kiro-Go admin ──
+     扁平黑白 + 中性灰阶，teal 作 success；无阴影、无渐变；Geist / Geist Mono；亮暗双主题。 */
+  :root {
+    --background: #fcfcfc;
+    --foreground: #000000;
+    --card: #ffffff;
+    --card-foreground: #000000;
+    --popover: #fcfcfc;
+    --primary: #000000;
+    --primary-foreground: #ffffff;
+    --secondary: #ebebeb;
+    --secondary-foreground: #000000;
+    --muted: #f5f5f5;
+    --muted-foreground: #525252;
+    --accent: #ebebeb;
+    --accent-foreground: #000000;
+    --destructive: #e54b4f;
+    --destructive-foreground: #ffffff;
+    --border: #e4e4e4;
+    --border-focus: #a3a3a3;
+    --input: #ebebeb;
+    --ring: #a3a3a3;
+    --success: #0f766e;
+    --success-foreground: #ffffff;
+    --warning: #b45309;
+    --warning-foreground: #ffffff;
+    --info: #2563eb;
+    --radius-sm: 0.25rem;
+    --radius-md: 0.375rem;
+    --radius-lg: 0.5rem;
+    --font-sans: "Geist", system-ui, -apple-system, "Segoe UI", "PingFang SC", sans-serif;
+    --font-mono: "Geist Mono", ui-monospace, Menlo, Consolas, monospace;
+    color-scheme: light;
+  }
+  html.dark {
+    --background: #000000;
+    --foreground: #ffffff;
+    --card: #090909;
+    --card-foreground: #ffffff;
+    --popover: #121212;
+    --primary: #ffffff;
+    --primary-foreground: #000000;
+    --secondary: #222222;
+    --secondary-foreground: #ffffff;
+    --muted: #1d1d1d;
+    --muted-foreground: #a4a4a4;
+    --accent: #333333;
+    --accent-foreground: #ffffff;
+    --destructive: #ff5b5b;
+    --destructive-foreground: #ffffff;
+    --border: #242424;
+    --border-focus: #525252;
+    --input: #333333;
+    --ring: #525252;
+    --success: #2dd4bf;
+    --success-foreground: #001f1d;
+    --warning: #ffae04;
+    --warning-foreground: #000000;
+    --info: #2671f4;
+    color-scheme: dark;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; box-shadow: none !important; text-shadow: none !important; }
+  html { overflow-y: scroll; scrollbar-gutter: stable; }
+  body {
+    margin: 0; min-height: 100vh;
+    background: var(--background); color: var(--foreground);
+    font: 14px/1.55 var(--font-sans);
+    font-feature-settings: "cv02","cv03","cv04","cv11";
+    -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale;
+    display: flex; flex-direction: column;
+  }
+  code, .mono { font-family: var(--font-mono); }
+
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--muted-foreground); }
+  ::selection { background: var(--primary); color: var(--primary-foreground); }
+
+  /* ── 顶栏（三列栅格，照抄 kiro-go .app-header）── */
+  .app-header { background: var(--background); border-bottom: 0; }
+  .app-header-inner {
+    max-width: 1200px; margin: 0 auto; padding: 0 2rem; height: 4rem;
+    display: grid; grid-template-columns: minmax(0,1fr) auto minmax(0,1fr);
+    align-items: center; gap: 1.5rem;
+  }
+  .brand-wrap { display: inline-flex; align-items: center; gap: 0.625rem; min-width: 0; }
+  .brand {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    font-size: 1rem; font-weight: 600; letter-spacing: -0.015em;
+    color: var(--foreground); text-decoration: none; cursor: default;
+  }
+  .brand .brand-icon { width: 1.25rem; height: 1.25rem; color: var(--success); flex: none; }
+  .brand-text b { color: var(--success); }
+
+  .header-nav { display: inline-flex; align-items: center; justify-self: center; min-width: 0; }
+  .tabs { display: flex; align-items: center; gap: 0.125rem; }
+  .tab {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+    min-width: 0; height: 2.25rem; padding: 0 1.125rem;
+    font: 500 0.875rem/1 var(--font-sans); letter-spacing: 0.005em;
+    color: var(--muted-foreground); background: transparent;
+    border: 0; border-radius: var(--radius-md); cursor: pointer; user-select: none;
+    transition: color .15s ease, background .15s ease;
+  }
+  .tab:hover { color: var(--foreground); }
+  .tab.active { color: var(--foreground); }
+  .tab:focus-visible { outline: 2px solid var(--foreground); outline-offset: -3px; }
+  .tab-icon { width: 0.875rem; height: 0.875rem; flex: none; opacity: 0.8; }
+  .tab.active .tab-icon { opacity: 1; }
+
+  .topbar-actions { display: inline-flex; align-items: center; gap: 0.5rem; justify-self: end; }
+  .icon-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 2.25rem; height: 2.25rem; padding: 0;
+    border-radius: var(--radius-md); border: 1px solid var(--border);
+    background: var(--muted); color: var(--foreground); cursor: pointer;
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+  }
+  .icon-btn:hover { background: var(--accent); color: var(--foreground); }
+  .icon-btn svg { width: 0.9375rem; height: 0.9375rem; }
+
+  /* 主题切换：三态图标 */
+  .theme-toggle .ico-system, .theme-toggle .ico-light, .theme-toggle .ico-dark { display: none; }
+  .theme-toggle[data-theme="system"] .ico-system { display: block; }
+  .theme-toggle[data-theme="light"] .ico-light { display: block; }
+  .theme-toggle[data-theme="dark"] .ico-dark { display: block; }
+
+  /* 连接状态胶囊 */
+  .conn {
+    display: inline-flex; align-items: center; gap: 8px;
+    height: 2.25rem; padding: 0 0.75rem;
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+    background: var(--card); font: 500 12px/1 var(--font-mono);
+    color: var(--muted-foreground); white-space: nowrap;
+  }
+  .conn b { color: var(--foreground); font-weight: 600; }
+
+  .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted-foreground); position: relative; flex: none; }
+  .status-dot.ok { background: var(--success); }
+  .status-dot.warn { background: var(--warning); }
+  .status-dot.err { background: var(--destructive); }
+  @media (prefers-reduced-motion: no-preference) {
+    .status-dot.ok::after {
+      content: ""; position: absolute; inset: -4px; border-radius: 50%;
+      background: var(--success); opacity: .35; animation: pulse 1.8s ease-out infinite;
+    }
+    @keyframes pulse { 0% { transform: scale(.6); opacity: .45; } 100% { transform: scale(1.4); opacity: 0; } }
+  }
+
+  #mainPage { flex: 1 0 auto; display: flex; flex-direction: column; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 1.5rem; width: 100%; flex: 1 0 auto; }
+
+  /* ── 指标卡（照抄 kiro-go .stat-card）── */
+  .stats-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 0.625rem; margin-bottom: 1.125rem; }
+  @media (max-width: 640px) { .stats-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+  .stat-card {
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 0.875rem 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.625rem; min-width: 0;
+  }
+  .stat-card-title { color: var(--muted-foreground); font-size: 0.75rem; font-weight: 500; line-height: 1.2; min-height: 1rem; }
+  .stat-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem; }
+  .stat-main { display: flex; flex-direction: column; gap: 0.375rem; min-width: 0; }
+  .stat-value {
+    font: 700 1.625rem/1 var(--font-sans); letter-spacing: -0.03em; color: var(--foreground);
+    font-feature-settings: "tnum"; display: flex; align-items: center; gap: 8px;
+  }
+  .stat-value.mono { font-family: var(--font-mono); font-size: 1.375rem; }
+  .stat-icon { color: var(--muted-foreground); flex: none; opacity: 0.45; margin-top: 0.0625rem; }
+  .stat-icon svg { width: 1rem; height: 1rem; }
+
+  /* ── 卡片 ── */
+  .tab-content { display: flex; flex-direction: column; gap: 1rem; }
+  .tab-content.hidden { display: none; }
+  .card {
+    background: var(--card); color: var(--card-foreground);
+    border: 1px solid var(--border); border-radius: var(--radius-lg);
+    padding: 1.25rem 1.5rem;
+  }
+  .card-header {
+    display: flex; align-items: center; justify-content: space-between; gap: 0.75rem;
+    padding-bottom: 1rem; margin-bottom: 1rem; border-bottom: 1px solid var(--border);
+  }
+  .card-title { font-size: 0.9375rem; font-weight: 600; color: var(--foreground); }
+  .card-actions { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+
+  /* ── 表单 ── */
+  .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .field > .lbl { font: 500 0.8125rem/1 var(--font-sans); color: var(--foreground); }
+  input, textarea {
+    font: 0.875rem/1.5 var(--font-sans); background: var(--background); color: var(--foreground);
+    border: 1px solid var(--input); border-radius: var(--radius-md); padding: 0.5rem 0.75rem;
+    height: 2.25rem; width: 100%; outline: none; transition: border-color .15s;
+  }
+  input.mono, textarea { font-family: var(--font-mono); font-size: 0.8125rem; }
+  textarea { height: auto; min-height: 5rem; resize: vertical; line-height: 1.5; }
+  input:focus, textarea:focus { border-color: var(--border-focus); }
+  input::placeholder, textarea::placeholder { color: var(--muted-foreground); opacity: .8; }
+
+  .grid { display: grid; gap: 12px; align-items: end; }
+  .grid.mapping { grid-template-columns: 1.2fr .8fr 20px 1.4fr .8fr auto; }
+  .grid.mapping .arrow { text-align: center; color: var(--muted-foreground); font: 15px/1 var(--font-mono); padding-bottom: 9px; opacity: .5; }
+  .grid.cred { grid-template-columns: 1fr 1fr auto; }
+  @media (max-width: 720px) {
+    .grid.mapping { grid-template-columns: 1fr 1fr; }
+    .grid.mapping .arrow { display: none; }
+    .grid.cred { grid-template-columns: 1fr; }
+  }
+
+  /* ── 按钮 ── */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+    font: 500 0.875rem/1 var(--font-sans); height: 2.25rem; padding: 0 1rem; cursor: pointer;
+    border: 1px solid transparent; border-radius: var(--radius-md); white-space: nowrap; user-select: none;
+    transition: background-color .15s, border-color .15s, color .15s, opacity .15s;
+  }
+  .btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .btn svg { width: 1rem; height: 1rem; }
+  .btn-primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .btn-primary:hover { background: color-mix(in oklab, var(--primary) 88%, var(--primary-foreground)); }
+  .btn-secondary { background: var(--secondary); color: var(--secondary-foreground); border-color: var(--border); }
+  .btn-secondary:hover { background: var(--accent); color: var(--accent-foreground); }
+  .btn-outline { background: var(--background); color: var(--foreground); border-color: var(--border); }
+  .btn-outline:hover { background: var(--muted); border-color: color-mix(in oklab, var(--border) 82%, var(--muted-foreground)); }
+  .btn-sm { height: 2.25rem; padding: 0 0.875rem; font-size: 0.8125rem; }
+  .btn-del {
+    height: 1.75rem; padding: 0 0.625rem; font-size: 0.75rem; border-radius: var(--radius-sm);
+    background: transparent; color: var(--muted-foreground); border-color: transparent;
+  }
+  .btn-del:hover { color: var(--destructive-foreground); background: var(--destructive); }
+
+  /* ── 徽章 ── */
+  .badge {
+    display: inline-flex; align-items: center; gap: 0.25rem; font: 600 0.6875rem/1.4 var(--font-mono);
+    padding: 0.125rem 0.5rem; border-radius: 9999px; border: 1px solid transparent; white-space: nowrap;
+    background: #525252; color: #fff;
+  }
+  .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.ok { background: var(--success); color: var(--success-foreground); }
+  .badge.no { background: var(--warning); color: var(--warning-foreground); }
+
+  .cred-status {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding: 0.75rem 0.875rem; margin-bottom: 1rem; background: var(--muted);
+    border: 1px solid var(--border); border-radius: var(--radius-md);
+  }
+  .node-id { font: 0.8125rem/1.4 var(--font-mono); color: var(--muted-foreground); word-break: break-all; flex: 1 1 auto; min-width: 0; }
+  .node-id b { color: var(--foreground); font-weight: 600; }
+
+  .divider-h { height: 1px; background: var(--border); margin: 1.125rem 0; border: 0; }
+  .hint { font-size: 0.8125rem; color: var(--muted-foreground); margin: 0 0 0.875rem; line-height: 1.6; }
+  .hint kbd {
+    font: 0.6875rem/1 var(--font-mono); background: var(--muted); color: var(--foreground);
+    border: 1px solid var(--border); border-radius: 4px; padding: 2px 5px;
+  }
+  #ioMsg { font: 500 0.75rem/1 var(--font-mono); color: var(--success); }
+
+  /* ── 数据表 ── */
+  .table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: var(--card); }
+  table { width: 100%; border-collapse: collapse; }
+  thead th {
+    font: 500 10px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase;
+    color: var(--muted-foreground); text-align: left; padding: 12px 16px;
+    background: var(--muted); border-bottom: 1px solid var(--border);
+  }
+  thead th.r, tbody td.r { text-align: right; }
+  tbody td { padding: 13px 16px; border-bottom: 1px solid var(--border); font: 13px/1.4 var(--font-mono); color: var(--foreground); }
+  tbody tr:last-child td { border-bottom: 0; }
+  tbody tr:hover td { background: var(--muted); }
+  td.target { color: var(--muted-foreground); }
+  td.target .to { color: var(--muted-foreground); opacity: .5; margin: 0 6px; }
+  td.num { color: var(--muted-foreground); font-variant-numeric: tabular-nums; }
+  td.act { text-align: right; width: 1%; white-space: nowrap; }
+  .empty { padding: 44px 20px; text-align: center; color: var(--muted-foreground); font: 13px/1.5 var(--font-mono); }
+
+  /* ── 页脚（照抄 kiro-go .app-footer）── */
+  .app-footer { margin-top: auto; width: 100%; background: var(--background); }
+  .app-footer-inner { max-width: 1200px; margin: 0 auto; padding: 1.375rem 1.75rem 1rem; }
+  .footer-panel { display: flex; align-items: flex-start; justify-content: space-between; gap: 2rem; }
+  .footer-identity { display: flex; align-items: center; gap: 1rem; min-width: 0; }
+  .footer-icon { width: 2.25rem; height: 2.25rem; color: var(--success); flex: none; }
+  .footer-title-row { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .footer-title { color: var(--foreground); font-size: 0.9375rem; font-weight: 600; line-height: 1.2; }
+  .footer-version { color: var(--muted-foreground); font-size: 0.75rem; }
+  .footer-desc { max-width: 31rem; margin: 0.375rem 0 0; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.55; }
+  .footer-actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+  .app-footer .status-dot { width: 0.4375rem; height: 0.4375rem; }
+  .footer-status { display: inline-flex; align-items: center; gap: 0.5rem; font: 500 0.8125rem/1 var(--font-mono); color: var(--muted-foreground); }
+  .footer-meta { display: flex; align-items: center; justify-content: center; gap: 0.75rem; flex-wrap: wrap; margin-top: 1.5rem; color: var(--muted-foreground); font-size: 0.75rem; }
+
+  /* ── 响应式：窄屏顶栏两行（照抄 kiro-go 手机布局）── */
+  @media (max-width: 720px) {
+    .app-header { border-bottom: 1px solid var(--border); }
+    .app-header-inner {
+      width: 100%; max-width: 32rem; padding: 0.875rem 1rem 0.95rem;
+      grid-template-columns: minmax(0,1fr) auto;
+      grid-template-areas: "brand actions" "nav nav";
+      height: auto; gap: 0.875rem 0.75rem;
+    }
+    .brand-wrap { grid-area: brand; }
+    .header-nav { grid-area: nav; width: 100%; justify-content: center; }
+    .tabs { width: min(100%, 23rem); display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0.5rem; }
+    .tab { min-height: 2.75rem; height: auto; padding: 0.375rem 0.25rem; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; }
+    .topbar-actions { grid-area: actions; justify-content: flex-end; }
+    .conn { display: none; }
+    .footer-panel { flex-direction: column; gap: 1rem; }
+    .container { padding-left: 1rem; padding-right: 1rem; }
+  }
+</style>
+</head>
+<body>
+
+<div id="mainPage">
+  <header class="app-header">
+    <div class="app-header-inner">
+      <div class="brand-wrap">
+        <a class="brand" href="#">
+          <svg class="brand-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          <span class="brand-text">Power<b>Mapping</b></span>
+        </a>
+      </div>
+      <nav class="header-nav" aria-label="页面">
+        <div class="tabs" id="tabBar">
+          <button type="button" class="tab active" data-tab="mappings">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+            <span>端口映射</span>
+          </button>
+          <button type="button" class="tab" data-tab="connection">
+            <svg class="tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            <span>连接</span>
+          </button>
+        </div>
+      </nav>
+      <div class="topbar-actions">
+        <span class="conn">
+          <span id="statusDot" class="status-dot"></span>
+          <span id="statusText">查询中</span>
+        </span>
+        <button id="themeToggle" class="icon-btn theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">
+          <svg class="ico-system" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 3v18" fill="currentColor"/><path d="M12 3a9 9 0 0 1 0 18z" fill="currentColor" stroke="none"/></svg>
+          <svg class="ico-light" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/></svg>
+          <svg class="ico-dark" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="container">
+    <!-- 指标卡 -->
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-card-title">连接状态</div>
+        <div class="stat-body">
+          <div class="stat-main"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span></div></div>
+          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.55a11 11 0 0 1 14.08 0"/><path d="M1.42 9a16 16 0 0 1 21.16 0"/><path d="M8.53 16.11a6 6 0 0 1 6.95 0"/><line x1="12" y1="20" x2="12.01" y2="20"/></svg></span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-title">映射隧道</div>
+        <div class="stat-body">
+          <div class="stat-main"><div class="stat-value" id="mTunnels">0</div></div>
+          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg></span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-title">总上行</div>
+        <div class="stat-body">
+          <div class="stat-main"><div class="stat-value mono" id="mTx">0</div></div>
+          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="19" x2="12" y2="5"/><polyline points="5 12 12 5 19 12"/></svg></span>
+        </div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-card-title">总下行</div>
+        <div class="stat-body">
+          <div class="stat-main"><div class="stat-value mono" id="mRx">0</div></div>
+          <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><polyline points="19 12 12 19 5 12"/></svg></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab: 端口映射 -->
+    <div id="tabMappings" class="tab-content">
+      <div class="card">
+        <div class="card-header"><span class="card-title">添加映射</span></div>
+        <p class="hint">
+          本地地址默认 <kbd>127.0.0.1</kbd>，也可填 <kbd>127.0.0.2</kbd> 这类 127/8 虚拟 IP。
+          目标主机填 server 端所在内网里能访问到的 IP / 主机名。
+        </p>
+        <form id="f">
+          <div class="grid mapping">
+            <div class="field"><span class="lbl">本地地址</span><input name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" required /></div>
+            <div class="field"><span class="lbl">本地端口</span><input name="localPort" class="mono" type="number" placeholder="8080" required /></div>
+            <div class="arrow">→</div>
+            <div class="field"><span class="lbl">目标主机</span><input name="host" class="mono" placeholder="192.168.1.101" required /></div>
+            <div class="field"><span class="lbl">目标端口</span><input name="port" class="mono" type="number" placeholder="6379" required /></div>
+            <button type="submit" class="btn btn-primary">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+              添加
+            </button>
+          </div>
+        </form>
+      </div>
+
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>本地监听</th><th>目标</th><th class="r">↑ 上行</th><th class="r">↓ 下行</th><th></th>
+          </tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+        <div id="empty" class="empty">暂无映射 · 在上方添加一条</div>
+      </div>
+    </div>
+
+    <!-- Tab: 连接 -->
+    <div id="tabConnection" class="tab-content hidden">
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">连接设置</span>
+          <div class="card-actions">
+            <button id="exportBtn" class="btn btn-outline btn-sm" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              导出配置
+            </button>
+            <button id="importBtn" class="btn btn-outline btn-sm" type="button">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+              导入配置
+            </button>
+            <input id="importFile" type="file" accept="application/json,.json" style="display:none" />
+          </div>
+        </div>
+        <div class="cred-status">
+          <span id="credBadge" class="badge no">未配置</span>
+          <span id="credNode" class="node-id"></span>
+          <button id="copyNode" class="btn btn-outline btn-sm" type="button" style="display:none">复制 node_id</button>
+          <button id="copyToken" class="btn btn-outline btn-sm" type="button" style="display:none">复制 token</button>
+        </div>
+        <p class="hint" style="margin-bottom:12px">
+          粘贴 server 端 <kbd>credential.json</kbd> 内容，或在下方分栏填写 node_id 与 token。接入后即时切换连接目标并重连。
+        </p>
+        <form id="credForm">
+          <div class="field" style="margin-bottom:12px">
+            <span class="lbl">凭证 JSON</span>
+            <textarea id="credJson" placeholder='{"node_id":"3b23...","token":"991f..."}'></textarea>
+          </div>
+          <div class="grid cred">
+            <div class="field"><span class="lbl">node_id</span><input id="credNodeIn" class="mono" placeholder="3b2302e0..." /></div>
+            <div class="field"><span class="lbl">token</span><input id="credTokenIn" class="mono" placeholder="991fd0a3..." /></div>
+            <button type="submit" class="btn btn-primary">接入 / 更新</button>
+          </div>
+        </form>
+        <hr class="divider-h" />
+        <span id="ioMsg"></span>
+      </div>
+    </div>
+  </div>
+
+  <footer class="app-footer">
+    <div class="app-footer-inner">
+      <div class="footer-panel">
+        <div class="footer-identity">
+          <svg class="footer-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><line x1="4" y1="22" x2="4" y2="15"/></svg>
+          <div class="footer-copy">
+            <div class="footer-title-row">
+              <span class="footer-title">PowerMap</span>
+              <span class="footer-version">内网穿透控制台</span>
+            </div>
+            <p class="footer-desc">把内网服务安全地映射到本地端口 · 单可执行、零依赖。</p>
+          </div>
+        </div>
+        <div class="footer-actions">
+          <span class="footer-status"><span id="footerDot" class="status-dot"></span><span id="footerStatus">查询中</span></span>
+        </div>
+      </div>
+      <div class="footer-meta"><span>© <span id="footerYear"></span> PowerMap</span></div>
+    </div>
+  </footer>
+</div>
+
+<script>
+const $rows = document.getElementById('rows');
+const $empty = document.getElementById('empty');
+
+// ── 主题：system / light / dark 三态循环，照抄 kiro-go ──
+const THEME_KEY = 'powermap_theme';
+const mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+function applyTheme(mode) {
+  const dark = mode === 'dark' || (mode === 'system' && mql && mql.matches);
+  document.documentElement.classList.toggle('dark', dark);
+  document.getElementById('themeToggle').setAttribute('data-theme', mode);
+}
+let themeMode = localStorage.getItem(THEME_KEY) || 'system';
+applyTheme(themeMode);
+if (mql) mql.addEventListener('change', () => { if (themeMode === 'system') applyTheme('system'); });
+document.getElementById('themeToggle').addEventListener('click', () => {
+  themeMode = themeMode === 'system' ? 'light' : themeMode === 'light' ? 'dark' : 'system';
+  localStorage.setItem(THEME_KEY, themeMode);
+  applyTheme(themeMode);
+});
+
+// ── 标签页切换 ──
+const TAB_KEY = 'powermap_tab';
+const tabViews = { mappings: 'tabMappings', connection: 'tabConnection' };
+function selectTab(name) {
+  if (!tabViews[name]) name = 'mappings';
+  for (const [k, id] of Object.entries(tabViews)) {
+    document.getElementById(id).classList.toggle('hidden', k !== name);
+  }
+  document.querySelectorAll('#tabBar .tab').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === name);
+  });
+  localStorage.setItem(TAB_KEY, name);
+}
+document.getElementById('tabBar').addEventListener('click', (e) => {
+  const b = e.target.closest('.tab');
+  if (b) selectTab(b.dataset.tab);
+});
+selectTab(localStorage.getItem(TAB_KEY) || 'mappings');
+
+document.getElementById('footerYear').textContent = new Date().getFullYear();
+
+// ── 鉴权：URL 里的 ?token= 存到 localStorage，之后请求带上 Bearer 头 ──
+const TOKEN_KEY = 'powermap_token';
+(function pickUpToken() {
+  const p = new URLSearchParams(location.search);
+  const t = p.get('token');
+  if (t) { localStorage.setItem(TOKEN_KEY, t); history.replaceState(null, '', location.pathname); }
+})();
+function token() { return localStorage.getItem(TOKEN_KEY) || ''; }
+function authHeaders(extra) {
+  const h = Object.assign({}, extra || {});
+  const t = token();
+  if (t) h['Authorization'] = 'Bearer ' + t;
+  return h;
+}
+async function api(path, opts) {
+  const r = await fetch(path, Object.assign({}, opts, { headers: authHeaders((opts||{}).headers) }));
+  if (r.status === 401) {
+    const t = prompt('需要访问令牌（web_token）：');
+    if (t) { localStorage.setItem(TOKEN_KEY, t); return api(path, opts); }
+    throw new Error('unauthorized');
+  }
+  return r;
+}
+
+function fmtBytes(n) {
+  if (!n) return '0';
+  const u = ['B','KB','MB','GB','TB'];
+  let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return n.toFixed(n < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); return true; }
+  catch { return false; }
+}
+
+// ── 连接设置：凭证状态 / 复制 / 接入 ──
+let curCred = { node_id: '', token: '', configured: false, token_hidden: false };
+async function refreshCred() {
+  try {
+    const c = await (await api('/api/credential')).json();
+    curCred = c;
+    const badge = document.getElementById('credBadge');
+    badge.textContent = c.configured ? '已配置' : '未配置';
+    badge.className = 'badge ' + (c.configured ? 'ok' : 'no');
+    document.getElementById('credNode').innerHTML =
+      c.node_id ? ('<b>node_id</b> ' + esc(c.node_id)) : '';
+    document.getElementById('copyNode').style.display = c.node_id ? '' : 'none';
+    document.getElementById('copyToken').style.display = (c.token && !c.token_hidden) ? '' : 'none';
+  } catch (e) { if (String(e) === 'Error: unauthorized') return; }
+}
+document.getElementById('copyNode').addEventListener('click', async () => {
+  const ok = await copyText(curCred.node_id || '');
+  ioMsg(ok ? 'node_id 已复制' : '复制失败，请手动选取');
+});
+document.getElementById('copyToken').addEventListener('click', async () => {
+  const ok = await copyText(curCred.token || '');
+  ioMsg(ok ? 'token 已复制' : '复制失败，请手动选取');
+});
+document.getElementById('credForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  let node_id = document.getElementById('credNodeIn').value.trim();
+  let tok = document.getElementById('credTokenIn').value.trim();
+  const raw = document.getElementById('credJson').value.trim();
+  if (raw) {
+    try {
+      const j = JSON.parse(raw);
+      node_id = (j.node_id || '').trim();
+      tok = (j.token || '').trim();
+    } catch { alert('凭证 JSON 解析失败，请检查格式'); return; }
+  }
+  if (!node_id || !tok) { alert('请提供 node_id 与 token（粘贴 JSON 或分栏填写）'); return; }
+  const r = await api('/api/credential', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ node_id, token: tok }),
+  });
+  if (!r.ok) { alert((await r.text()) || '接入失败'); return; }
+  document.getElementById('credJson').value = '';
+  document.getElementById('credNodeIn').value = '';
+  document.getElementById('credTokenIn').value = '';
+  ioMsg('凭证已更新，正在用新凭证重连…');
+  refreshCred(); refreshStatus();
+});
+
+// ── 导入 / 导出 ──
+function ioMsg(t) {
+  const el = document.getElementById('ioMsg');
+  el.textContent = t || '';
+  if (t) setTimeout(() => { if (el.textContent === t) el.textContent = ''; }, 4000);
+}
+document.getElementById('exportBtn').addEventListener('click', async () => {
+  const r = await api('/api/export');
+  if (!r.ok) { alert((await r.text()) || '导出失败'); return; }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'powermap-client.config.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  ioMsg('配置已导出');
+});
+document.getElementById('importBtn').addEventListener('click', () => {
+  document.getElementById('importFile').click();
+});
+document.getElementById('importFile').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  let cfg;
+  try { cfg = JSON.parse(await file.text()); }
+  catch { alert('配置文件不是合法 JSON'); e.target.value = ''; return; }
+  if (!confirm('导入将覆盖当前所有映射，并更新凭证。确定继续？')) { e.target.value = ''; return; }
+  const r = await api('/api/import', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
+  });
+  e.target.value = '';
+  if (!r.ok) { alert((await r.text()) || '导入失败'); return; }
+  const res = await r.json();
+  let msg = `已导入 ${res.started} 条映射`;
+  if (res.failed && res.failed.length) msg += `，${res.failed.length} 条失败`;
+  if (res.credential_updated) msg += '，凭证已更新';
+  ioMsg(msg);
+  refreshCred(); refreshStatus(); refresh();
+});
+
+// ── 映射列表 ──
+async function refresh() {
+  let list, st;
+  try {
+    [list, st] = await Promise.all([api('/api/mappings').then(r=>r.json()), api('/api/stats').then(r=>r.json())]);
+  } catch (e) { if (String(e)==='Error: unauthorized') return; throw e; }
+  const statMap = Object.fromEntries((st||[]).map(s => [s.local, s]));
+  $rows.innerHTML = '';
+  $empty.style.display = list.length ? 'none' : 'block';
+  let totalTx = 0, totalRx = 0;
+  for (const m of list) {
+    const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
+    totalTx += s.tx_bytes || 0; totalRx += s.rx_bytes || 0;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${esc(m.local)}</td>` +
+                   `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
+                   `<td class="num r">${fmtBytes(s.tx_bytes)}</td>` +
+                   `<td class="num r">${fmtBytes(s.rx_bytes)}</td>` +
+                   `<td class="act"><button class="btn-del" data-id="${esc(m.local)}">断开</button></td>`;
+    $rows.appendChild(tr);
+  }
+  document.getElementById('mTx').textContent = fmtBytes(totalTx);
+  document.getElementById('mRx').textContent = fmtBytes(totalRx);
+}
+$rows.addEventListener('click', async (e) => {
+  const btn = e.target.closest('button.btn-del');
+  if (!btn) return;
+  await api('/api/mappings/' + encodeURIComponent(btn.dataset.id), { method: 'DELETE' });
+  refresh();
+});
+document.getElementById('f').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const fd = new FormData(e.target);
+  const addr = (fd.get('localAddr') || '127.0.0.1').trim() || '127.0.0.1';
+  const lport = Number(fd.get('localPort'));
+  const body = { local: addr + ':' + lport, host: fd.get('host').trim(), port: Number(fd.get('port')) };
+  const r = await api('/api/mappings', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  if (!r.ok) { alert((await r.text()) || '添加失败'); return; }
+  e.target.reset();
+  e.target.querySelector('[name=localAddr]').value = '127.0.0.1';
+  refresh();
+});
+
+// ── 状态：顶栏 + 指标卡 + 页脚 ──
+async function refreshStatus() {
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  const mDot = document.getElementById('mStateDot');
+  const mState = document.getElementById('mState');
+  const mTunnels = document.getElementById('mTunnels');
+  const fDot = document.getElementById('footerDot');
+  const fTxt = document.getElementById('footerStatus');
+  try {
+    const s = await (await fetch('/api/status', { headers: authHeaders() })).json();
+    let cls, label;
+    if (!s.configured) { cls = ''; label = '未配置'; }
+    else if (s.connected) { cls = 'ok'; label = '已连接'; }
+    else { cls = 'warn'; label = '未连接'; }
+    dot.className = 'status-dot ' + cls;
+    txt.textContent = label;
+    mDot.className = 'status-dot ' + cls;
+    mDot.style.width = mDot.style.height = '10px';
+    mState.textContent = label;
+    mTunnels.textContent = s.mappings;
+    fDot.className = 'status-dot ' + cls;
+    fTxt.textContent = label;
+  } catch {
+    dot.className = 'status-dot err'; txt.textContent = '服务不可用';
+    mDot.className = 'status-dot err'; mState.textContent = '不可用';
+    fDot.className = 'status-dot err'; fTxt.textContent = '服务不可用';
+  }
+}
+refreshCred();
+refresh();
+refreshStatus();
+setInterval(refreshStatus, 5000);
+setInterval(refresh, 5000);
+</script>
+</body>
+</html>

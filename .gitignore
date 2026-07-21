@@ -1,0 +1,18 @@
+# Rust build output
+/target
+**/*.rs.bk
+*.pdb
+
+# Runtime data / credentials — never commit these
+/data
+*.key
+*.credential.json
+powermap-server.toml
+powermap-client.toml
+
+# Editor / OS
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*~

@@ -1,0 +1,37 @@
+[package]
+name = "powermap"
+version = "0.1.0"
+edition = "2024"
+description = "P2P NAT traversal tunnel based on iroh: expose intranet services to your home computer"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+iroh = "1"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+dirs = "5"
+ipnet = "2"
+axum = { version = "0.8", features = ["json"] }
+# TLS：用 no-provider 变体 + 显式 ring provider，复用 iroh 已引入的 ring，
+# 避免 aws-lc-rs 的 C/cmake 构建（更慢、在受限环境易失败）。
+axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+tokio-util = { version = "0.7", features = ["rt"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[[bin]]
+name = "powermap-server"
+path = "src/bin/server.rs"
+
+[[bin]]
+name = "powermap-client"
+path = "src/bin/client.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1

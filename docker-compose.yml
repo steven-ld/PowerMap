@@ -1,0 +1,16 @@
+# powermap-server（穿透端）部署在内网设备上的示例。
+# 首次启动会生成 /data/powermap-server.toml、/data/powermap-server.key、/data/powermap-server.credential.json。
+# 把 credential.json 交给 A 端即可。
+services:
+  powermap-server:
+    build: .
+    image: powermap:latest
+    container_name: powermap-server
+    # host 网络模式下 QUIC/UDP 打洞成功率更高；不方便时也可删掉这行用默认 bridge
+    network_mode: host
+    restart: unless-stopped
+    volumes:
+      - ./data:/data
+    environment:
+      - RUST_LOG=info
+    command: ["powermap-server", "--config", "/data/powermap-server.toml"]
