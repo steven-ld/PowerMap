@@ -76,6 +76,7 @@ struct Creds {
     node_id: String,
     token: String,
     target: Option<PublicKey>,
+    published_targets: Vec<config::PublishedTarget>,
 }
 
 /// 到 B 的共享连接池：所有映射的隧道都复用同一条 iroh 连接（QUIC 多流），
@@ -126,12 +127,19 @@ impl Link {
     }
 
     /// 切换连接目标：更新凭证并断开当前连接，下次 get() 用新凭证重连。
-    async fn set_creds(&self, node_id: String, token: String, target: PublicKey) {
+    async fn set_creds(
+        &self,
+        node_id: String,
+        token: String,
+        target: PublicKey,
+        published_targets: Vec<config::PublishedTarget>,
+    ) {
         {
             let mut c = self.creds.write().await;
             c.node_id = node_id;
             c.token = token;
             c.target = Some(target);
+            c.published_targets = published_targets;
         }
         self.invalidate().await;
     }
@@ -673,6 +681,36 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn credential_view_preserves_published_targets_for_the_console() {
+        let state = test_state("").await;
+        let node_id = state.link.endpoint.id().to_string();
+        let target = parse_target(&node_id).unwrap();
+        state
+            .link
+            .set_creds(
+                node_id,
+                "test-token".into(),
+                target,
+                vec![config::PublishedTarget {
+                    host: "192.168.1.101".into(),
+                    port: 6379,
+                    label: "Redis 主库".into(),
+                }],
+            )
+            .await;
+        let app = app(state);
+
+        let response = app
+            .oneshot(Request::get("/api/credential").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["published_targets"][0]["host"], "192.168.1.101");
+        assert_eq!(body["published_targets"][0]["port"], 6379);
+    }
+
+    #[tokio::test]
     async fn query_string_tokens_do_not_authorize_management_requests() {
         let state = test_state("admin-secret").await;
         let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1134,9 +1172,13 @@ async fn build_config(st: &AppState) -> config::AConfig {
     for mapping in mapping_handles {
         mappings.push(mapping.read().await.clone());
     }
-    let (node_id, token) = {
+    let (node_id, token, published_targets) = {
         let c = st.link.creds.read().await;
-        (c.node_id.clone(), c.token.clone())
+        (
+            c.node_id.clone(),
+            c.token.clone(),
+            c.published_targets.clone(),
+        )
     };
     config::AConfig {
         node_id,
@@ -1148,6 +1190,7 @@ async fn build_config(st: &AppState) -> config::AConfig {
         max_mappings: st.max_mappings,
         max_conns_per_mapping: st.max_conns_per_mapping,
         mappings,
+        published_targets,
     }
 }
 
@@ -1187,6 +1230,7 @@ struct CredentialView {
     /// 当前接入令牌；非回环且未设 web_token 时置空并由 token_hidden 标记原因。
     token: String,
     token_hidden: bool,
+    published_targets: Vec<config::PublishedTarget>,
 }
 
 /// GET /api/credential —— 供网页查看/复制当前凭证。
@@ -1202,6 +1246,7 @@ async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
             String::new()
         },
         token_hidden: !expose && !c.token.is_empty(),
+        published_targets: c.published_targets.clone(),
     })
 }
 
@@ -1219,6 +1264,7 @@ async fn set_credential(
             cred.node_id.trim().to_string(),
             cred.token.trim().to_string(),
             target,
+            cred.published_targets.clone(),
         )
         .await;
     save_config(&st).await;
@@ -1234,6 +1280,7 @@ async fn set_credential(
             String::new()
         },
         token_hidden: !expose && !c.token.is_empty(),
+        published_targets: c.published_targets.clone(),
     }))
 }
 
@@ -1367,6 +1414,7 @@ async fn import_config(
                 incoming.node_id.trim().to_string(),
                 incoming.token.trim().to_string(),
                 target,
+                incoming.published_targets.clone(),
             )
             .await;
     }
@@ -1410,6 +1458,7 @@ async fn main() -> Result<()> {
             serde_json::from_str(&s).context("解析凭证失败（应为 {node_id, token} JSON）")?;
         cfg.node_id = cred.node_id;
         cfg.token = cred.token;
+        cfg.published_targets = cred.published_targets;
     }
     if let Some(w) = args.web {
         cfg.web_bind = w;
@@ -1473,6 +1522,7 @@ async fn main() -> Result<()> {
             node_id: cfg.node_id.clone(),
             token: cfg.token.clone(),
             target,
+            published_targets: cfg.published_targets.clone(),
         })),
         conn: Arc::new(Mutex::new(None)),
     };

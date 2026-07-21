@@ -223,6 +223,7 @@ async fn main() -> Result<()> {
         let cred = tunnel::Credential {
             node_id: node_id.clone(),
             token: default_token.clone(),
+            published_targets: cfg.published_targets.clone(),
         };
         let cred_path = config_path.with_file_name("powermap-server.credential.json");
         std::fs::write(&cred_path, serde_json::to_string_pretty(&cred)?)?;
@@ -292,6 +293,7 @@ mod integration_tests {
                 token: "test-token".into(),
                 allow_networks: vec!["127.0.0.0/8".into()],
                 allow_ports,
+                published_targets: vec![],
                 max_streams: 0,
                 revoked: false,
             },

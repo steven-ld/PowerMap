@@ -27,6 +27,37 @@ pub struct Mapping {
     pub port: u16,
 }
 
+/// B 端明确允许在 client 管理页中推荐的目标服务。
+///
+/// 这不是一条额外的访问授权：实际拨号仍由 allow_networks / allow_ports
+/// 决定。它只避免 client 为了找服务而扫描整个内网。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PublishedTarget {
+    /// B 端内网可访问的 IP 或主机名。
+    pub host: String,
+    /// 服务端口。
+    pub port: u16,
+    /// 控制台中展示的可读名称，例如 "Redis 主库"。
+    #[serde(default)]
+    pub label: String,
+}
+
+impl PublishedTarget {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let host = self.host.trim();
+        if host.is_empty() || host.len() > 255 || host.chars().any(|c| c.is_ascii_whitespace()) {
+            return Err("published_targets 的 host 必须是有效的 IP 或主机名".into());
+        }
+        if self.port == 0 {
+            return Err("published_targets 的 port 不能为 0".into());
+        }
+        if self.label.len() > 80 {
+            return Err("published_targets 的 label 不能超过 80 个字符".into());
+        }
+        Ok(())
+    }
+}
+
 impl Mapping {
     /// 校验映射字段合法性，返回中文错误描述。
     pub fn validate(&self) -> std::result::Result<(), String> {
@@ -80,6 +111,9 @@ pub struct AConfig {
     /// 映射规则列表（持久化，重启自动恢复）
     #[serde(default)]
     pub mappings: Vec<Mapping>,
+    /// 从 B 端凭证带入的推荐目标；只用于管理页自动填写，不改变访问授权。
+    #[serde(default)]
+    pub published_targets: Vec<PublishedTarget>,
 }
 
 impl Default for AConfig {
@@ -94,6 +128,7 @@ impl Default for AConfig {
             max_mappings: default_max_mappings(),
             max_conns_per_mapping: default_max_conns_per_mapping(),
             mappings: Vec::new(),
+            published_targets: Vec::new(),
         }
     }
 }
@@ -125,6 +160,9 @@ impl AConfig {
                 return Err(format!("本地监听地址 {} 重复", mapping.local));
             }
         }
+        for target in &self.published_targets {
+            target.validate()?;
+        }
         Ok(())
     }
 }
@@ -154,6 +192,9 @@ pub struct ClientCred {
     /// 允许拨号的目标端口；留空=允许全部
     #[serde(default)]
     pub allow_ports: Vec<u16>,
+    /// 仅对该客户公开的推荐目标，client 会在创建映射时实际拨号验证后展示。
+    #[serde(default)]
+    pub published_targets: Vec<PublishedTarget>,
     /// 该客户的最大并发隧道数（0 = 不限）
     #[serde(default)]
     pub max_streams: usize,
@@ -183,6 +224,9 @@ pub struct BConfig {
     /// 单租户模式下允许拨号的目标端口；留空表示允许全部
     #[serde(default)]
     pub allow_ports: Vec<u16>,
+    /// 单租户模式下向 client 推荐的目标服务；需同时受白名单允许。
+    #[serde(default)]
+    pub published_targets: Vec<PublishedTarget>,
     /// 多租户客户端列表
     #[serde(default)]
     pub clients: Vec<ClientCred>,
@@ -204,6 +248,7 @@ impl Default for BConfig {
             token: String::new(),
             allow_networks: Vec::new(),
             allow_ports: Vec::new(),
+            published_targets: Vec::new(),
             clients: Vec::new(),
             max_streams_per_conn: default_max_streams_per_conn(),
             dial_timeout_secs: default_dial_timeout_secs(),
@@ -223,6 +268,7 @@ impl BConfig {
                 token: self.token.clone(),
                 allow_networks: self.allow_networks.clone(),
                 allow_ports: self.allow_ports.clone(),
+                published_targets: self.published_targets.clone(),
                 max_streams: 0,
                 revoked: false,
             });
@@ -253,6 +299,12 @@ impl BConfig {
         }
 
         validate_policy("默认客户", &self.allow_networks, &self.allow_ports)?;
+        validate_published_targets(
+            "默认客户",
+            &self.published_targets,
+            &self.allow_networks,
+            &self.allow_ports,
+        )?;
         let mut ids = HashSet::new();
         let mut tokens = HashSet::new();
         if !self.token.is_empty() {
@@ -277,6 +329,12 @@ impl BConfig {
                 &client.allow_networks,
                 &client.allow_ports,
             )?;
+            validate_published_targets(
+                &format!("客户 {}", client.id),
+                &client.published_targets,
+                &client.allow_networks,
+                &client.allow_ports,
+            )?;
         }
         Ok(())
     }
@@ -293,6 +351,33 @@ fn validate_policy(
     }
     if allow_ports.contains(&0) {
         return Err(format!("{owner} 的 allow_ports 不能包含 0"));
+    }
+    Ok(())
+}
+
+fn validate_published_targets(
+    owner: &str,
+    targets: &[PublishedTarget],
+    allow_networks: &[String],
+    allow_ports: &[u16],
+) -> std::result::Result<(), String> {
+    if targets.len() > 12 {
+        return Err(format!("{owner} 的 published_targets 最多可配置 12 项"));
+    }
+    let policy = crate::tunnel::TargetPolicy::from_config(allow_networks, allow_ports);
+    let mut seen = HashSet::new();
+    for target in targets {
+        target.validate()?;
+        let key = (target.host.trim().to_ascii_lowercase(), target.port);
+        if !seen.insert(key) {
+            return Err(format!("{owner} 的 published_targets 包含重复目标"));
+        }
+        if !policy.port_allowed(target.port) {
+            return Err(format!(
+                "{owner} 的 published_targets 端口 {} 不在 allow_ports 中",
+                target.port
+            ));
+        }
     }
     Ok(())
 }
@@ -547,6 +632,7 @@ revoked = true
                 token: String::new(),
                 allow_networks: vec![],
                 allow_ports: vec![],
+                published_targets: vec![],
                 max_streams: 0,
                 revoked: false,
             }],
@@ -595,6 +681,23 @@ allow_ports = [22, 443]
     }
 
     #[test]
+    fn published_targets_must_stay_inside_the_port_allowlist() {
+        let mut b = BConfig {
+            token: "top".into(),
+            allow_ports: vec![6379],
+            published_targets: vec![PublishedTarget {
+                host: "192.168.1.101".into(),
+                port: 5432,
+                label: "PostgreSQL".into(),
+            }],
+            ..Default::default()
+        };
+        assert!(b.validate().is_err());
+        b.published_targets[0].port = 6379;
+        assert!(b.validate().is_ok());
+    }
+
+    #[test]
     fn effective_clients_merges_top_level_and_explicit_clients() {
         let b = BConfig {
             token: "top".into(),
@@ -604,6 +707,7 @@ allow_ports = [22, 443]
                     token: "atok".into(),
                     allow_networks: vec!["192.168.0.0/16".into()],
                     allow_ports: vec![],
+                    published_targets: vec![],
                     max_streams: 4,
                     revoked: false,
                 },
@@ -616,6 +720,7 @@ allow_ports = [22, 443]
                         token: String::new(),
                         allow_networks: vec![],
                         allow_ports: vec![],
+                        published_targets: vec![],
                         max_streams: 0,
                         revoked: false,
                     }

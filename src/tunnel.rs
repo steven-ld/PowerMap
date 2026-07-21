@@ -52,6 +52,9 @@ pub struct Credential {
     pub node_id: String,
     /// 访问令牌，防止知道 node id 的第三方盗用隧道
     pub token: String,
+    /// B 端管理员显式发布的候选目标。旧凭证省略此字段时保持兼容。
+    #[serde(default)]
+    pub published_targets: Vec<config::PublishedTarget>,
 }
 
 /// 常量时间比较令牌，避免计时侧信道泄露正确令牌的前缀。
@@ -512,6 +515,7 @@ mod tests {
                 token: "tok-alice".into(),
                 allow_networks: vec![],
                 allow_ports: vec![],
+                published_targets: vec![],
                 max_streams: 0,
                 revoked: false,
             },
@@ -520,6 +524,7 @@ mod tests {
                 token: "tok-bob".into(),
                 allow_networks: vec![],
                 allow_ports: vec![],
+                published_targets: vec![],
                 max_streams: 0,
                 revoked: true,
             },

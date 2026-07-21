@@ -22,7 +22,35 @@ redis-cli ──> 127.0.0.1:6379 ──> PowerMap ──> 192.168.1.101:6379
              home machine           encrypted P2P tunnel  intranet service
 ```
 
-## Why PowerMap?
+## Navigate
+
+- [Install in One Minute](#install-in-one-minute)
+- [Get Started in Three Minutes](#get-started-in-three-minutes)
+- [Where It Fits](#where-it-fits)
+- [Deploy and Remote Administration](#deploy)
+- [Security Model](#security-model)
+- [Configuration Reference](#configuration-reference)
+- [Troubleshooting](#troubleshooting)
+
+## Install in One Minute
+
+On macOS or Linux, the installer fetches the latest **verified** release and installs it to `~/.local/bin` by default. Review the script before running it if preferred.
+
+```bash
+curl -fsSLO https://raw.githubusercontent.com/steven-ld/PowerMap/main/scripts/install.sh
+sh install.sh
+```
+
+Windows (PowerShell):
+
+```powershell
+Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scripts/install.ps1 -OutFile install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
+```
+
+The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.1.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
+
+## Where It Fits
 
 | You need | PowerMap does |
 |---|---|
@@ -32,6 +60,12 @@ redis-cli ──> 127.0.0.1:6379 ──> PowerMap ──> 192.168.1.101:6379
 | Controls that are explicit | QUIC + rustls, target allowlists, independent tokens, audit logs, and resource limits. |
 
 > PowerMap is for services you are authorized to administer. It is neither a public-exposure tool nor a replacement for an organization's identity and network policy system.
+
+| A good fit | Not a good fit |
+|---|---|
+| Redis, databases, web admin panels, and IDE debug ports in a home, office, or lab network | Publishing a public website or API |
+| No public IP or router control, while both machines can reach the Internet | Enterprise VPN use cases requiring SSO, device posture, and full-network routing |
+| Keeping existing tools pointed at `127.0.0.1` | Networks or services you do not administer or have no authorization to access |
 
 ## Get Started in Three Minutes
 
@@ -78,6 +112,8 @@ On its first run, it creates:
 
 Transfer `powermap-server.credential.json` securely to your home machine. It grants access to the intranet: never commit it, post it, or log it.
 
+> The first run only creates an identity and credential. Before a long-running deployment, edit `powermap-server.toml` and at least restrict `allow_networks` and `allow_ports`; add `published_targets` when you want the console to suggest services automatically. See [Server configuration and multi-tenancy](#server-configuration-and-multi-tenancy) for a complete example.
+
 ### 3. Start the client and create a mapping
 
 ```bash
@@ -90,6 +126,8 @@ Open <http://127.0.0.1:8088> and create this mapping:
 Local listener: 127.0.0.1:6379
 Target service: 192.168.1.101:6379
 ```
+
+Save only after the console reports that target validation passed. When the server configuration includes `published_targets`, the console automatically presents verified remote IPs and service ports after connecting; click one to fill the form.
 
 Then use the service as usual:
 
@@ -104,6 +142,8 @@ curl -X POST http://127.0.0.1:8088/api/mappings \
   -H 'Content-Type: application/json' \
   -d '{"local":"127.0.0.1:6379","host":"192.168.1.101","port":6379}'
 ```
+
+**Success looks like this:** the console reports “Connected” (direct or relayed is fine), the mapping stays “Listening” or “Active”, and your local tool reaches the target through `127.0.0.1:port`.
 
 ## Architecture
 
@@ -156,6 +196,13 @@ Run the client natively where possible. Its mapped ports belong to its network n
 ### Managed services and secure remote administration
 
 Systemd, launchd, and Windows Task Scheduler templates, plus SSH and mTLS Nginx remote-admin guidance that keeps the PowerMap listener on loopback, are available in [deployment/README.md](deployment/README.md). They preserve configuration and mappings across restarts without publishing the admin UI to the Internet.
+
+| Goal | Recommended entry point |
+|---|---|
+| Short-lived access from a personal computer | Run `powermap-client` directly and use the local admin UI |
+| A long-running intranet device | [Managed deployment templates](deployment/README.md) |
+| View the local admin UI remotely | SSH tunneling; use an mTLS gateway only when necessary |
+| Automate mappings | `POST /api/mappings` with a Bearer `web_token` |
 
 ### Supported platforms
 
@@ -226,6 +273,10 @@ token = "alice-token-..."
 allow_networks = ["192.168.1.0/24"]
 allow_ports = [6379, 5432]
 max_streams = 32
+published_targets = [
+  { host = "192.168.1.101", port = 6379, label = "Primary Redis" },
+  { host = "192.168.1.102", port = 5432, label = "PostgreSQL" },
+]
 
 [[clients]]
 id = "bob"
@@ -234,7 +285,9 @@ allow_networks = ["10.0.0.0/8"]
 revoked = true
 ```
 
-A top-level `token` remains valid for a single-tenant server and is normalized to a `default` client; startup logs make this compatibility mode explicit, so migration to `[[clients]]` is optional. To prevent silently ineffective policies, the server rejects invalid CIDRs, port `0`, and empty or duplicate client ids/tokens. Restart the server after changing `[[clients]]`, allowlists, or revocation state.
+A top-level `token` remains valid for a single-tenant server and is normalized to a `default` client; startup logs make this compatibility mode explicit, so migration to `[[clients]]` is optional. `published_targets` explicitly shares IP/port suggestions with that client. Once connected, the console rechecks them by asking the server to dial each target, then offers only currently reachable services for one-click mapping. It never expands the allowlist: every listed port must still be in `allow_ports`. To prevent silently ineffective policies, the server rejects invalid CIDRs, port `0`, and empty or duplicate client ids/tokens. Restart B after changing clients, allowlists, published targets, or revocation, then distribute the refreshed credential file.
+
+For single-tenant mode, place the same `published_targets = [...]` block at the top level. For multi-tenant mode, put it under the matching `[[clients]]` entry and retain the `published_targets` field in the credential JSON distributed to that client. The console's refresh action only rechecks these explicitly published addresses; it never scans the intranet.
 </details>
 
 ## Troubleshooting
@@ -244,7 +297,7 @@ A top-level `token` remains valid for a single-tenant server and is normalized t
 | Client cannot connect / server refuses it | Confirm that client `node_id` and `token` came from this server's credential file. |
 | Local port cannot bind | The port is in use. Choose another port or remove the existing mapping. |
 | Relay connection times out | The network or a relay may be temporarily unavailable. iroh will try other relays; retry after a short wait. |
-| A config change has no effect | Config is loaded at startup. Manage runtime mappings in the UI/API; restart B after server allowlist changes. |
+| A config change has no effect | Config is loaded at startup. Manage runtime mappings in the UI/API; restart B after changing server allowlists or `published_targets`, then distribute the refreshed credential. |
 
 ## Development and Contributing
 
