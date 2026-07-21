@@ -34,22 +34,67 @@ jobs:
         run: cargo test --all
 
   windows-installer:
-    name: validate Windows installer
+    name: validate Windows deployment scripts
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Parse PowerShell installer
+      - name: Parse PowerShell deployment scripts
         shell: pwsh
         run: |
-          $tokens = $null
-          $errors = $null
-          [System.Management.Automation.Language.Parser]::ParseFile(
-            (Resolve-Path scripts/install.ps1),
-            [ref] $tokens,
-            [ref] $errors
-          ) | Out-Null
-          if ($errors.Count -gt 0) {
-            $errors | ForEach-Object { Write-Error $_ }
-            throw 'PowerShell installer contains syntax errors.'
+          $files = @(
+            'scripts/install.ps1',
+            'deployment/windows/register-scheduled-task.ps1'
+          )
+          foreach ($file in $files) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              (Resolve-Path $file),
+              [ref] $tokens,
+              [ref] $errors
+            ) | Out-Null
+            if ($errors.Count -gt 0) {
+              $errors | ForEach-Object { Write-Error $_ }
+              throw "$file contains syntax errors."
+            }
           }
+
+  deployment-assets:
+    name: validate deployment assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate shell, Compose, units, and launchd plists
+        run: |
+          sh -n scripts/install.sh
+          docker compose config >/dev/null
+          sudo touch /usr/local/bin/powermap-server /usr/local/bin/powermap-client
+          sudo chmod 0755 /usr/local/bin/powermap-server /usr/local/bin/powermap-client
+          sudo useradd --system --no-create-home powermap
+          systemd-analyze verify deployment/systemd/powermap-server.service deployment/systemd/powermap-client.service
+          python3 - <<'PY'
+          import pathlib
+          import plistlib
+
+          for path in pathlib.Path("deployment/launchd").glob("*.plist"):
+              with path.open("rb") as source:
+                  plistlib.load(source)
+          PY
+
+      - name: Validate Nginx remote-admin template
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nginx
+          sudo install -d /etc/letsencrypt/live/powermap-admin.example.com
+          sudo openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /etc/letsencrypt/live/powermap-admin.example.com/privkey.pem \
+            -out /etc/letsencrypt/live/powermap-admin.example.com/fullchain.pem \
+            -subj '/CN=powermap-admin.example.com'
+          sudo openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout /tmp/powermap-admin-ca.key \
+            -out /etc/nginx/powermap-admin-ca.pem \
+            -subj '/CN=PowerMap admin test CA'
+          sudo install -m 0644 deployment/nginx/powermap-admin.conf /etc/nginx/conf.d/powermap-admin.conf
+          sudo nginx -t

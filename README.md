@@ -153,6 +153,10 @@ docker compose up -d --build
 
 client 建议原生运行：映射的本地端口位于 client 所在网络命名空间，放入 Docker 会额外增加逐端口发布的管理成本。
 
+### 受管服务与安全远程管理
+
+Linux systemd、macOS launchd 与 Windows Task Scheduler 模板，以及保持管理页回环监听的 SSH / mTLS Nginx 远程管理方案，见 [deployment/README.md](deployment/README.md)。这些模板会保存配置和映射状态，并在异常退出后重启；不会把管理页直接暴露到公网。
+
 ### 支持的平台
 
 Release 提供 Linux x86_64 / aarch64、macOS Intel / Apple Silicon 与 Windows x86_64 的预编译包，并附带 SHA-256 校验文件。

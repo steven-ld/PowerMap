@@ -153,6 +153,10 @@ docker compose up -d --build
 
 Run the client natively where possible. Its mapped ports belong to its network namespace; Docker would add per-port publishing work.
 
+### Managed services and secure remote administration
+
+Systemd, launchd, and Windows Task Scheduler templates, plus SSH and mTLS Nginx remote-admin guidance that keeps the PowerMap listener on loopback, are available in [deployment/README.md](deployment/README.md). They preserve configuration and mappings across restarts without publishing the admin UI to the Internet.
+
 ### Supported platforms
 
 Releases include Linux x86_64 / aarch64, macOS Intel / Apple Silicon, and Windows x86_64 archives with SHA-256 checksums.

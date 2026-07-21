@@ -14,7 +14,7 @@
 //! - 可选 TLS（web_tls_cert/web_tls_key），远程管理时保护 Bearer token；
 //! - 映射条数与单映射并发连接数有上限，防止无限增长耗尽资源。
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -406,12 +406,23 @@ struct Status {
     path: Option<&'static str>,
     /// 二进制版本（Cargo.toml 的 package version），供管理页展示。
     version: &'static str,
+    /// 当前活跃隧道数（瞬时量）。区别于 mappings：后者是已配置的映射条数。
+    active_tunnels: u64,
+    /// 累计成功建立的隧道数。
+    tunnels_opened: u64,
+    /// 累计建立失败的隧道数。
+    tunnels_failed: u64,
+    /// 看门狗重连累计次数。
+    reconnects: u64,
+    /// 因并发上限被拒累计数。
+    over_limit: u64,
 }
 
 async fn status(State(st): State<AppState>) -> Json<Status> {
     let n = st.inner.lock().await.mappings.len();
     let path = st.link.transport_path().await;
     let creds = st.link.creds.read().await;
+    let m = &st.metrics;
     Json(Status {
         connected: st.link.is_alive().await,
         configured: creds.target.is_some(),
@@ -419,6 +430,11 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
         mappings: n,
         path,
         version: env!("CARGO_PKG_VERSION"),
+        active_tunnels: m.tunnels_active.load(Ordering::Relaxed),
+        tunnels_opened: m.tunnels_opened.load(Ordering::Relaxed),
+        tunnels_failed: m.tunnels_failed.load(Ordering::Relaxed),
+        reconnects: m.reconnects.load(Ordering::Relaxed),
+        over_limit: m.over_limit.load(Ordering::Relaxed),
     })
 }
 
@@ -621,6 +637,42 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn mapping_preflight_explains_when_credentials_are_missing() {
+        let state = test_state("").await;
+        let app = app(state);
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings/preflight")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["ready"], false);
+        assert_eq!(body["checks"]["local_listener"]["ok"], true);
+        assert_eq!(body["checks"]["credential"]["ok"], false);
+        assert!(
+            body["checks"]["credential"]["detail"]
+                .as_str()
+                .unwrap()
+                .contains("凭证")
+        );
+        assert_eq!(body["checks"]["target"]["ok"], false);
+    }
+
+    #[tokio::test]
     async fn query_string_tokens_do_not_authorize_management_requests() {
         let state = test_state("admin-secret").await;
         let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -770,6 +822,108 @@ struct CreateBody {
     local: String,
     host: String,
     port: u16,
+}
+
+#[derive(Serialize)]
+struct PreflightCheck {
+    ok: bool,
+    detail: String,
+}
+
+#[derive(Serialize)]
+struct PreflightResult {
+    ready: bool,
+    checks: BTreeMap<&'static str, PreflightCheck>,
+}
+
+/// POST /api/mappings/preflight --- transiently verifies the same remote path a
+/// mapping will use, without creating a listener or persisting configuration.
+async fn preflight(
+    State(st): State<AppState>,
+    Json(body): Json<CreateBody>,
+) -> Result<Json<PreflightResult>, (StatusCode, String)> {
+    let mapping = config::Mapping {
+        local: body.local,
+        host: body.host,
+        port: body.port,
+    };
+    if let Err(reason) = mapping.validate() {
+        return Err((StatusCode::BAD_REQUEST, reason));
+    }
+
+    let mut checks = BTreeMap::new();
+    match TcpListener::bind(&mapping.local).await {
+        Ok(listener) => {
+            drop(listener);
+            checks.insert(
+                "local_listener",
+                PreflightCheck {
+                    ok: true,
+                    detail: format!("{} 可用于监听", mapping.local),
+                },
+            );
+        }
+        Err(error) => {
+            checks.insert(
+                "local_listener",
+                PreflightCheck {
+                    ok: false,
+                    detail: format!("{} 无法监听: {error}", mapping.local),
+                },
+            );
+        }
+    }
+
+    let configured = st.link.configured().await;
+    checks.insert(
+        "credential",
+        PreflightCheck {
+            ok: configured,
+            detail: if configured {
+                "已配置接入凭证".into()
+            } else {
+                "尚未配置凭证，请先在“连接”中粘贴 server 凭证".into()
+            },
+        },
+    );
+
+    let local_ready = checks["local_listener"].ok;
+    let target = if !local_ready {
+        PreflightCheck {
+            ok: false,
+            detail: "请先解决本地监听地址或端口占用问题".into(),
+        }
+    } else if !configured {
+        PreflightCheck {
+            ok: false,
+            detail: "需要有效凭证后才能验证目标服务".into(),
+        }
+    } else {
+        let request = proto::OpenRequest {
+            token: st.link.token().await,
+            host: mapping.host.clone(),
+            port: mapping.port,
+        };
+        match tokio::time::timeout(Duration::from_secs(8), open_with_retry(&st.link, &request))
+            .await
+        {
+            Ok(Ok((_send, _recv))) => PreflightCheck {
+                ok: true,
+                detail: format!("{}:{} 可由 server 端访问", mapping.host, mapping.port),
+            },
+            Ok(Err(error)) => PreflightCheck {
+                ok: false,
+                detail: diagnostic_reason(&error),
+            },
+            Err(_) => PreflightCheck {
+                ok: false,
+                detail: "验证目标服务超时，请检查网络、白名单和目标端口".into(),
+            },
+        }
+    };
+    checks.insert("target", target);
+    let ready = checks.values().all(|check| check.ok);
+    Ok(Json(PreflightResult { ready, checks }))
 }
 
 async fn create(
@@ -956,6 +1110,7 @@ fn app(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/status", get(status))
         .route("/api/stats", get(stats))
+        .route("/api/mappings/preflight", post(preflight))
         .route("/api/mappings", get(list).post(create))
         .route("/api/mappings/{id}", delete(remove))
         .route("/api/credential", get(get_credential).post(set_credential))

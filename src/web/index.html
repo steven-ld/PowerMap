@@ -71,6 +71,7 @@
   }
 
   *, *::before, *::after { box-sizing: border-box; box-shadow: none !important; text-shadow: none !important; }
+  .hidden { display: none !important; }
   html { overflow-y: scroll; scrollbar-gutter: stable; }
   body {
     margin: 0; min-height: 100vh;
@@ -218,6 +219,29 @@
   input:focus, textarea:focus { border-color: var(--primary); background: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent) !important; }
   .grid.mapping { gap: .75rem; grid-template-columns: 1.2fr .82fr 26px 1.4fr .82fr auto; }
   .grid.mapping .arrow { padding-bottom: 13px; color: var(--primary); font-size: 1.1rem; opacity: 1; }
+  .mapping-actions { display: flex; align-items: flex-end; gap: .5rem; }
+  .mapping-actions .btn { min-width: max-content; }
+  .preflight-result { display: grid; gap: .45rem; margin-top: 1rem; padding: .9rem 1rem; border: 1px solid var(--border); border-radius: .7rem; background: var(--muted); font-size: .83rem; line-height: 1.45; }
+  .preflight-result strong { color: var(--foreground); }
+  .preflight-check { display: flex; align-items: flex-start; gap: .5rem; color: var(--muted-foreground); }
+  .preflight-check::before { flex: 0 0 auto; margin-top: .1rem; content: '—'; color: var(--muted-foreground); font-weight: 800; }
+  .preflight-check.ok::before { content: '✓'; color: var(--success); }
+  .preflight-check.fail::before { content: '×'; color: var(--destructive); }
+  .onboarding { margin-bottom: 1.5rem; padding: 1.25rem; border: 1px solid color-mix(in srgb, var(--primary) 30%, var(--border)); border-radius: var(--radius-lg); background: color-mix(in srgb, var(--primary) 6%, var(--card)); }
+  .onboarding-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+  .onboarding-title { margin: 0 0 .35rem; font: 800 1.1rem/1.15 var(--font-display); letter-spacing: -.025em; }
+  .onboarding-copy { margin: 0; color: var(--muted-foreground); font-size: .88rem; line-height: 1.5; }
+  .onboarding-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .7rem; }
+  .onboarding-step { min-height: 7.75rem; padding: .9rem; border: 1px solid var(--border); border-radius: .7rem; background: var(--card); }
+  .onboarding-step.is-done { border-color: color-mix(in srgb, var(--success) 38%, var(--border)); }
+  .onboarding-step-no { display: block; margin-bottom: .45rem; color: var(--primary); font: 700 .7rem/1 var(--font-mono); letter-spacing: .08em; }
+  .onboarding-step strong { display: block; margin-bottom: .35rem; font-size: .9rem; }
+  .onboarding-step p { min-height: 2.65rem; margin: 0 0 .65rem; color: var(--muted-foreground); font-size: .79rem; line-height: 1.45; }
+  .onboarding-step .btn { width: 100%; }
+  .btn-row { display: inline-flex; align-items: center; justify-content: flex-end; gap: .45rem; white-space: nowrap; }
+  .btn-quiet { height: 2rem; padding: 0 .6rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--muted-foreground); font: 700 .74rem/1 var(--font-sans); cursor: pointer; }
+  .btn-quiet:hover { border-color: var(--primary); color: var(--primary); }
+  .modal-body { white-space: pre-line; }
   .btn { height: 2.75rem; border-radius: .625rem; font-weight: 700; transition: transform .18s ease, background .18s ease, border-color .18s ease; }
   .btn:hover { transform: translateY(-1px); }
   .btn-primary { background: var(--primary); border-color: var(--primary); }
@@ -253,7 +277,11 @@
     .card-header { align-items: flex-start; flex-direction: column; }
     .grid.mapping { grid-template-columns: 1fr 1fr; }
     .grid.mapping .arrow { display: none; }
-    .grid.mapping .btn { grid-column: 1 / -1; }
+    .grid.mapping .mapping-actions { grid-column: 1 / -1; }
+    .mapping-actions .btn { flex: 1 1 0; }
+    .onboarding-steps { grid-template-columns: 1fr; }
+    .onboarding-step { min-height: 0; }
+    .onboarding-step p { min-height: 0; }
     .card-actions { width: 100%; }
     .card-actions .btn { flex: 1 1 0; padding: 0 .65rem; }
   }
@@ -642,6 +670,16 @@
 
     <!-- Tab: 端口映射 -->
     <div id="tabMappings" class="tab-content" role="tabpanel" aria-labelledby="tab-mappings" tabindex="0">
+      <section id="onboarding" class="onboarding" aria-labelledby="onboardingTitle">
+        <div class="onboarding-head">
+          <div><h2 id="onboardingTitle" class="onboarding-title">完成首次映射</h2><p class="onboarding-copy">按顺序完成接入、验证和创建；每一步都会保留在当前控制台中。</p></div>
+        </div>
+        <div class="onboarding-steps">
+          <div id="onboardingCredential" class="onboarding-step"><span class="onboarding-step-no">01 / 接入</span><strong>连接 server</strong><p>粘贴 server 提供的凭证。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="connection">去接入</button></div>
+          <div id="onboardingPreflight" class="onboarding-step"><span class="onboarding-step-no">02 / 验证</span><strong>检查目标服务</strong><p>由 server 端实际校验策略和拨号。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="mapping">去填写</button></div>
+          <div id="onboardingMapping" class="onboarding-step"><span class="onboarding-step-no">03 / 创建</span><strong>添加本地入口</strong><p>通过验证后保存第一条映射。</p><button class="btn btn-primary btn-sm" type="button" data-onboarding="mapping">创建映射</button></div>
+        </div>
+      </section>
       <div class="card mapping-editor" id="mappingEditor">
         <div class="card-header"><span class="card-title">添加映射</span></div>
         <p class="hint">
@@ -655,11 +693,9 @@
             <div class="arrow">→</div>
             <div class="field"><span class="lbl">目标主机</span><input name="host" class="mono" placeholder="192.168.1.101" required /></div>
             <div class="field"><span class="lbl">目标端口</span><input name="port" class="mono" type="number" placeholder="6379" required /></div>
-            <button type="submit" class="btn btn-primary">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              添加
-            </button>
+            <div class="mapping-actions"><button id="preflightBtn" class="btn btn-outline" type="button">测试目标</button><button type="submit" class="btn btn-primary">添加映射</button></div>
           </div>
+          <div id="preflightResult" class="preflight-result hidden" role="status" aria-live="polite"></div>
         </form>
       </div>
 
@@ -979,6 +1015,64 @@ function mappingState(s) {
   if (state === 'stopped') return { state, label: '监听已停止', detail: '本地端口不再接受连接' };
   return { state: 'listening', label: '监听中', detail: '等待本地连接' };
 }
+const PRECHECK_LABELS = { local_listener: '本地监听', credential: '接入凭证', target: '目标服务' };
+let latestPreflight = { key: '', ready: false };
+function mappingKey(body) { return [body.local, body.host, body.port].join('|'); }
+function collectMapping(form) {
+  const fd = new FormData(form);
+  const addr = (fd.get('localAddr') || '127.0.0.1').trim() || '127.0.0.1';
+  return { local: addr + ':' + Number(fd.get('localPort')), host: String(fd.get('host') || '').trim(), port: Number(fd.get('port')) };
+}
+function renderPreflight(result) {
+  const el = document.getElementById('preflightResult');
+  const checks = result.checks || {};
+  el.innerHTML = `<strong>${result.ready ? '目标验证通过，可以创建映射' : '创建前需要处理以下问题'}</strong>` +
+    Object.keys(PRECHECK_LABELS).map(key => {
+      const check = checks[key] || { ok: false, detail: '未完成检查' };
+      return `<div class="preflight-check ${check.ok ? 'ok' : 'fail'}"><span><b>${PRECHECK_LABELS[key]}</b> · ${esc(check.detail || '')}</span></div>`;
+    }).join('');
+  el.classList.remove('hidden');
+}
+async function runPreflight(body, display = true) {
+  const button = document.getElementById('preflightBtn');
+  const isEditorRequest = display && mappingKey(body) === mappingKey(collectMapping(document.getElementById('f')));
+  if (isEditorRequest) { button.disabled = true; button.textContent = '验证中…'; }
+  try {
+    const r = await api('/api/mappings/preflight', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!r.ok) {
+      const detail = (await r.text()) || '目标验证失败';
+      if (display) {
+        renderPreflight({ ready: false, checks: { local_listener: { ok: false, detail }, credential: { ok: false, detail: '未执行' }, target: { ok: false, detail: '未执行' } } });
+      }
+      toast(detail, 'err');
+      return null;
+    }
+    const result = await r.json();
+    latestPreflight = { key: mappingKey(body), ready: Boolean(result.ready) };
+    if (display) renderPreflight(result);
+    if (!result.ready && !display) toast('目标验证未通过，请查看映射诊断建议', 'err');
+    return result;
+  } catch (error) {
+    if (display) {
+      renderPreflight({ ready: false, checks: { local_listener: { ok: false, detail: '无法连接管理服务' }, credential: { ok: false, detail: '未执行' }, target: { ok: false, detail: String(error.message || error) } } });
+    }
+    toast('目标验证请求失败，请检查管理服务是否可用', 'err');
+    return null;
+  } finally {
+    if (isEditorRequest) { button.disabled = false; button.textContent = '测试目标'; }
+  }
+}
+function recoveryAdvice(state, reason) {
+  const text = String(reason || '');
+  if (state === 'stopped') return '本地监听已经停止。删除这条映射后按原参数重新创建，可重新绑定本地端口。';
+  if (/尚未配置凭证|凭证/.test(text)) return '先前往“连接”页更新 server 凭证，然后重新检测目标服务。';
+  if (/允许列表|策略拒绝|B 拒绝/.test(text)) return 'server 端拒绝了目标。请确认 allow_networks 和 allow_ports 已包含该地址与端口。';
+  if (/解析/.test(text)) return 'server 端无法解析目标主机。请检查主机名，或改用 server 所在内网可访问的 IP。';
+  if (/超时|连接 B|打开隧道/.test(text)) return '检查 client 与 server 的网络连通性，再重新检测目标服务。';
+  return '重新检测会由 server 端再次验证目标、白名单和 TCP 拨号。';
+}
 async function copyText(t) {
   try { await navigator.clipboard.writeText(t); return true; }
   catch { return false; }
@@ -1083,6 +1177,7 @@ async function refresh() {
   const statMap = Object.fromEntries((st||[]).map(s => [s.local, s]));
   $rows.innerHTML = '';
   $empty.style.display = list.length ? 'none' : 'block';
+  updateOnboarding(list);
   document.getElementById('mappingCount').textContent = `${list.length} 条映射`;
   let totalTx = 0, totalRx = 0;
   for (const m of list) {
@@ -1094,7 +1189,7 @@ async function refresh() {
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
                    `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span>${esc(health.label)}</span><span class="status-detail">${esc(health.detail)}</span></td>` +
                    `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}</td>` +
-                   `<td class="act"><button class="btn-del" data-id="${esc(m.local)}">断开</button></td>`;
+                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-del" data-id="${esc(m.local)}">断开</button></span></td>`;
     $rows.appendChild(tr);
   }
   document.getElementById('mTotal').textContent = fmtBytes(totalTx + totalRx);
@@ -1102,6 +1197,19 @@ async function refresh() {
   document.getElementById('mRx').textContent = fmtBytes(totalRx);
 }
 $rows.addEventListener('click', async (e) => {
+  const recover = e.target.closest('button.btn-recover');
+  if (recover) {
+    const body = { local: recover.dataset.local, host: recover.dataset.host, port: Number(recover.dataset.port) };
+    const action = await openModal({
+      title: '映射诊断', confirmText: '重新检测', cancelText: '关闭',
+      body: recoveryAdvice(recover.dataset.state, recover.dataset.reason) + (recover.dataset.reason ? `\n\n最近错误：${recover.dataset.reason}` : ''),
+    });
+    if (action) {
+      const result = await runPreflight(body, false);
+      if (result && result.ready) toast(`${body.host}:${body.port} 已恢复可达`, 'ok');
+    }
+    return;
+  }
   const btn = e.target.closest('button.btn-del');
   if (!btn) return;
   const id = btn.dataset.id;
@@ -1117,10 +1225,11 @@ $rows.addEventListener('click', async (e) => {
 });
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const fd = new FormData(e.target);
-  const addr = (fd.get('localAddr') || '127.0.0.1').trim() || '127.0.0.1';
-  const lport = Number(fd.get('localPort'));
-  const body = { local: addr + ':' + lport, host: fd.get('host').trim(), port: Number(fd.get('port')) };
+  const body = collectMapping(e.target);
+  if (!latestPreflight.ready || latestPreflight.key !== mappingKey(body)) {
+    const result = await runPreflight(body, true);
+    if (!result || !result.ready) return;
+  }
   const r = await api('/api/mappings', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
@@ -1131,6 +1240,30 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   toast(`已添加映射 ${body.local}`);
   refresh();
 });
+document.getElementById('preflightBtn').addEventListener('click', () => {
+  const form = document.getElementById('f');
+  if (form.reportValidity()) runPreflight(collectMapping(form), true);
+});
+function setOnboardingStep(id, done) { document.getElementById(id).classList.toggle('is-done', done); }
+function updateOnboarding(list) {
+  const mappingDone = list.length > 0;
+  setOnboardingStep('onboardingCredential', curCred.configured);
+  setOnboardingStep('onboardingPreflight', latestPreflight.ready);
+  setOnboardingStep('onboardingMapping', mappingDone);
+  document.getElementById('onboarding').classList.toggle('hidden', curCred.configured && mappingDone);
+}
+document.querySelectorAll('[data-onboarding]').forEach(button => button.addEventListener('click', () => {
+  const target = button.dataset.onboarding;
+  if (target === 'connection') {
+    selectTab('connection');
+    requestAnimationFrame(() => document.getElementById('credJson').focus());
+    return;
+  }
+  selectTab('mappings');
+  const editor = document.getElementById('mappingEditor');
+  editor.classList.add('open');
+  requestAnimationFrame(() => editor.querySelector('[name=localPort]').focus());
+}));
 
 // ── 穿透路径徽章：direct = P2P 直连，relay = 经中继，unknown = 探测中 ──
 const PATH_LABEL = { direct: 'P2P 直连', relay: '经中继', unknown: '探测中' };
