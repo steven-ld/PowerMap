@@ -759,6 +759,30 @@
   .issue-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 1.15rem; height: 1.15rem; margin-left: .35rem; padding: 0 .35rem; border-radius: 9999px; background: var(--destructive); color: var(--destructive-foreground); font: 700 .68rem/1 var(--font-mono); }
   .issue-badge.hidden { display: none; }
 
+  /* ── 域名映射：域名作为本地回环入口，远端端口由 expose 节点监听 ── */
+  .domain-notice { margin: 0 0 1rem; padding: .8rem 1rem; border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border)); border-radius: .5rem; background: color-mix(in srgb, var(--warning) 7%, var(--card)); color: var(--foreground); font-size: .84rem; line-height: 1.55; }
+  .domain-notice strong { color: var(--warning); }
+  .domain-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) 10rem auto; gap: .75rem; align-items: end; }
+  .domain-advanced { margin-top: 1rem; }
+  .domain-advanced summary { width: max-content; color: var(--accent-foreground); font: 700 .8rem/1.4 var(--font-sans); cursor: pointer; }
+  .domain-advanced-inner { display: flex; align-items: center; gap: .7rem; margin-top: .8rem; padding: .75rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--muted); color: var(--muted-foreground); font-size: .8rem; }
+  .domain-list-head { margin-top: 1.5rem; }
+  .domain-state { display: inline-flex; align-items: center; gap: .45rem; color: var(--muted-foreground); font: 600 .8rem/1.3 var(--font-sans); }
+  .domain-state::before { content: ""; width: .58rem; height: .58rem; border-radius: 50%; background: currentColor; }
+  .domain-state.enabled { color: var(--success); }
+  .domain-state.disabled::before { background: transparent; border: 1.5px solid currentColor; }
+  .domain-entry { display: grid; gap: .18rem; min-width: 13rem; }
+  .domain-entry strong { overflow: hidden; color: var(--foreground); font: 700 .9rem/1.3 var(--font-mono); text-overflow: ellipsis; white-space: nowrap; }
+  .domain-entry small, .domain-error { color: var(--muted-foreground); font: 500 .76rem/1.4 var(--font-sans); }
+  .domain-error { display: block; max-width: 20rem; color: var(--destructive); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #domainEmpty { display: none; }
+  @media (max-width: 900px) { .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (max-width: 720px) {
+    .domain-form-grid { grid-template-columns: 1fr; }
+    .domain-form-grid .btn { width: 100%; }
+    .domain-advanced-inner { align-items: flex-start; }
+  }
+
   /* ── 列表头排序下拉：复用 .event-filter，稍加约束 ── */
   #mappingSort.hidden, #toggleAllBtn.hidden { display: none; }
 
@@ -879,6 +903,7 @@
       <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar" role="tablist" aria-label="页面">
         <button type="button" class="tab active" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="true" aria-controls="tabDashboard"><span>概览</span></button>
         <button type="button" class="tab" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="false" aria-controls="tabMappings" tabindex="-1"><span>端口映射</span><span id="issueBadge" class="issue-badge hidden" title="存在异常映射">0</span></button>
+        <button type="button" class="tab" data-tab="domains" id="tab-domains" role="tab" aria-selected="false" aria-controls="tabDomains" tabindex="-1"><span>域名映射</span></button>
         <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>节点</span></button>
         <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件</span></button>
       </div></nav>
@@ -1009,6 +1034,30 @@
           <tbody id="rows"></tbody>
         </table>
         <div id="empty" class="empty"><div class="empty-title">尚未创建端口映射</div><p>建立一条映射后，即可从本地地址安全访问内网服务。</p><button id="emptyNewMappingBtn" class="btn btn-primary" type="button">创建第一条映射</button></div>
+      </div>
+    </div>
+
+    <!-- Tab: 域名映射 -->
+    <div id="tabDomains" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-domains" tabindex="0">
+      <div class="card">
+        <div class="card-header"><span class="card-title">新建域名映射</span></div>
+        <p class="domain-notice"><strong>需要管理员权限。</strong> 创建或删除域名映射时，PowerMap 可能需要写入本机 hosts 文件并启动本地监听器；首次操作请按系统提示授权。</p>
+        <form id="domainForm">
+          <div class="domain-form-grid">
+            <div class="field"><label class="lbl" for="domainName">域名</label><input id="domainName" name="domain" class="mono" type="text" placeholder="app.internal.test" autocomplete="off" spellcheck="false" required /></div>
+            <div class="field"><label class="lbl" for="domainRemotePort">远端端口</label><input id="domainRemotePort" name="remote_port" class="mono" type="number" min="1" max="65535" value="443" required /></div>
+            <button id="createDomainBtn" class="btn btn-primary" type="submit">创建域名映射</button>
+          </div>
+          <details class="domain-advanced"><summary>高级选项</summary><div class="domain-advanced-inner"><label class="switch" title="创建后立即启用"><input id="domainEnabled" name="enabled" type="checkbox" checked aria-label="创建后立即启用" /><span class="track" aria-hidden="true"></span></label><span>创建后立即启用本地监听。关闭后会保留配置，但不会接收连接。</span></div></details>
+        </form>
+      </div>
+      <div class="mapping-list-head domain-list-head"><h2>域名映射列表</h2><span id="domainCount">0 条映射</span></div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>域名与本地入口</th><th>远端端口</th><th>运行状态</th><th>错误</th><th></th></tr></thead>
+          <tbody id="domainRows"></tbody>
+        </table>
+        <div id="domainEmpty" class="empty"><div class="empty-title">尚未创建域名映射</div><p>创建后可通过域名访问远端服务。本机 hosts 文件和监听器需要管理员授权。</p><button id="emptyNewDomainBtn" class="btn btn-primary" type="button">创建第一条域名映射</button></div>
       </div>
     </div>
 
@@ -1170,6 +1219,8 @@
 <script>
 const $rows = document.getElementById('rows');
 const $empty = document.getElementById('empty');
+const $domainRows = document.getElementById('domainRows');
+const $domainEmpty = document.getElementById('domainEmpty');
 
 // ── Toast：右下角非阻塞提示 ──
 const TOAST_ICON = {
@@ -1302,10 +1353,11 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 
 // ── 标签页切换 ──
 const TAB_KEY = 'powermap_tab';
-const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', connection: 'tabConnection', events: 'tabEvents' };
+const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', connection: 'tabConnection', events: 'tabEvents' };
 const TAB_META = {
   dashboard: { title: '概览', subtitle: '查看节点连接、映射隧道和实时流量。' },
   mappings: { title: '端口映射', subtitle: '将本地端口安全地映射至内网服务。' },
+  domains: { title: '域名映射', subtitle: '将域名解析到本机回环入口，并安全转发到远端服务。' },
   connection: { title: '节点', subtitle: '分享本机身份，或连接到其他节点。' },
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
 };
@@ -1324,11 +1376,14 @@ function selectTab(name) {
   const meta = TAB_META[name] || TAB_META.dashboard;
   document.getElementById('workspaceTitle').textContent = meta.title;
   document.getElementById('workspaceSubtitle').textContent = meta.subtitle;
-  const newMapping = document.getElementById('newMappingBtn');
-  newMapping.style.display = name === 'mappings' ? '' : 'none';
+  const primaryAction = document.getElementById('newMappingBtn');
+  primaryAction.style.display = ['mappings', 'domains'].includes(name) ? '' : 'none';
+  primaryAction.textContent = name === 'domains' ? '+ 新建域名映射' : '+ 新建映射';
+  primaryAction.setAttribute('aria-label', name === 'domains' ? '新建域名映射' : '新建端口映射');
   localStorage.setItem(TAB_KEY, name);
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
+  if (name === 'domains') refreshDomains();
 }
 document.getElementById('tabBar').addEventListener('click', (e) => {
   const b = e.target.closest('.tab');
@@ -1522,6 +1577,10 @@ function splitLocal(local) {
   return [local.slice(0, i), local.slice(i + 1)];
 }
 document.getElementById('newMappingBtn').addEventListener('click', () => {
+  if (document.getElementById('mainPage').dataset.activeTab === 'domains') {
+    document.getElementById('domainName').focus();
+    return;
+  }
   const editor = document.getElementById('mappingEditor');
   if (editor.classList.contains('open') && editMode === null) { closeEditor(); return; }
   openEditorForCreate();
@@ -1584,6 +1643,84 @@ function fmtTime(ms) {
   if (!ms) return '';
   return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(ms));
 }
+
+// ── 域名映射：local_ip 为后端可选字段，旧服务端未提供时仍能正常管理。 ──
+function domainLocalLabel(mapping) {
+  const localIp = String(mapping.local_ip || '').trim();
+  const listener = mapping.local_listener;
+  if (localIp) return `本地回环 ${localIp}`;
+  if (typeof listener === 'string' && listener.trim()) return `本地监听 ${listener.trim()}`;
+  if (listener === true) return '本地监听已启动';
+  return '等待本地监听';
+}
+function renderDomains(list) {
+  const mappings = Array.isArray(list) ? list : [];
+  $domainRows.innerHTML = '';
+  document.getElementById('domainCount').textContent = `${mappings.length} 条映射`;
+  $domainEmpty.style.display = mappings.length ? 'none' : 'block';
+  for (const mapping of mappings) {
+    const domain = String(mapping.domain || '');
+    const enabled = mapping.enabled !== false;
+    const hasListener = mapping.local_listener === true || (typeof mapping.local_listener === 'string' && mapping.local_listener.trim());
+    const status = !enabled ? '已停用' : hasListener ? '监听中' : '等待监听';
+    const entry = document.createElement('tr');
+    entry.className = enabled ? '' : 'is-disabled';
+    entry.innerHTML = `<td><div class="domain-entry"><strong>${esc(domain)}</strong><small>${esc(domainLocalLabel(mapping))} · ${mapping.hosts_managed ? 'hosts 已托管' : 'hosts 未托管'}</small></div></td>` +
+      `<td class="mono">${Number(mapping.remote_port) || '—'}</td>` +
+      `<td><span class="domain-state ${enabled ? 'enabled' : 'disabled'}">${status}</span></td>` +
+      `<td>${mapping.last_error ? `<span class="domain-error" title="${esc(mapping.last_error)}">${esc(mapping.last_error)}</span>` : '<span class="domain-error" style="color:var(--muted-foreground)">—</span>'}</td>` +
+      `<td class="act"><span class="btn-row"><button class="btn-quiet domain-toggle" type="button" data-domain="${esc(domain)}" data-enabled="${enabled ? '1' : '0'}">${enabled ? '停用' : '启用'}</button><button class="btn-del domain-delete" type="button" data-domain="${esc(domain)}">删除</button></span></td>`;
+    $domainRows.appendChild(entry);
+  }
+}
+async function refreshDomains() {
+  try {
+    const response = await api('/api/domain-mappings');
+    if (!response.ok) return;
+    renderDomains(await response.json());
+  } catch (e) { if (String(e) === 'Error: unauthorized') return; }
+}
+document.getElementById('domainForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  if (!form.reportValidity()) return;
+  const domain = form.elements.domain.value.trim();
+  const body = { domain, remote_port: Number(form.elements.remote_port.value), enabled: form.elements.enabled.checked };
+  const button = document.getElementById('createDomainBtn');
+  button.disabled = true;
+  try {
+    const response = await api('/api/domain-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!response.ok) { toast((await response.text()) || '创建域名映射失败', 'err'); return; }
+    toast(`已创建域名映射 ${domain}`);
+    form.reset();
+    form.elements.remote_port.value = '443';
+    form.elements.enabled.checked = true;
+    refreshDomains();
+  } catch (err) { if (String(err) !== 'Error: unauthorized') toast('创建域名映射失败', 'err'); }
+  finally { button.disabled = false; }
+});
+document.getElementById('emptyNewDomainBtn').addEventListener('click', () => document.getElementById('domainName').focus());
+$domainRows.addEventListener('click', async (e) => {
+  const toggle = e.target.closest('.domain-toggle');
+  const remove = e.target.closest('.domain-delete');
+  const button = toggle || remove;
+  if (!button) return;
+  const domain = button.dataset.domain;
+  if (remove) {
+    const ok = await confirmModal({ title: '删除域名映射', danger: true, confirmText: '删除', body: `将删除 ${domain} 的本地 hosts 与监听配置。此操作可能需要管理员权限。确定继续？` });
+    if (!ok) return;
+  }
+  button.disabled = true;
+  try {
+    const response = remove
+      ? await api('/api/domain-mappings/' + encodeURIComponent(domain), { method: 'DELETE' })
+      : await api('/api/domain-mappings/' + encodeURIComponent(domain) + '/toggle', { method: 'POST' });
+    if (!response.ok) { toast((await response.text()) || (remove ? '删除失败' : '切换失败'), 'err'); return; }
+    toast(remove ? `已删除 ${domain}` : (button.dataset.enabled === '1' ? `已停用 ${domain}` : `已启用 ${domain}`));
+    refreshDomains();
+  } catch (err) { if (String(err) !== 'Error: unauthorized') toast(remove ? '删除失败' : '切换失败', 'err'); }
+  finally { button.disabled = false; }
+});
 function mappingState(s) {
   const state = s.state || (s.listener_active ? 'listening' : 'stopped');
   if (state === 'active') return { state, label: '已活动', detail: s.last_tunnel_success_at ? '最近成功 ' + fmtTime(s.last_tunnel_success_at) : '隧道已建立' };
@@ -2653,6 +2790,8 @@ function paletteCommands() {
   return [
     { title: '新建映射', hint: '创建一条端口映射', keys: 'new mapping xinjian chuangjian', run: () => { selectTab('mappings'); openEditorForCreate(); } },
     { title: '前往端口映射', hint: '切换到映射页', keys: 'mappings tab duankou', run: () => selectTab('mappings') },
+    { title: '新建域名映射', hint: '将域名映射到远端端口', keys: 'new domain mapping yuming', run: () => { selectTab('domains'); document.getElementById('domainName').focus(); } },
+    { title: '前往域名映射', hint: '查看域名入口与 hosts 状态', keys: 'domains tab yuming', run: () => selectTab('domains') },
     { title: '前往连接设置', hint: '切换到连接页', keys: 'connection credential lianjie', run: () => selectTab('connection') },
     { title: '前往事件', hint: '查看近期事件', keys: 'events shijian log', run: () => selectTab('events') },
     { title: '立即刷新', hint: '手动刷新状态与列表', keys: 'refresh reload shuaxin', run: () => poll() },
@@ -2748,13 +2887,14 @@ document.addEventListener('keydown', (e) => {
   if (paletteOpen || modalResolve) return;       // 面板/模态自行处理键盘
   if (e.metaKey || e.ctrlKey || e.altKey) return; // 不拦截系统组合键
   if (inEditableTarget(e.target)) return;         // 打字时不触发单键
-  // n = 新建映射；g 之后按 m/c/e 跳转（简易双键导航）；? 显示快捷键说明。
+  // n = 新建映射；? 显示快捷键说明。
   if (e.key === 'n') { e.preventDefault(); selectTab('mappings'); openEditorForCreate(); }
   else if (e.key === 'r') { e.preventDefault(); poll(); }
   else if (e.key === '?') { e.preventDefault(); showShortcutHelp(); }
   else if (e.key === '1') { e.preventDefault(); selectTab('mappings'); }
-  else if (e.key === '2') { e.preventDefault(); selectTab('connection'); }
-  else if (e.key === '3') { e.preventDefault(); selectTab('events'); }
+  else if (e.key === '2') { e.preventDefault(); selectTab('domains'); }
+  else if (e.key === '3') { e.preventDefault(); selectTab('connection'); }
+  else if (e.key === '4') { e.preventDefault(); selectTab('events'); }
 });
 function showShortcutHelp() {
   openModal({
@@ -2764,7 +2904,7 @@ function showShortcutHelp() {
       '⌘/Ctrl + K　打开命令面板',
       'N　新建映射',
       'R　立即刷新',
-      '1 / 2 / 3　切换到 映射 / 连接 / 事件',
+      '1 / 2 / 3 / 4　切换到 映射 / 域名 / 连接 / 事件',
       '?　显示本说明',
     ].join('\n'),
   });
@@ -2773,6 +2913,7 @@ function showShortcutHelp() {
 refreshCred().then(refreshTargetCatalog);
 refreshOwnNode();
 refresh();
+refreshDomains();
 refreshStatus();
 refreshReverse();
 // ── 轮询：可选间隔 + 暂停。标签页隐藏时自动挂起以省资源，重新可见时立即刷新一次再恢复。 ──
@@ -2786,6 +2927,7 @@ let pollPaused = localStorage.getItem(POLL_PAUSE_KEY) === '1';
 function poll() {
   refreshStatus();
   refresh();
+  refreshDomains();
   refreshOwnNode();
   if (location.hash.slice(1) === 'events') refreshEvents();
 }
