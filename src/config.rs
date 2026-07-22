@@ -327,8 +327,12 @@ impl AConfig {
                 return Err(format!("本地监听地址 {} 重复", mapping.local));
             }
         }
+        let mut domains = HashSet::new();
         for mapping in &self.domain_mappings {
             mapping.validate()?;
+            if !domains.insert(&mapping.domain) {
+                return Err(format!("域名映射 {} 重复", mapping.domain));
+            }
         }
         for target in &self.published_targets {
             target.validate()?;

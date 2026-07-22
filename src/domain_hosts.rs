@@ -79,6 +79,15 @@ impl HostsStore {
         self.edit(domain, false)
     }
 
+    /// Returns whether this store contains PowerMap's exact managed entry.
+    pub fn has_loopback(&self, domain: &str) -> Result<bool, HostsError> {
+        validate_domain(domain)?;
+        let entry = entry_for(domain);
+        Ok(fs::read_to_string(&self.path)?
+            .lines()
+            .any(|line| line == entry))
+    }
+
     fn edit(&self, domain: &str, ensure: bool) -> Result<(), HostsError> {
         validate_domain(domain)?;
         let original = fs::read_to_string(&self.path)?;

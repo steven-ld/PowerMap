@@ -2611,6 +2611,7 @@ dependencies = [
  "dirs",
  "ipnet",
  "iroh",
+ "libc",
  "rustls",
  "serde",
  "serde_json",

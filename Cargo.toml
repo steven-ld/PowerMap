@@ -23,6 +23,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+libc = "0.2"
 
 [[bin]]
 name = "powermap"
