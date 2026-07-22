@@ -31,3 +31,8 @@ The attempted combined command `cargo test config::tests domain_hosts::tests -- 
 - `failed_disable_cleanup_preserves_retryable_hosts_error_state` proves a failed disable keeps a disabled mapping with `hosts_managed = true` and an actionable error in both the response and persisted runtime configuration. A restarted runtime detects the retained exact marker and keeps the cleanup state visible for a later disable/delete retry.
 - `concurrent_create_does_not_rollback_the_published_mapping_hosts_marker` holds the first injected listener activation while a second create competes for the same domain. The per-domain operation lock admits only the first activation; the second returns conflict without invoking its simulated bind failure or removing the successful mapping's marker.
 - Follow-up verification: both focused regressions pass, and `cargo test --all-targets` passes with 71 tests.
+
+## Re-review Follow-up
+
+- `failed_delete_cleanup_persists_disabled_recovery_state` first persisted an active mapping, then simulated a hosts cleanup failure on DELETE. It verifies the replacement disabled record is saved, reloads the config, and confirms recovery remains disabled while surfacing the retained marker for cleanup retry.
+- Verification: the focused delete regression passes and `cargo test --all-targets` passes with 72 tests.

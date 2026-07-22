@@ -1052,6 +1052,51 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn failed_delete_cleanup_persists_disabled_recovery_state() {
+        let mut state = test_state("").await;
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let original_hosts = state.hosts.clone();
+        let mapping = config::DomainMapping::new("delete.example.test");
+        let handle = start_domain_mapping_owned(&state, mapping.clone())
+            .await
+            .unwrap();
+        state
+            .domains
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.domain.clone(), handle);
+        save_config(&state).await;
+
+        let missing_hosts = state.config_path.with_extension("missing-hosts");
+        let _ = std::fs::remove_file(&missing_hosts);
+        state.hosts = HostsStore::at(missing_hosts);
+        let response = remove_domain_mapping(State(state.clone()), Path(mapping.domain.clone()))
+            .await
+            .into_response();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let saved = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config
+            .access
+            .unwrap();
+        assert_eq!(saved.domain_mappings.len(), 1);
+        assert!(!saved.domain_mappings[0].enabled);
+
+        let mut restarted = test_state("").await;
+        restarted.hosts = original_hosts;
+        let recovered = start_domain_mapping_owned(&restarted, saved.domain_mappings[0].clone())
+            .await
+            .unwrap();
+        let status = domain_status(&recovered).await;
+        assert!(!status.enabled);
+        assert!(status.hosts_managed);
+        assert!(status.last_error.is_some());
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
     async fn concurrent_create_does_not_rollback_the_published_mapping_hosts_marker() {
         use std::sync::atomic::AtomicUsize;
 
@@ -2375,6 +2420,7 @@ async fn remove_domain_mapping(
                         domain.clone(),
                         disabled_domain_handle(failed_cleanup_mapping, true, Some(error.clone())),
                     );
+                    save_config(&st).await;
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("无法清理域名映射 {domain}：{error}"),
