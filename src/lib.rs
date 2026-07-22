@@ -1,5 +1,6 @@
 pub mod access;
 pub mod config;
+pub mod domain_hosts;
 pub mod expose;
 pub mod metrics;
 pub mod proto;

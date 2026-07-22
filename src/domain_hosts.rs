@@ -1,0 +1,205 @@
+use std::fmt;
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// A file-backed editor for the entries PowerMap owns in a hosts file.
+#[derive(Debug, Clone)]
+pub struct HostsStore {
+    path: PathBuf,
+}
+
+/// Errors produced while editing a hosts file.
+#[derive(Debug)]
+pub enum HostsError {
+    Io(io::Error),
+    InvalidDomain,
+}
+
+impl fmt::Display for HostsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "hosts file operation failed: {error}"),
+            Self::InvalidDomain => write!(f, "domain must not contain line breaks"),
+        }
+    }
+}
+
+impl std::error::Error for HostsError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io(error) => Some(error),
+            Self::InvalidDomain => None,
+        }
+    }
+}
+
+impl From<io::Error> for HostsError {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl HostsStore {
+    /// Opens an editor for the hosts file at `path`.
+    pub fn at(path: impl Into<PathBuf>) -> Self {
+        Self { path: path.into() }
+    }
+
+    /// Adds PowerMap's loopback entry, replacing only its exact existing entry.
+    pub fn ensure_loopback(&self, domain: &str) -> Result<(), HostsError> {
+        self.edit(domain, true)
+    }
+
+    /// Removes only PowerMap's exact loopback entry for `domain`.
+    pub fn remove_loopback(&self, domain: &str) -> Result<(), HostsError> {
+        self.edit(domain, false)
+    }
+
+    fn edit(&self, domain: &str, ensure: bool) -> Result<(), HostsError> {
+        validate_domain(domain)?;
+        let original = fs::read_to_string(&self.path)?;
+        let entry = entry_for(domain);
+        let mut updated = remove_exact_entry(&original, &entry);
+
+        if ensure {
+            if !updated.is_empty() && !updated.ends_with('\n') {
+                updated.push('\n');
+            }
+            updated.push_str(&entry);
+            updated.push('\n');
+        }
+
+        atomic_replace(&self.path, updated.as_bytes())
+    }
+}
+
+fn validate_domain(domain: &str) -> Result<(), HostsError> {
+    if domain.contains(['\n', '\r']) {
+        return Err(HostsError::InvalidDomain);
+    }
+    Ok(())
+}
+
+fn entry_for(domain: &str) -> String {
+    format!("127.0.0.1 {domain} # PowerMap domain mapping: {domain}")
+}
+
+fn remove_exact_entry(contents: &str, entry: &str) -> String {
+    let mut kept = String::with_capacity(contents.len());
+    for line in contents.split_inclusive('\n') {
+        let bare_line = line.strip_suffix('\n').unwrap_or(line);
+        if bare_line != entry {
+            kept.push_str(line);
+        }
+    }
+    kept
+}
+
+fn atomic_replace(path: &Path, contents: &[u8]) -> Result<(), HostsError> {
+    let metadata = fs::metadata(path)?;
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        HostsError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hosts file path has no filename",
+        ))
+    })?;
+    let counter = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let temporary = parent.join(format!(
+        ".{}.powermap-{}-{counter}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    ));
+
+    let result = (|| -> Result<(), HostsError> {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.set_permissions(metadata.permissions())?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::HostsStore;
+
+    fn contents(file: &tempfile::NamedTempFile) -> String {
+        std::fs::read_to_string(file.path()).unwrap()
+    }
+
+    #[test]
+    fn ensure_and_remove_only_own_marked_entry() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(file.path(), "127.0.0.1 existing.local\n").unwrap();
+        let store = HostsStore::at(file.path());
+
+        store.ensure_loopback("ai-router.dl-aiot.com").unwrap();
+        store.remove_loopback("ai-router.dl-aiot.com").unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(file.path()).unwrap(),
+            "127.0.0.1 existing.local\n"
+        );
+    }
+
+    #[test]
+    fn ensure_is_idempotent() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let store = HostsStore::at(file.path());
+
+        store.ensure_loopback("ai-router.dl-aiot.com").unwrap();
+        store.ensure_loopback("ai-router.dl-aiot.com").unwrap();
+
+        assert_eq!(
+            contents(&file),
+            "127.0.0.1 ai-router.dl-aiot.com # PowerMap domain mapping: ai-router.dl-aiot.com\n"
+        );
+    }
+
+    #[test]
+    fn remove_preserves_unrelated_entry_for_same_domain() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "10.0.0.2 ai-router.dl-aiot.com\n127.0.0.1 ai-router.dl-aiot.com # PowerMap domain mapping: ai-router.dl-aiot.com\n",
+        )
+        .unwrap();
+        let store = HostsStore::at(file.path());
+
+        store.remove_loopback("ai-router.dl-aiot.com").unwrap();
+
+        assert_eq!(contents(&file), "10.0.0.2 ai-router.dl-aiot.com\n");
+    }
+
+    #[test]
+    fn remove_preserves_malformed_marked_line() {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(
+            file.path(),
+            "127.0.0.1 ai-router.dl-aiot.com # PowerMap domain mapping: other.example\n",
+        )
+        .unwrap();
+        let store = HostsStore::at(file.path());
+
+        store.remove_loopback("ai-router.dl-aiot.com").unwrap();
+
+        assert_eq!(
+            contents(&file),
+            "127.0.0.1 ai-router.dl-aiot.com # PowerMap domain mapping: other.example\n"
+        );
+    }
+}
