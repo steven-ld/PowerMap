@@ -102,6 +102,37 @@ fn default_https_port() -> u16 {
     443
 }
 
+fn process_runs_as_root() -> bool {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        unsafe { libc::geteuid() == 0 }
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        false
+    }
+}
+
+fn validate_web_admin_security(
+    web_bind: &str,
+    web_token: &str,
+    privileged_process: bool,
+) -> std::result::Result<SocketAddr, String> {
+    let web_bind: SocketAddr = web_bind
+        .parse()
+        .map_err(|_| format!("web_bind 不是合法地址: {web_bind}"))?;
+    if web_token.trim().is_empty() && (privileged_process || !web_bind.ip().is_loopback()) {
+        let reason = if privileged_process {
+            "管理员权限进程必须设置 web_token，以保护管理接口"
+        } else {
+            "非回环监听必须设置 web_token，以保护管理接口"
+        };
+        return Err(format!("Web 监听 {web_bind} {reason}"));
+    }
+    Ok(web_bind)
+}
+
 /// Domain mappings own privileged hosts entries and share one loopback HTTPS listener.
 /// `max_mappings = 0` remains unlimited for ordinary port mappings, but domain mappings always
 /// retain this safety ceiling.
@@ -316,16 +347,7 @@ impl Default for AConfig {
 impl AConfig {
     /// 检查启动前必须明确处理的配置。空凭证仍可用于首次启动，由 Web 管理页完成接入。
     pub fn validate(&self) -> std::result::Result<(), String> {
-        let web_bind: SocketAddr = self
-            .web_bind
-            .parse()
-            .map_err(|_| format!("web_bind 不是合法地址: {}", self.web_bind))?;
-        if !web_bind.ip().is_loopback() && self.web_token.trim().is_empty() {
-            return Err(format!(
-                "Web 监听 {} 非回环，必须设置 web_token 以保护管理接口",
-                self.web_bind
-            ));
-        }
+        validate_web_admin_security(&self.web_bind, &self.web_token, process_runs_as_root())?;
         if self.web_tls_cert.is_empty() != self.web_tls_key.is_empty() {
             return Err("web_tls_cert 与 web_tls_key 必须同时设置或同时留空".into());
         }
@@ -1312,6 +1334,14 @@ revoked = false
         for cfg in cases {
             assert!(cfg.validate().is_err());
         }
+    }
+
+    #[test]
+    fn privileged_access_requires_a_web_token_even_on_loopback() {
+        let cfg = AConfig::default();
+
+        assert!(validate_web_admin_security(&cfg.web_bind, &cfg.web_token, true).is_err());
+        assert!(validate_web_admin_security(&cfg.web_bind, "admin-token", true).is_ok());
     }
 
     #[test]

@@ -36,7 +36,7 @@ use iroh::{Endpoint, PublicKey};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -991,6 +991,87 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn domain_mapping_put_keeps_remote_port_when_omitted() {
+        let state = test_state("admin-token").await;
+        let mapping = config::DomainMapping {
+            domain: "api.example.test".into(),
+            remote_port: 8443,
+            enabled: false,
+        };
+        state.domains.lock().await.mappings.insert(
+            mapping.domain.clone(),
+            disabled_domain_handle(mapping, false, None),
+        );
+        let app = app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/domain-mappings/api.example.test")
+                    .header(header::AUTHORIZATION, "Bearer admin-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"domain":"api.example.test"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["remote_port"], 8443);
+    }
+
+    #[tokio::test]
+    async fn enabled_domain_port_change_preflights_before_persisting() {
+        use std::sync::atomic::AtomicUsize;
+
+        let mut state = test_state("admin-token").await;
+        let preflight_calls = Arc::new(AtomicUsize::new(0));
+        state.domain_preflight = {
+            let preflight_calls = preflight_calls.clone();
+            Arc::new(move |_| {
+                preflight_calls.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async {
+                    Err((
+                        StatusCode::BAD_GATEWAY,
+                        "preflight deliberately failed".into(),
+                    ))
+                })
+            })
+        };
+        let mapping = config::DomainMapping::new("api.example.test");
+        state.domains.lock().await.mappings.insert(
+            mapping.domain.clone(),
+            disabled_domain_handle(mapping, false, None),
+        );
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/domain-mappings/api.example.test")
+                    .header(header::AUTHORIZATION, "Bearer admin-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"domain":"api.example.test","remote_port":8443}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(preflight_calls.load(Ordering::SeqCst), 1);
+        let persisted = state.domains.lock().await.mappings["api.example.test"]
+            .mapping
+            .read()
+            .await
+            .clone();
+        assert_eq!(persisted.remote_port, 443);
+    }
+
+    #[tokio::test]
     async fn active_domain_mappings_share_one_loopback_listener_and_hosts_entries() {
         use std::sync::atomic::AtomicUsize;
 
@@ -1108,6 +1189,16 @@ mod integration_tests {
         );
         assert!(parse_tls_client_hello_sni(&tls_client_hello("bad_name.example")).is_err());
         assert!(parse_tls_client_hello_sni(&[22, 3, 1, 0, 1, 1]).is_err());
+    }
+
+    #[test]
+    fn domain_handshake_limiter_rejects_connections_at_capacity() {
+        let limiter = Arc::new(Semaphore::new(1));
+        let first = try_acquire_domain_handshake_slot(&limiter).unwrap();
+
+        assert!(try_acquire_domain_handshake_slot(&limiter).is_none());
+        drop(first);
+        assert!(try_acquire_domain_handshake_slot(&limiter).is_some());
     }
 
     #[tokio::test]
@@ -2229,8 +2320,9 @@ async fn list_domain_mappings(State(st): State<AppState>) -> Json<Vec<DomainMapp
 #[derive(Deserialize)]
 struct DomainMappingBody {
     domain: String,
-    #[serde(default = "default_domain_remote_port")]
-    remote_port: u16,
+    /// POST defaults to HTTPS; PUT preserves the existing value when omitted.
+    #[serde(default)]
+    remote_port: Option<u16>,
     #[serde(default)]
     enabled: Option<bool>,
 }
@@ -2272,6 +2364,12 @@ fn domain_hosts_http(error: HostsError) -> (StatusCode, String) {
 }
 
 const MAX_TLS_CLIENT_HELLO_PREFIX: usize = 16 * 1024;
+/// Bounds sockets and parser tasks that are waiting for a client to send ClientHello.
+const MAX_PENDING_DOMAIN_HANDSHAKES: usize = 64;
+
+fn try_acquire_domain_handshake_slot(limiter: &Arc<Semaphore>) -> Option<OwnedSemaphorePermit> {
+    limiter.clone().try_acquire_owned().ok()
+}
 
 enum TlsClientHelloState {
     Incomplete,
@@ -2558,6 +2656,7 @@ async fn start_shared_domain_listener(st: &AppState, listener: TcpListener) {
     let metrics = st.metrics.clone();
     let cancel = CancellationToken::new();
     let cancel_task = cancel.clone();
+    let handshake_limiter = Arc::new(Semaphore::new(MAX_PENDING_DOMAIN_HANDSHAKES));
     let task = tokio::spawn(async move {
         loop {
             let accepted = tokio::select! {
@@ -2566,11 +2665,22 @@ async fn start_shared_domain_listener(st: &AppState, listener: TcpListener) {
             };
             match accepted {
                 Ok((tcp, peer)) => {
+                    // Reserve before spawning: slow or silent clients cannot accumulate parser
+                    // tasks or accepted TCP sockets past this global admission limit.
+                    let Some(handshake_permit) =
+                        try_acquire_domain_handshake_slot(&handshake_limiter)
+                    else {
+                        Metrics::inc(&metrics.over_limit);
+                        tracing::debug!(peer = %peer, "域名 TLS 握手等待队列已满，拒绝连接");
+                        drop(tcp);
+                        continue;
+                    };
                     let domains = domains.clone();
                     let link = link.clone();
                     let metrics = metrics.clone();
                     let child = cancel_task.child_token();
                     tokio::spawn(async move {
+                        let handshake_permit = handshake_permit;
                         let mut tcp = tcp;
                         let (sni, prefix) = match tokio::select! {
                             _ = child.cancelled() => return,
@@ -2583,6 +2693,9 @@ async fn start_shared_domain_listener(st: &AppState, listener: TcpListener) {
                             }
                             Err(_) => return,
                         };
+                        // The global permit ends after SNI dispatch. Per-mapping capacity below
+                        // remains held for the entire tunnel lifetime.
+                        drop(handshake_permit);
                         let handle = { domains.lock().await.mappings.get(&sni).cloned() };
                         let Some(handle) = handle else {
                             tracing::debug!(sni, peer = %peer, "拒绝未映射 TLS SNI");
@@ -2726,7 +2839,7 @@ async fn create_domain_mapping(
     drop(domains);
     let mapping = config::DomainMapping {
         domain: body.domain,
-        remote_port: body.remote_port,
+        remote_port: body.remote_port.unwrap_or_else(default_domain_remote_port),
         enabled: body.enabled.unwrap_or(true),
     };
     mapping
@@ -2774,13 +2887,18 @@ async fn update_domain_mapping(
     let old_mapping = old_handle.read().await.clone();
     let mapping = config::DomainMapping {
         domain: body.domain,
-        remote_port: body.remote_port,
+        remote_port: body.remote_port.unwrap_or(old_mapping.remote_port),
         enabled: body.enabled.unwrap_or(old_mapping.enabled),
     };
     mapping
         .validate()
         .map_err(|reason| (StatusCode::BAD_REQUEST, reason))?;
     if mapping.enabled == old_mapping.enabled {
+        // This changes the remote destination without rebuilding the shared loopback socket.
+        // Validate it before exposing the new value to future connections or persistence.
+        if mapping.enabled && mapping.remote_port != old_mapping.remote_port {
+            (st.domain_preflight)(&mapping).await?;
+        }
         *old_handle.write().await = mapping;
         let domains = st.domains.lock().await;
         let handle = domains.mappings.get(&domain).expect("域名映射仍存在");

@@ -1,5 +1,5 @@
 use std::fmt;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -90,6 +90,9 @@ impl HostsStore {
 
     fn edit(&self, domain: &str, ensure: bool) -> Result<(), HostsError> {
         validate_domain(domain)?;
+        // This advisory sidecar lock serializes cooperating PowerMap processes across
+        // the read-modify-atomic-replace transaction.
+        let _lock = acquire_edit_lock(&self.path)?;
         let original = fs::read_to_string(&self.path)?;
         let entry = entry_for(domain);
         let mut updated = remove_exact_entry(&original, &entry);
@@ -104,6 +107,45 @@ impl HostsStore {
 
         atomic_replace(&self.path, updated.as_bytes())
     }
+}
+
+fn hosts_lock_path(path: &Path) -> Result<PathBuf, HostsError> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let file_name = path.file_name().ok_or_else(|| {
+        HostsError::Io(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "hosts file path has no filename",
+        ))
+    })?;
+    Ok(parent.join(format!(".{}.powermap.lock", file_name.to_string_lossy())))
+}
+
+fn acquire_edit_lock(path: &Path) -> Result<File, HostsError> {
+    let lock = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(hosts_lock_path(path)?)?;
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        use std::os::fd::AsRawFd;
+
+        loop {
+            let result = unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX) };
+            if result == 0 {
+                break;
+            }
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(libc::EINTR) {
+                continue;
+            }
+            return Err(HostsError::Io(error));
+        }
+    }
+
+    Ok(lock)
 }
 
 fn validate_domain(domain: &str) -> Result<(), HostsError> {
@@ -164,7 +206,7 @@ fn atomic_replace(path: &Path, contents: &[u8]) -> Result<(), HostsError> {
 
 #[cfg(test)]
 mod tests {
-    use super::HostsStore;
+    use super::{HostsStore, acquire_edit_lock};
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     use std::path::PathBuf;
@@ -258,6 +300,31 @@ mod tests {
         assert_eq!(
             contents(&file),
             "127.0.0.1 ai-router.dl-aiot.com # PowerMap domain mapping: other.example\n"
+        );
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn cooperative_lock_serializes_concurrent_powermap_edits() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        let lock = acquire_edit_lock(file.path()).unwrap();
+        let path = file.path().to_path_buf();
+        let (done_tx, done_rx) = mpsc::channel();
+        let edit = std::thread::spawn(move || {
+            let result = HostsStore::at(path).ensure_loopback("api.example.test");
+            done_tx.send(result.is_ok()).unwrap();
+        });
+
+        assert!(done_rx.recv_timeout(Duration::from_millis(100)).is_err());
+        drop(lock);
+        assert!(done_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+        edit.join().unwrap();
+        assert_eq!(
+            contents(&file),
+            "127.0.0.1 api.example.test # PowerMap domain mapping: api.example.test\n"
         );
     }
 }
