@@ -107,7 +107,14 @@ jobs:
           shasum -a 256 -c "powermap-${TARGET}.sha256"
           mkdir unpacked
           tar -xzf "powermap-${TARGET}.${EXTENSION}" -C unpacked
-          ./unpacked/powermap --help
+          if [ "$TARGET" = "aarch64-unknown-linux-gnu" ]; then
+            # GitHub's Ubuntu hosted runner is x86_64, so it cannot execute
+            # the ARM64 Linux binary. Check its presence after extraction;
+            # native execution is covered by the ARM64 release target build.
+            test -x ./unpacked/powermap
+          else
+            ./unpacked/powermap --help
+          fi
 
       - name: Verify checksum and execute help (Windows)
         if: runner.os == 'Windows'
