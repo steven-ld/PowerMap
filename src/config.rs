@@ -102,6 +102,19 @@ fn default_https_port() -> u16 {
     443
 }
 
+/// Domain mappings own privileged hosts entries and share one loopback HTTPS listener.
+/// `max_mappings = 0` remains unlimited for ordinary port mappings, but domain mappings always
+/// retain this safety ceiling.
+pub const MAX_DOMAIN_MAPPINGS: usize = 256;
+
+pub fn domain_mapping_limit(max_mappings: usize) -> usize {
+    if max_mappings == 0 {
+        MAX_DOMAIN_MAPPINGS
+    } else {
+        max_mappings.min(MAX_DOMAIN_MAPPINGS)
+    }
+}
+
 /// A domain name that should be exposed through the remote node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainMapping {
@@ -333,6 +346,10 @@ impl AConfig {
             if !domains.insert(&mapping.domain) {
                 return Err(format!("域名映射 {} 重复", mapping.domain));
             }
+        }
+        let domain_limit = domain_mapping_limit(self.max_mappings);
+        if self.domain_mappings.len() > domain_limit {
+            return Err(format!("域名映射数量超过上限 {domain_limit}"));
         }
         for target in &self.published_targets {
             target.validate()?;
@@ -1042,6 +1059,19 @@ mod tests {
         for domain in ["*.example.com", "127.0.0.1", "-bad.example", "bad..example"] {
             assert!(DomainMapping::new(domain).validate().is_err());
         }
+    }
+
+    #[test]
+    fn a_config_rejects_too_many_domains() {
+        let too_many = AConfig {
+            max_mappings: 1,
+            domain_mappings: vec![
+                DomainMapping::new("one.example.test"),
+                DomainMapping::new("two.example.test"),
+            ],
+            ..Default::default()
+        };
+        assert!(too_many.validate().is_err());
     }
 
     #[test]

@@ -34,7 +34,7 @@ use axum::routing::{get, post, put};
 use iroh::endpoint::{Connection, presets};
 use iroh::{Endpoint, PublicKey};
 use serde::{Deserialize, Serialize};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
@@ -585,16 +585,22 @@ fn domain_preflight(link: Link) -> DomainPreflight {
 /// its listener always belongs to loopback HTTPS and its hosts ownership must be tracked.
 struct DomainMappingHandle {
     mapping: Arc<RwLock<config::DomainMapping>>,
-    task: JoinHandle<()>,
     stats: Arc<Stats>,
-    cancel: CancellationToken,
     hosts_managed: Arc<AtomicBool>,
     local_listener: bool,
+    conn_sem: Option<Arc<Semaphore>>,
     last_error: Arc<RwLock<Option<String>>>,
 }
 
+/// The one loopback HTTPS socket shared by all enabled domain mappings.
+struct SharedDomainListener {
+    task: JoinHandle<()>,
+    cancel: CancellationToken,
+}
+
 struct DomainInner {
-    mappings: HashMap<String, DomainMappingHandle>,
+    mappings: HashMap<String, Arc<DomainMappingHandle>>,
+    listener: Option<SharedDomainListener>,
 }
 
 #[derive(Clone)]
@@ -607,7 +613,9 @@ struct AppState {
     max_mappings: usize,
     max_conns_per_mapping: usize,
     domains: Arc<Mutex<DomainInner>>,
-    domain_operations: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Domain resource changes touch shared hosts state and loopback port 443.
+    /// A single bounded lock avoids an attacker growing a per-domain lock map indefinitely.
+    domain_lifecycle: Arc<Mutex<()>>,
     hosts: HostsStore,
     domain_listener: DomainListenerFactory,
     domain_admin_check: DomainAdminCheck,
@@ -851,8 +859,9 @@ mod integration_tests {
             max_conns_per_mapping: 8,
             domains: Arc::new(Mutex::new(DomainInner {
                 mappings: HashMap::new(),
+                listener: None,
             })),
-            domain_operations: Arc::new(Mutex::new(HashMap::new())),
+            domain_lifecycle: Arc::new(Mutex::new(())),
             hosts: {
                 let path = std::env::temp_dir().join(format!("powermap-hosts-test-{suffix}"));
                 std::fs::write(&path, "").unwrap();
@@ -962,6 +971,211 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn domain_mutations_require_a_configured_web_token() {
+        let app = app(test_state("").await);
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/domain-mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"domain":"api.example.test","enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn active_domain_mappings_share_one_loopback_listener_and_hosts_entries() {
+        use std::sync::atomic::AtomicUsize;
+
+        let mut state = test_state("admin-token").await;
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let hosts = state.hosts.clone();
+        let binds = Arc::new(AtomicUsize::new(0));
+        state.domain_listener = {
+            let binds = binds.clone();
+            Arc::new(move || {
+                binds.fetch_add(1, Ordering::SeqCst);
+                Box::pin(async { TcpListener::bind("127.0.0.1:0").await })
+            })
+        };
+        let app = app(state.clone());
+
+        let first = app
+            .clone()
+            .oneshot(authenticated_post(
+                "/api/domain-mappings",
+                r#"{"domain":"one.example.test"}"#,
+            ))
+            .await
+            .unwrap();
+        let second = app
+            .clone()
+            .oneshot(authenticated_post(
+                "/api/domain-mappings",
+                r#"{"domain":"two.example.test"}"#,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::OK);
+        assert_eq!(binds.load(Ordering::SeqCst), 1);
+        assert!(hosts.has_loopback("one.example.test").unwrap());
+        assert!(hosts.has_loopback("two.example.test").unwrap());
+        let domains = state.domains.lock().await;
+        assert!(domains.listener.is_some());
+        assert!(
+            domains
+                .mappings
+                .values()
+                .all(|handle| handle.local_listener)
+        );
+        drop(domains);
+
+        assert_eq!(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/domain-mappings/one.example.test/toggle")
+                        .header(header::AUTHORIZATION, "Bearer admin-token")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::OK
+        );
+        assert!(state.domains.lock().await.listener.is_some());
+        assert_eq!(
+            app.oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/domain-mappings/two.example.test/toggle")
+                    .header(header::AUTHORIZATION, "Bearer admin-token")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+            .status(),
+            StatusCode::OK
+        );
+        assert!(state.domains.lock().await.listener.is_none());
+    }
+
+    fn tls_client_hello(sni: &str) -> Vec<u8> {
+        let name = sni.as_bytes();
+        let mut body = vec![0x03, 0x03];
+        body.extend_from_slice(&[0; 32]);
+        body.push(0);
+        body.extend_from_slice(&[0, 2, 0, 0x2f]);
+        body.extend_from_slice(&[1, 0]);
+        let sni_extension_len = 5 + name.len();
+        let extensions_len = 4 + sni_extension_len;
+        body.extend_from_slice(&(extensions_len as u16).to_be_bytes());
+        body.extend_from_slice(&[0, 0]);
+        body.extend_from_slice(&(sni_extension_len as u16).to_be_bytes());
+        body.extend_from_slice(&((3 + name.len()) as u16).to_be_bytes());
+        body.push(0);
+        body.extend_from_slice(&(name.len() as u16).to_be_bytes());
+        body.extend_from_slice(name);
+
+        let mut handshake = vec![1];
+        let len = body.len() as u32;
+        handshake.extend_from_slice(&len.to_be_bytes()[1..]);
+        handshake.extend_from_slice(&body);
+
+        let mut record = vec![22, 0x03, 0x01];
+        record.extend_from_slice(&(handshake.len() as u16).to_be_bytes());
+        record.extend_from_slice(&handshake);
+        record
+    }
+
+    #[test]
+    fn tls_sni_parser_normalizes_and_rejects_malformed_names() {
+        assert_eq!(
+            parse_tls_client_hello_sni(&tls_client_hello("Api.Example.Test")).unwrap(),
+            "api.example.test"
+        );
+        assert!(parse_tls_client_hello_sni(&tls_client_hello("bad_name.example")).is_err());
+        assert!(parse_tls_client_hello_sni(&[22, 3, 1, 0, 1, 1]).is_err());
+    }
+
+    #[tokio::test]
+    async fn tls_sni_read_replays_every_consumed_clienthello_byte() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let expected = tls_client_hello("api.example.test");
+        let expected_for_server = expected.clone();
+        let server = tokio::spawn(async move {
+            let (mut tcp, _) = listener.accept().await.unwrap();
+            let (sni, prefix) = read_tls_client_hello_prefix(&mut tcp).await.unwrap();
+            assert_eq!(sni, "api.example.test");
+            prefix
+        });
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client.write_all(&expected).await.unwrap();
+        drop(client);
+        assert_eq!(server.await.unwrap(), expected_for_server);
+    }
+
+    #[tokio::test]
+    async fn listener_bind_failure_does_not_write_a_hosts_marker() {
+        let mut state = test_state("admin-token").await;
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let hosts = state.hosts.clone();
+        state.domain_listener = Arc::new(|| {
+            Box::pin(async { Err(io::Error::new(io::ErrorKind::AddrInUse, "test conflict")) })
+        });
+        let app = app(state);
+
+        let response = app
+            .oneshot(authenticated_post(
+                "/api/domain-mappings",
+                r#"{"domain":"api.example.test"}"#,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert!(!hosts.has_loopback("api.example.test").unwrap());
+    }
+
+    #[tokio::test]
+    async fn domain_mapping_creation_respects_max_mappings() {
+        let mut state = test_state("admin-token").await;
+        state.max_mappings = 1;
+        let app = app(state);
+        let first = app
+            .clone()
+            .oneshot(authenticated_post(
+                "/api/domain-mappings",
+                r#"{"domain":"one.example.test","enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+        let second = app
+            .oneshot(authenticated_post(
+                "/api/domain-mappings",
+                r#"{"domain":"two.example.test","enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
     async fn enabling_a_domain_mapping_requires_current_process_administrator_authority() {
         let mut state = test_state("admin-token").await;
         let hosts = state.hosts.clone();
@@ -1007,7 +1221,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn failed_disable_cleanup_preserves_retryable_hosts_error_state() {
-        let mut state = test_state("").await;
+        let mut state = test_state("admin-token").await;
         state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
         let original_hosts = state.hosts.clone();
         let mapping = config::DomainMapping::new("api.example.test");
@@ -1053,7 +1267,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn failed_delete_cleanup_persists_disabled_recovery_state() {
-        let mut state = test_state("").await;
+        let mut state = test_state("admin-token").await;
         state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
         let original_hosts = state.hosts.clone();
         let mapping = config::DomainMapping::new("delete.example.test");
@@ -2025,6 +2239,16 @@ fn default_domain_remote_port() -> u16 {
     443
 }
 
+fn require_domain_mutation_token(st: &AppState) -> Result<(), (StatusCode, String)> {
+    if st.web_token.trim().is_empty() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "域名映射会修改系统 hosts 文件，必须先配置 web_token".into(),
+        ));
+    }
+    Ok(())
+}
+
 fn domain_authority_http(error: DomainAuthorityError) -> (StatusCode, String) {
     let code = match error {
         DomainAuthorityError::NotAdministrator => StatusCode::FORBIDDEN,
@@ -2047,26 +2271,201 @@ fn domain_hosts_http(error: HostsError) -> (StatusCode, String) {
     }
 }
 
+const MAX_TLS_CLIENT_HELLO_PREFIX: usize = 16 * 1024;
+
+enum TlsClientHelloState {
+    Incomplete,
+    Sni(String),
+}
+
+fn take_tls_slice<'a>(
+    data: &'a [u8],
+    cursor: &mut usize,
+    len: usize,
+) -> Result<&'a [u8], &'static str> {
+    let end = cursor.checked_add(len).ok_or("TLS length overflow")?;
+    let value = data.get(*cursor..end).ok_or("truncated TLS ClientHello")?;
+    *cursor = end;
+    Ok(value)
+}
+
+/// Extracts SNI from complete TLS handshake records without interpreting or modifying TLS.
+/// A ClientHello can span records, so the record payloads are joined only for inspection; the
+/// original prefix is retained separately and replayed unchanged into the tunnel.
+fn inspect_tls_client_hello(data: &[u8]) -> Result<TlsClientHelloState, &'static str> {
+    let mut records = Vec::new();
+    let mut cursor = 0;
+    while cursor < data.len() {
+        if data.len() - cursor < 5 {
+            return Ok(TlsClientHelloState::Incomplete);
+        }
+        if data[cursor] != 22 {
+            return Err("expected TLS handshake record");
+        }
+        let record_len = u16::from_be_bytes([data[cursor + 3], data[cursor + 4]]) as usize;
+        if record_len > MAX_TLS_CLIENT_HELLO_PREFIX {
+            return Err("TLS record exceeds ClientHello limit");
+        }
+        let end = cursor + 5 + record_len;
+        if end > data.len() {
+            return Ok(TlsClientHelloState::Incomplete);
+        }
+        records.extend_from_slice(&data[cursor + 5..end]);
+        if records.len() > MAX_TLS_CLIENT_HELLO_PREFIX {
+            return Err("TLS ClientHello exceeds limit");
+        }
+        if records.len() < 4 {
+            cursor = end;
+            continue;
+        }
+        if records[0] != 1 {
+            return Err("expected TLS ClientHello");
+        }
+        let hello_len =
+            ((records[1] as usize) << 16) | ((records[2] as usize) << 8) | records[3] as usize;
+        if hello_len > MAX_TLS_CLIENT_HELLO_PREFIX - 4 {
+            return Err("TLS ClientHello exceeds limit");
+        }
+        if records.len() < 4 + hello_len {
+            cursor = end;
+            continue;
+        }
+        let hello = &records[4..4 + hello_len];
+        let mut hello_cursor = 0;
+        take_tls_slice(hello, &mut hello_cursor, 2)?; // legacy_version
+        take_tls_slice(hello, &mut hello_cursor, 32)?; // random
+        let session_len = *take_tls_slice(hello, &mut hello_cursor, 1)?
+            .first()
+            .ok_or("truncated TLS session id")? as usize;
+        take_tls_slice(hello, &mut hello_cursor, session_len)?;
+        let cipher_len = u16::from_be_bytes(
+            take_tls_slice(hello, &mut hello_cursor, 2)?
+                .try_into()
+                .map_err(|_| "truncated TLS cipher suites")?,
+        ) as usize;
+        if cipher_len == 0 || !cipher_len.is_multiple_of(2) {
+            return Err("invalid TLS cipher suite list");
+        }
+        take_tls_slice(hello, &mut hello_cursor, cipher_len)?;
+        let compression_len = *take_tls_slice(hello, &mut hello_cursor, 1)?
+            .first()
+            .ok_or("truncated TLS compression methods")? as usize;
+        if compression_len == 0 {
+            return Err("invalid TLS compression methods");
+        }
+        take_tls_slice(hello, &mut hello_cursor, compression_len)?;
+        let extensions_len = u16::from_be_bytes(
+            take_tls_slice(hello, &mut hello_cursor, 2)?
+                .try_into()
+                .map_err(|_| "truncated TLS extensions")?,
+        ) as usize;
+        let extensions = take_tls_slice(hello, &mut hello_cursor, extensions_len)?;
+        if hello_cursor != hello.len() {
+            return Err("invalid TLS ClientHello trailing bytes");
+        }
+
+        let mut extension_cursor = 0;
+        while extension_cursor < extensions.len() {
+            let extension_type = u16::from_be_bytes(
+                take_tls_slice(extensions, &mut extension_cursor, 2)?
+                    .try_into()
+                    .map_err(|_| "truncated TLS extension type")?,
+            );
+            let extension_len = u16::from_be_bytes(
+                take_tls_slice(extensions, &mut extension_cursor, 2)?
+                    .try_into()
+                    .map_err(|_| "truncated TLS extension length")?,
+            ) as usize;
+            let extension = take_tls_slice(extensions, &mut extension_cursor, extension_len)?;
+            if extension_type != 0 {
+                continue;
+            }
+            if extension.len() < 2 {
+                return Err("truncated TLS SNI extension");
+            }
+            let names_len = u16::from_be_bytes([extension[0], extension[1]]) as usize;
+            if names_len != extension.len() - 2 {
+                return Err("invalid TLS SNI list length");
+            }
+            let mut names = 2;
+            while names < extension.len() {
+                let name_type = extension[names];
+                names += 1;
+                if names + 2 > extension.len() {
+                    return Err("truncated TLS SNI name length");
+                }
+                let name_len =
+                    u16::from_be_bytes([extension[names], extension[names + 1]]) as usize;
+                names += 2;
+                let name = extension
+                    .get(names..names + name_len)
+                    .ok_or("truncated TLS SNI name")?;
+                names += name_len;
+                if name_type != 0 {
+                    continue;
+                }
+                let name = std::str::from_utf8(name).map_err(|_| "TLS SNI is not UTF-8")?;
+                let name = name.to_ascii_lowercase();
+                config::DomainMapping::new(name.clone())
+                    .validate()
+                    .map_err(|_| "TLS SNI is not a supported DNS domain")?;
+                return Ok(TlsClientHelloState::Sni(name));
+            }
+            return Err("TLS ClientHello has no hostname SNI");
+        }
+        return Err("TLS ClientHello has no SNI extension");
+    }
+    Ok(TlsClientHelloState::Incomplete)
+}
+
+#[cfg(test)]
+fn parse_tls_client_hello_sni(data: &[u8]) -> Result<String, &'static str> {
+    match inspect_tls_client_hello(data)? {
+        TlsClientHelloState::Sni(sni) => Ok(sni),
+        TlsClientHelloState::Incomplete => Err("truncated TLS ClientHello"),
+    }
+}
+
+async fn read_tls_client_hello_prefix(local: &mut TcpStream) -> io::Result<(String, Vec<u8>)> {
+    let mut prefix = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    loop {
+        let n = local.read(&mut chunk).await?;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "TLS ClientHello ended early",
+            ));
+        }
+        if prefix.len() + n > MAX_TLS_CLIENT_HELLO_PREFIX {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "TLS ClientHello exceeds limit",
+            ));
+        }
+        prefix.extend_from_slice(&chunk[..n]);
+        match inspect_tls_client_hello(&prefix) {
+            Ok(TlsClientHelloState::Sni(sni)) => return Ok((sni, prefix)),
+            Ok(TlsClientHelloState::Incomplete) => {}
+            Err(error) => return Err(io::Error::new(io::ErrorKind::InvalidData, error)),
+        }
+    }
+}
+
 fn disabled_domain_handle(
     mapping: config::DomainMapping,
     hosts_managed: bool,
     last_error: Option<String>,
-) -> DomainMappingHandle {
+) -> Arc<DomainMappingHandle> {
     let stats = Stats::with_state(false, true);
-    let cancel = CancellationToken::new();
-    let cancel_task = cancel.clone();
-    let task = tokio::spawn(async move {
-        cancel_task.cancelled().await;
-    });
-    DomainMappingHandle {
+    Arc::new(DomainMappingHandle {
         mapping: Arc::new(RwLock::new(mapping)),
-        task,
         stats,
-        cancel,
         hosts_managed: Arc::new(AtomicBool::new(hosts_managed)),
         local_listener: false,
+        conn_sem: None,
         last_error: Arc::new(RwLock::new(last_error)),
-    }
+    })
 }
 
 /// Preflight runs through the existing expose TCP path, so DNS and policy are evaluated from
@@ -2105,7 +2504,7 @@ async fn preflight_domain_mapping(
 async fn start_domain_mapping_owned(
     st: &AppState,
     mapping: config::DomainMapping,
-) -> Result<DomainMappingHandle, (StatusCode, String)> {
+) -> Result<Arc<DomainMappingHandle>, (StatusCode, String)> {
     if !mapping.enabled {
         let (hosts_managed, last_error) = match st.hosts.has_loopback(&mapping.domain) {
             Ok(true) => (
@@ -2123,30 +2522,42 @@ async fn start_domain_mapping_owned(
     (st.domain_admin_check)().map_err(domain_authority_http)?;
     (st.domain_preflight)(&mapping).await?;
 
-    st.hosts
-        .ensure_loopback(&mapping.domain)
-        .map_err(domain_hosts_http)?;
-    let listener = match (st.domain_listener)().await {
-        Ok(listener) => listener,
-        Err(error) => {
-            if let Err(rollback_error) = st.hosts.remove_loopback(&mapping.domain) {
-                tracing::error!(error = %rollback_error, domain = %mapping.domain, "域名映射监听失败后的 hosts 回滚失败");
+    let listener_was_started = st.domains.lock().await.listener.is_none();
+    if listener_was_started {
+        let listener = match (st.domain_listener)().await {
+            Ok(listener) => listener,
+            Err(error) => {
+                return Err((
+                    StatusCode::CONFLICT,
+                    format!("无法绑定 loopback HTTPS 监听：{error}"),
+                ));
             }
-            return Err((
-                StatusCode::CONFLICT,
-                format!("无法绑定 loopback HTTPS 监听：{error}"),
-            ));
-        }
-    };
+        };
+        start_shared_domain_listener(st, listener).await;
+    }
+    if let Err(error) = st.hosts.ensure_loopback(&mapping.domain) {
+        stop_shared_domain_listener_if_unused(st).await;
+        return Err(domain_hosts_http(error));
+    }
 
+    let stats = Stats::new();
+    Ok(Arc::new(DomainMappingHandle {
+        mapping: Arc::new(RwLock::new(mapping)),
+        stats,
+        hosts_managed: Arc::new(AtomicBool::new(true)),
+        local_listener: true,
+        conn_sem: (st.max_conns_per_mapping > 0)
+            .then(|| Arc::new(Semaphore::new(st.max_conns_per_mapping))),
+        last_error: Arc::new(RwLock::new(None)),
+    }))
+}
+
+async fn start_shared_domain_listener(st: &AppState, listener: TcpListener) {
+    let domains = st.domains.clone();
     let link = st.link.clone();
     let metrics = st.metrics.clone();
-    let stats = Stats::new();
-    let stats_clone = stats.clone();
     let cancel = CancellationToken::new();
     let cancel_task = cancel.clone();
-    let runtime_mapping = Arc::new(RwLock::new(mapping));
-    let mapping_for_task = runtime_mapping.clone();
     let task = tokio::spawn(async move {
         loop {
             let accepted = tokio::select! {
@@ -2155,90 +2566,131 @@ async fn start_domain_mapping_owned(
             };
             match accepted {
                 Ok((tcp, peer)) => {
+                    let domains = domains.clone();
                     let link = link.clone();
                     let metrics = metrics.clone();
-                    let stats = stats_clone.clone();
-                    let stats_for_tunnel = stats.clone();
                     let child = cancel_task.child_token();
-                    let mapping = mapping_for_task.clone();
                     tokio::spawn(async move {
+                        let mut tcp = tcp;
+                        let (sni, prefix) = match tokio::select! {
+                            _ = child.cancelled() => return,
+                            result = tokio::time::timeout(Duration::from_secs(5), read_tls_client_hello_prefix(&mut tcp)) => result,
+                        } {
+                            Ok(Ok(result)) => result,
+                            Ok(Err(error)) => {
+                                tracing::debug!(error = %error, peer = %peer, "拒绝无效 TLS SNI 连接");
+                                return;
+                            }
+                            Err(_) => return,
+                        };
+                        let handle = { domains.lock().await.mappings.get(&sni).cloned() };
+                        let Some(handle) = handle else {
+                            tracing::debug!(sni, peer = %peer, "拒绝未映射 TLS SNI");
+                            return;
+                        };
+                        if !handle.local_listener {
+                            return;
+                        }
+                        let permit = match &handle.conn_sem {
+                            Some(sem) => match sem.clone().try_acquire_owned() {
+                                Ok(permit) => Some(permit),
+                                Err(_) => {
+                                    Metrics::inc(&metrics.over_limit);
+                                    return;
+                                }
+                            },
+                            None => None,
+                        };
+                        let stats = handle.stats.clone();
                         stats.active_conns.fetch_add(1, Ordering::Relaxed);
                         let (conn_id, conn_meta) = stats.register_conn(peer.to_string());
                         let _active = ActiveGuard {
                             stats: stats.clone(),
                             id: conn_id,
                         };
-                        let (domain, remote_port) = {
-                            let mapping = mapping.read().await;
-                            (mapping.domain.clone(), mapping.remote_port)
-                        };
+                        let mapping = handle.mapping.read().await;
                         let request = proto::OpenRequest {
                             token: link.token().await,
-                            host: domain,
-                            port: remote_port,
+                            host: mapping.domain.clone(),
+                            port: mapping.remote_port,
                             kind: proto::TunnelKind::Tcp,
                             register: false,
                         };
+                        drop(mapping);
+                        let _permit = permit;
                         tokio::select! {
                             _ = child.cancelled() => {},
-                            result = handle_tunnel(link, request, tcp, stats_for_tunnel, conn_meta, metrics.clone(), Vec::new()) => {
+                            result = handle_tunnel(link, request, tcp, stats.clone(), conn_meta, metrics.clone(), prefix) => {
                                 if let Err(error) = result {
                                     Metrics::inc(&metrics.tunnels_failed);
                                     stats.record_failure(&error).await;
-                                    tracing::warn!(error = %error, "域名隧道关闭");
+                                    tracing::warn!(error = %error, sni, "域名隧道关闭");
                                 }
                             }
                         }
                     });
                 }
                 Err(error) => {
-                    tracing::error!(error = %error, "域名映射本地监听关闭");
+                    tracing::error!(error = %error, "共享域名映射本地监听关闭");
                     break;
                 }
             }
         }
-        stats_clone.mark_listener_stopped().await;
+        let stats = {
+            let domains = domains.lock().await;
+            domains
+                .mappings
+                .values()
+                .map(|handle| handle.stats.clone())
+                .collect::<Vec<_>>()
+        };
+        for stats in stats {
+            stats.mark_listener_stopped().await;
+        }
     });
+    st.domains.lock().await.listener = Some(SharedDomainListener { task, cancel });
+}
 
-    Ok(DomainMappingHandle {
-        mapping: runtime_mapping,
-        task,
-        stats,
-        cancel,
-        hosts_managed: Arc::new(AtomicBool::new(true)),
-        local_listener: true,
-        last_error: Arc::new(RwLock::new(None)),
-    })
+async fn stop_shared_domain_listener_if_unused(st: &AppState) {
+    let listener = {
+        let mut domains = st.domains.lock().await;
+        if domains
+            .mappings
+            .values()
+            .any(|handle| handle.local_listener)
+        {
+            None
+        } else {
+            domains.listener.take()
+        }
+    };
+    if let Some(listener) = listener {
+        listener.cancel.cancel();
+        listener.task.abort();
+        let _ = listener.task.await;
+    }
 }
 
 async fn stop_domain_mapping(
     st: &AppState,
-    handle: DomainMappingHandle,
+    handle: Arc<DomainMappingHandle>,
     remove_hosts: bool,
 ) -> Result<(), String> {
-    handle.cancel.cancel();
-    handle.task.abort();
-    let _ = handle.task.await;
-    if remove_hosts {
+    let hosts_result = if remove_hosts {
         let domain = handle.mapping.read().await.domain.clone();
         st.hosts
             .remove_loopback(&domain)
-            .map_err(|error| domain_hosts_http(error).1)?;
-    }
-    Ok(())
+            .map_err(|error| domain_hosts_http(error).1)
+    } else {
+        Ok(())
+    };
+    stop_shared_domain_listener_if_unused(st).await;
+    hosts_result
 }
 
-/// Serializes all ownership transitions for one domain. The marker and loopback listener are
-/// shared resources, so a competing create must not roll back a mapping that has just won them.
-async fn lock_domain_operation(st: &AppState, domain: &str) -> tokio::sync::OwnedMutexGuard<()> {
-    let lock = {
-        let mut operations = st.domain_operations.lock().await;
-        operations
-            .entry(domain.to_string())
-            .or_insert_with(|| Arc::new(Mutex::new(())))
-            .clone()
-    };
-    lock.lock_owned().await
+/// Serializes all ownership transitions without retaining attacker-controlled domain keys.
+async fn lock_domain_operation(st: &AppState) -> tokio::sync::MutexGuard<'_, ()> {
+    st.domain_lifecycle.lock().await
 }
 
 async fn record_domain_cleanup_failure(st: &AppState, domain: &str, error: String) {
@@ -2253,6 +2705,25 @@ async fn create_domain_mapping(
     State(st): State<AppState>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
+    require_domain_mutation_token(&st)?;
+    let _operation = lock_domain_operation(&st).await;
+    let domains = st.domains.lock().await;
+    if domains.mappings.contains_key(&body.domain) {
+        return Err((
+            StatusCode::CONFLICT,
+            format!("{} 已存在域名映射", body.domain),
+        ));
+    }
+    if domains.mappings.len() >= config::domain_mapping_limit(st.max_mappings) {
+        return Err((
+            StatusCode::TOO_MANY_REQUESTS,
+            format!(
+                "域名映射数量已达上限 {}",
+                config::domain_mapping_limit(st.max_mappings)
+            ),
+        ));
+    }
+    drop(domains);
     let mapping = config::DomainMapping {
         domain: body.domain,
         remote_port: body.remote_port,
@@ -2261,19 +2732,6 @@ async fn create_domain_mapping(
     mapping
         .validate()
         .map_err(|reason| (StatusCode::BAD_REQUEST, reason))?;
-    let _operation = lock_domain_operation(&st, &mapping.domain).await;
-    if st
-        .domains
-        .lock()
-        .await
-        .mappings
-        .contains_key(&mapping.domain)
-    {
-        return Err((
-            StatusCode::CONFLICT,
-            format!("{} 已存在域名映射", mapping.domain),
-        ));
-    }
     let handle = start_domain_mapping_owned(&st, mapping.clone()).await?;
     let status = domain_status(&handle).await;
     let mut domains = st.domains.lock().await;
@@ -2296,13 +2754,14 @@ async fn update_domain_mapping(
     Path(domain): Path<String>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
+    require_domain_mutation_token(&st)?;
     if body.domain != domain {
         return Err((
             StatusCode::BAD_REQUEST,
             "路径与请求体中的 domain 必须一致".into(),
         ));
     }
-    let _operation = lock_domain_operation(&st, &domain).await;
+    let _operation = lock_domain_operation(&st).await;
     let old_handle = {
         let domains = st.domains.lock().await;
         domains
@@ -2338,12 +2797,12 @@ async fn update_domain_mapping(
         .await
         .mappings
         .insert(domain.clone(), handle);
-    if let Some(old) = old {
-        if let Err(error) = stop_domain_mapping(&st, old, !enabled).await {
-            tracing::error!(%error, "替换域名映射后清理旧 hosts 条目失败");
-            if !enabled {
-                record_domain_cleanup_failure(&st, &domain, error).await;
-            }
+    if let Some(old) = old
+        && let Err(error) = stop_domain_mapping(&st, old, !enabled).await
+    {
+        tracing::error!(%error, "替换域名映射后清理旧 hosts 条目失败");
+        if !enabled {
+            record_domain_cleanup_failure(&st, &domain, error).await;
         }
     }
     let status = {
@@ -2358,7 +2817,8 @@ async fn toggle_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
-    let _operation = lock_domain_operation(&st, &domain).await;
+    require_domain_mutation_token(&st)?;
+    let _operation = lock_domain_operation(&st).await;
     let previous = {
         let domains = st.domains.lock().await;
         domains
@@ -2382,12 +2842,12 @@ async fn toggle_domain_mapping(
         .await
         .mappings
         .insert(domain.clone(), handle);
-    if let Some(old) = old {
-        if let Err(error) = stop_domain_mapping(&st, old, !enabled).await {
-            tracing::error!(%error, "停用域名映射后清理 hosts 条目失败");
-            if !enabled {
-                record_domain_cleanup_failure(&st, &domain, error).await;
-            }
+    if let Some(old) = old
+        && let Err(error) = stop_domain_mapping(&st, old, !enabled).await
+    {
+        tracing::error!(%error, "停用域名映射后清理 hosts 条目失败");
+        if !enabled {
+            record_domain_cleanup_failure(&st, &domain, error).await;
         }
     }
     let status = {
@@ -2402,7 +2862,10 @@ async fn remove_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> impl IntoResponse {
-    let _operation = lock_domain_operation(&st, &domain).await;
+    if let Err(error) = require_domain_mutation_token(&st) {
+        return error.into_response();
+    }
+    let _operation = lock_domain_operation(&st).await;
     let handle = st.domains.lock().await.mappings.remove(&domain);
     match handle {
         Some(handle) => {
@@ -3841,8 +4304,9 @@ pub async fn run(
         max_conns_per_mapping: cfg.max_conns_per_mapping,
         domains: Arc::new(Mutex::new(DomainInner {
             mappings: HashMap::new(),
+            listener: None,
         })),
-        domain_operations: Arc::new(Mutex::new(HashMap::new())),
+        domain_lifecycle: Arc::new(Mutex::new(())),
         // Unsupported platforms retain ordinary port mappings. Domain operations themselves
         // return a typed unsupported-platform error before this inert path can be used.
         hosts: HostsStore::system()
@@ -4054,8 +4518,8 @@ pub async fn run(
         }
         {
             let domains = shutdown_state.domains.lock().await;
-            for handle in domains.mappings.values() {
-                handle.cancel.cancel();
+            if let Some(listener) = &domains.listener {
+                listener.cancel.cancel();
             }
         }
         // 给在途连接一点收尾时间，然后优雅停止 HTTP 服务
