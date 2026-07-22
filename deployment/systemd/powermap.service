@@ -7,7 +7,7 @@ After=network-online.target
 [Service]
 Type=simple
 # Domain mappings update /etc/hosts and bind loopback HTTPS port 443. The service therefore
-# runs as root. Root access processes fail closed at startup unless access.web_token is set,
+# runs as root. Keep the management listener restricted to trusted local access,
 # including when web_bind is loopback.
 User=root
 Group=root

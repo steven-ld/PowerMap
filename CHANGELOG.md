@@ -4,6 +4,23 @@
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-22
+
+### Added
+
+- 域名映射：把完整 DNS 域名写入本机 hosts，并通过共享的 `127.0.0.1:443` HTTPS 入口按 TLS SNI 分发到远端服务。支持创建、更新、启停、恢复与状态诊断。
+- 域名映射的 hosts 标记管理、并发协作锁、SNI 首包回放和连接限流；映射异常会保留可诊断状态，不会阻断普通端口映射启动。
+
+### Changed
+
+- 管理 API 当前不启用 `web_token` 鉴权。旧配置字段继续保留并可读写，供未来版本启用时兼容；Docker 与 root 启动不再要求或生成管理 token。
+- 控制台移除管理 token 的输入、轮换与会话状态控件；管理页可直接操作。
+
+### Compatibility
+
+- 既有 `access.web_token` 配置会被保留，但不参与当前版本的启动校验或 API 行为。
+- 域名映射只支持 macOS/Linux，仍要求以管理员身份运行，以便维护系统 hosts 文件和本机 443 监听。
+
 ## [0.4.0] - 2026-07-22
 
 ### Added
@@ -76,7 +93,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/steven-ld/PowerMap/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/steven-ld/PowerMap/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/steven-ld/PowerMap/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/steven-ld/PowerMap/releases/tag/v0.1.0

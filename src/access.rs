@@ -11,7 +11,7 @@
 //! 可运营性：
 //! - `/metrics` 暴露 Prometheus 指标；
 //! - 每条隧道注册一个 CancellationToken，删除映射或进程优雅退出时主动 drain 在途连接；
-//! - 可选 TLS（web_tls_cert/web_tls_key），远程管理时保护 Bearer token；
+//! - 可选 TLS（web_tls_cert/web_tls_key），远程管理时保护管理流量；
 //! - 映射条数与单映射并发连接数有上限，防止无限增长耗尽资源。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -26,9 +26,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
-use axum::middleware::{Next, from_fn_with_state};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
 use iroh::endpoint::{Connection, presets};
@@ -918,7 +917,6 @@ mod integration_tests {
         Request::builder()
             .method("POST")
             .uri(uri)
-            .header(header::AUTHORIZATION, "Bearer admin-token")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(body))
             .unwrap()
@@ -928,10 +926,14 @@ mod integration_tests {
     async fn domain_mapping_api_rejects_invalid_domain_before_system_mutation() {
         let app = app(test_state("admin-token").await);
         let response = app
-            .oneshot(authenticated_post(
-                "/api/domain-mappings",
-                r#"{"domain":"*.bad"}"#,
-            ))
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/domain-mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"domain":"*.bad"}"#))
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -944,36 +946,6 @@ mod integration_tests {
         let app = app(state);
         let response = app
             .clone()
-            .oneshot(authenticated_post(
-                "/api/domain-mappings",
-                r#"{"domain":"api.example.test","enabled":false}"#,
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let created = response_json(response).await;
-        assert_eq!(created["enabled"], false);
-        assert_eq!(created["hosts_managed"], false);
-        assert!(!hosts.has_loopback("api.example.test").unwrap());
-
-        let listed = response_json(
-            app.oneshot(
-                Request::get("/api/domain-mappings")
-                    .header(header::AUTHORIZATION, "Bearer admin-token")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap(),
-        )
-        .await;
-        assert_eq!(listed.as_array().unwrap().len(), 1);
-    }
-
-    #[tokio::test]
-    async fn domain_mutations_require_a_configured_web_token() {
-        let app = app(test_state("").await);
-        let response = app
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -986,8 +958,23 @@ mod integration_tests {
             )
             .await
             .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let created = response_json(response).await;
+        assert_eq!(created["enabled"], false);
+        assert_eq!(created["hosts_managed"], false);
+        assert!(!hosts.has_loopback("api.example.test").unwrap());
 
-        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let listed = response_json(
+            app.oneshot(
+                Request::get("/api/domain-mappings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(listed.as_array().unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -1273,6 +1260,8 @@ mod integration_tests {
         state.domain_admin_check = Arc::new(|| Err(DomainAuthorityError::NotAdministrator));
         let app = app(state);
         let created = app
+            .clone()
+            .clone()
             .clone()
             .oneshot(authenticated_post(
                 "/api/domain-mappings",
@@ -2012,14 +2001,14 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn mapping_mutations_enforce_auth_and_accept_a_valid_bearer_token() {
+    async fn mapping_mutations_are_available_without_web_token_authentication() {
         let state = test_state("admin-secret").await;
         let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let local = reserved.local_addr().unwrap();
         drop(reserved);
         let app = app(state);
 
-        let unauthorized = app
+        let created = app
             .clone()
             .oneshot(
                 Request::builder()
@@ -2033,31 +2022,13 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        assert_eq!(unauthorized.status(), StatusCode::UNAUTHORIZED);
-
-        let authorized = app
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/mappings")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .header(header::AUTHORIZATION, "Bearer admin-secret")
-                    .body(Body::from(format!(
-                        r#"{{"local":"{local}","host":"127.0.0.1","port":80}}"#
-                    )))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(authorized.status(), StatusCode::OK);
+        assert_eq!(created.status(), StatusCode::OK);
 
         let removed = app
             .oneshot(
                 Request::builder()
                     .method("DELETE")
                     .uri(format!("/api/mappings/{local}"))
-                    .header(header::AUTHORIZATION, "Bearer admin-secret")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -2165,31 +2136,6 @@ mod integration_tests {
         assert_eq!(body["node_id"], "local-node");
         assert_eq!(body["token"], "local-token");
         std::fs::remove_file(credential_path).unwrap();
-    }
-
-    #[tokio::test]
-    async fn query_string_tokens_do_not_authorize_management_requests() {
-        let state = test_state("admin-secret").await;
-        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let local = reserved.local_addr().unwrap();
-        drop(reserved);
-        let app = app(state);
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .method("POST")
-                    .uri("/api/mappings?token=admin-secret")
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(format!(
-                        r#"{{"local":"{local}","host":"127.0.0.1","port":80}}"#
-                    )))
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
@@ -2329,16 +2275,6 @@ struct DomainMappingBody {
 
 fn default_domain_remote_port() -> u16 {
     443
-}
-
-fn require_domain_mutation_token(st: &AppState) -> Result<(), (StatusCode, String)> {
-    if st.web_token.trim().is_empty() {
-        return Err((
-            StatusCode::FORBIDDEN,
-            "域名映射会修改系统 hosts 文件，必须先配置 web_token".into(),
-        ));
-    }
-    Ok(())
 }
 
 fn domain_authority_http(error: DomainAuthorityError) -> (StatusCode, String) {
@@ -2818,7 +2754,6 @@ async fn create_domain_mapping(
     State(st): State<AppState>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
-    require_domain_mutation_token(&st)?;
     let _operation = lock_domain_operation(&st).await;
     let domains = st.domains.lock().await;
     if domains.mappings.contains_key(&body.domain) {
@@ -2867,7 +2802,6 @@ async fn update_domain_mapping(
     Path(domain): Path<String>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
-    require_domain_mutation_token(&st)?;
     if body.domain != domain {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -2935,7 +2869,6 @@ async fn toggle_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
-    require_domain_mutation_token(&st)?;
     let _operation = lock_domain_operation(&st).await;
     let previous = {
         let domains = st.domains.lock().await;
@@ -2980,9 +2913,6 @@ async fn remove_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(error) = require_domain_mutation_token(&st) {
-        return error.into_response();
-    }
     let _operation = lock_domain_operation(&st).await;
     let handle = st.domains.lock().await.mappings.remove(&domain);
     match handle {
@@ -3879,24 +3809,6 @@ async fn toggle_all(
     })
 }
 
-/// Web API 鉴权：配置了 web_token 时，只接受 Authorization: Bearer；
-/// /api/health 与 /metrics 免鉴权（供健康检查与抓取；/metrics 仅暴露聚合计数，不含机密）。
-async fn require_auth(State(st): State<AppState>, req: Request, next: Next) -> Response {
-    let path = req.uri().path();
-    if st.web_token.is_empty() || path == "/api/health" || path == "/metrics" {
-        return next.run(req).await;
-    }
-    let from_header = req
-        .headers()
-        .get(axum::http::header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.strip_prefix("Bearer ").map(|t| t.to_string()));
-    match from_header {
-        Some(t) if crate::tunnel::token_ok(&st.web_token, &t) => next.run(req).await,
-        _ => (StatusCode::UNAUTHORIZED, "unauthorized").into_response(),
-    }
-}
-
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
@@ -3927,8 +3839,7 @@ fn app(state: AppState) -> Router {
         .route("/api/reverse", get(get_reverse).put(set_reverse))
         .route("/api/export", get(export_config))
         .route("/api/import", post(import_config))
-        .with_state(state.clone())
-        .layer(from_fn_with_state(state, require_auth))
+        .with_state(state)
 }
 
 /// GET /api/reverse —— 读取当前反向映射策略（deny-all 语义）。
@@ -4029,25 +3940,12 @@ fn parse_target(node_id: &str) -> Result<PublicKey, String> {
         .map_err(|e| format!("node_id 不是合法的 PublicKey: {e}"))
 }
 
-/// 非回环绑定且未设 web_token 时，拒绝在接口里回显 token（避免明文泄露给任意来访者）。
-/// 回环（本机）默认放行，方便本地使用。
-fn token_exposable(st: &AppState) -> bool {
-    let is_loopback = st
-        .web_bind
-        .split(':')
-        .next()
-        .map(|h| h == "127.0.0.1" || h == "localhost" || h == "::1" || h == "[::1]")
-        .unwrap_or(false);
-    is_loopback || !st.web_token.is_empty()
-}
-
 // ---- 凭证 / 导入导出 ----
 
 #[derive(Serialize)]
 struct CredentialView {
     configured: bool,
     node_id: String,
-    /// 当前接入令牌；非回环且未设 web_token 时置空并由 token_hidden 标记原因。
     token: String,
     token_hidden: bool,
     published_targets: Vec<config::PublishedTarget>,
@@ -4070,18 +3968,13 @@ async fn get_node(State(st): State<AppState>) -> Json<NodeView> {
     let credential = std::fs::read_to_string(path)
         .ok()
         .and_then(|body| serde_json::from_str::<tunnel::Credential>(&body).ok());
-    let expose = token_exposable(&st);
     match credential {
         Some(credential) => Json(NodeView {
             configured: true,
             node_id: credential.node_id.clone(),
-            token: if expose {
-                credential.token.clone()
-            } else {
-                String::new()
-            },
-            token_hidden: !expose,
-            credential: expose.then_some(credential),
+            token: credential.token.clone(),
+            token_hidden: false,
+            credential: Some(credential),
         }),
         None => Json(NodeView {
             configured: false,
@@ -4096,16 +3989,11 @@ async fn get_node(State(st): State<AppState>) -> Json<NodeView> {
 /// GET /api/credential —— 供网页查看/复制当前凭证。
 async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
     let c = st.link.creds.read().await;
-    let expose = token_exposable(&st);
     Json(CredentialView {
         configured: c.target.is_some(),
         node_id: c.node_id.clone(),
-        token: if expose {
-            c.token.clone()
-        } else {
-            String::new()
-        },
-        token_hidden: !expose && !c.token.is_empty(),
+        token: c.token.clone(),
+        token_hidden: false,
         published_targets: c.published_targets.clone(),
     })
 }
@@ -4131,30 +4019,18 @@ async fn set_credential(
     st.events
         .push("info", "credential", "已更新接入凭证，正在用新凭证重连");
     tracing::info!("凭证已更新，将以新凭证重连");
-    let expose = token_exposable(&st);
     let c = st.link.creds.read().await;
     Ok(Json(CredentialView {
         configured: true,
         node_id: c.node_id.clone(),
-        token: if expose {
-            c.token.clone()
-        } else {
-            String::new()
-        },
-        token_hidden: !expose && !c.token.is_empty(),
+        token: c.token.clone(),
+        token_hidden: false,
         published_targets: c.published_targets.clone(),
     }))
 }
 
 /// GET /api/export —— 下载完整配置（凭证 + 设置 + 映射）JSON。
 async fn export_config(State(st): State<AppState>) -> Response {
-    if !token_exposable(&st) {
-        return (
-            StatusCode::FORBIDDEN,
-            "非回环绑定且未设 web_token，拒绝导出（配置含明文 token）。请先设置 web_token。",
-        )
-            .into_response();
-    }
     let cfg = build_config(&st).await;
     match serde_json::to_string_pretty(&cfg) {
         Ok(body) => (
@@ -4195,7 +4071,7 @@ struct ImportQuery {
 
 /// POST /api/import —— 事务式导入配置：应用映射 + 更新凭证 + 存盘。
 /// `?mode=overwrite`（默认）整体替换映射；`?mode=merge` 只叠加，不删除现有其他映射。
-/// 只接受 AConfig 结构；web_bind/web_token/TLS 等监听相关设置不热切换（需重启生效），
+/// 只接受 AConfig 结构；web_bind/TLS 等监听相关设置不热切换（需重启生效），
 /// 这里只应用凭证与映射，避免把 Web 服务在运行中改瘫。
 async fn import_config(
     State(st): State<AppState>,
@@ -4378,7 +4254,6 @@ pub async fn run(
 
     let tls_enabled = !cfg.web_tls_cert.is_empty();
 
-    // 非回环管理已由配置校验强制要求 web_token；TLS 仍可由可信 HTTPS 反代提供。
     let is_loopback = cfg
         .web_bind
         .parse::<SocketAddr>()
@@ -4386,7 +4261,7 @@ pub async fn run(
         .unwrap_or(false);
     if !is_loopback && !tls_enabled {
         tracing::warn!(
-            "Web 监听 {} 非回环且未启用 TLS，Bearer token 将以明文传输！建议配置 web_tls_cert/web_tls_key 或置于 HTTPS 反代之后。",
+            "Web 监听 {} 非回环且未启用 TLS。建议配置 web_tls_cert/web_tls_key 或置于 HTTPS 反代之后。",
             cfg.web_bind
         );
     }
@@ -4612,13 +4487,8 @@ pub async fn run(
         .web_bind
         .parse()
         .with_context(|| format!("web_bind 不是合法地址: {}", cfg.web_bind))?;
-    let auth_hint = if cfg.web_token.is_empty() {
-        "（未鉴权）"
-    } else {
-        "（已开启 Bearer 鉴权）"
-    };
     let scheme = if tls_enabled { "https" } else { "http" };
-    tracing::info!("Web 管理页: {}://{} {}", scheme, cfg.web_bind, auth_hint);
+    tracing::info!("Web 管理页: {}://{}", scheme, cfg.web_bind);
 
     // 优雅关闭：收到 SIGINT/SIGTERM 后 drain 所有映射的在途隧道，再停止 HTTP。
     let handle = axum_server::Handle::new();

@@ -1041,7 +1041,7 @@
     <div id="tabDomains" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-domains" tabindex="0">
       <div class="card">
         <div class="card-header"><span class="card-title">新建域名映射</span></div>
-        <p class="domain-notice"><strong>需要管理员身份启动。</strong> 域名映射仅支持 macOS/Linux，且会修改本机 hosts 文件并监听 443。请先以管理员身份启动 PowerMap，并配置 <code>web_token</code> 后再创建。</p>
+        <p class="domain-notice"><strong>需要管理员身份启动。</strong> 域名映射仅支持 macOS/Linux，且会修改本机 hosts 文件并监听 443。请先以管理员身份启动 PowerMap 后再创建。</p>
         <form id="domainForm">
           <div class="domain-form-grid">
             <div class="field"><label class="lbl" for="domainName">域名</label><input id="domainName" name="domain" class="mono" type="text" placeholder="app.internal.test" autocomplete="off" spellcheck="false" required /></div>
@@ -1077,10 +1077,6 @@
               导入配置
             </button>
             <input id="importFile" type="file" accept="application/json,.json" style="display:none" />
-            <button id="clearTokenBtn" class="btn btn-outline btn-sm" type="button" style="display:none" title="清除本页内存中的管理令牌">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
-              清除令牌
-            </button>
           </div>
         </div>
         <div class="node-tabs" role="tablist" aria-label="节点类型">
@@ -1113,7 +1109,6 @@
           <p class="node-table-copy">把本机凭证交给对方，对方即可在自己的“远端节点”中接入。</p>
           <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
         </section>
-        <hr class="divider-h" />
         <span id="ioMsg"></span>
       </div>
 
@@ -1590,46 +1585,8 @@ document.getElementById('cancelEditBtn').addEventListener('click', closeEditor);
 
 document.getElementById('footerYear').textContent = new Date().getFullYear();
 
-// ── 鉴权：仅显式 Bearer header；管理令牌只保留在当前页面内存 ──
-let adminToken = '';
-let tokenPrompt = null;
-(function removeLegacyQueryToken() {
-  const url = new URL(window.location.href);
-  if (!url.searchParams.has('token')) return;
-  url.searchParams.delete('token');
-  history.replaceState(null, '', url.pathname + url.search + url.hash);
-  toast('已从 URL 移除访问令牌，请在提示中重新输入；令牌只保留在当前页面内存中。', 'info', 6000);
-})();
-function token() { return adminToken; }
-function requestAdminToken() {
-  if (tokenPrompt) return tokenPrompt;
-  tokenPrompt = promptModal({
-    title: '需要访问令牌',
-    body: '该管理页启用了 web_token 鉴权。请粘贴 web_token，令牌只保留在当前页面内存中。',
-    placeholder: 'web_token',
-    confirmText: '确认',
-  })
-    .then(value => {
-      const valueTrimmed = (value || '').trim();
-      if (valueTrimmed) { adminToken = valueTrimmed; syncClearTokenBtn(); }
-      return Boolean(valueTrimmed);
-    })
-    .finally(() => { tokenPrompt = null; });
-  return tokenPrompt;
-}
-function authHeaders(extra) {
-  const h = Object.assign({}, extra || {});
-  const t = token();
-  if (t) h['Authorization'] = 'Bearer ' + t;
-  return h;
-}
 async function api(path, opts) {
-  const r = await fetch(path, Object.assign({}, opts, { headers: authHeaders((opts||{}).headers) }));
-  if (r.status === 401) {
-    if (await requestAdminToken()) return api(path, opts);
-    throw new Error('unauthorized');
-  }
-  return r;
+  return fetch(path, opts);
 }
 
 function fmtBytes(n) {
@@ -1999,24 +1956,6 @@ document.getElementById('reverseForm').addEventListener('submit', async (e) => {
   await refreshReverse();
   toast(enabled ? '反向策略已保存并启用' : '反向映射已关闭');
 });
-// ── 清除访问令牌：把本页内存里的 web_token 抹掉。仅在设置了 web_token（token 提示过）时可见。 ──
-// 只影响当前页面会话，不改动 server 端配置；下次请求 401 时会重新提示输入。
-function syncClearTokenBtn() {
-  const btn = document.getElementById('clearTokenBtn');
-  if (btn) btn.style.display = adminToken ? '' : 'none';
-}
-document.getElementById('clearTokenBtn').addEventListener('click', async () => {
-  if (!adminToken) return;
-  const ok = await confirmModal({
-    title: '清除访问令牌', danger: true, confirmText: '清除',
-    body: '将从当前页面内存中清除已输入的 web_token。之后的管理操作会重新要求输入令牌；不会改动 server 端配置。确定清除？',
-  });
-  if (!ok) return;
-  adminToken = '';
-  syncClearTokenBtn();
-  toast('已清除访问令牌，后续操作将重新要求输入', 'info');
-});
-
 // ── 导入 / 导出 ──
 function ioMsg(t, kind = 'ok') {
   if (t) toast(t, kind);

@@ -16,7 +16,7 @@ sudo journalctl -u powermap -f
 
 该 systemd 模板以 root 运行，仅用于让域名映射原子更新 `/etc/hosts` 并绑定回环
 端口 `443`。**root 运行 access 能力时必须**先在 `/etc/powermap/powermap.toml` 设置
-高强度 `web_token`；即使 `web_bind` 是回环地址，令牌为空也会使服务在启动阶段失败，
+当前版本不启用 `web_token` 鉴权；即使 `web_bind` 是回环地址，服务也可直接启动，
 避免以 root 身份提供未鉴权的映射、凭证和配置管理 API。保持配置文件权限为 `0600`。
 多个域名共享 `127.0.0.1:443`，按客户端 TLS SNI 分流；不发送 SNI 的旧客户端不能使用
 此功能。
@@ -66,4 +66,4 @@ ssh -N -L 8088:127.0.0.1:8088 admin@powermap-host
 ```
 
 必须经 HTTPS 发布时，使用 [Nginx 模板](nginx/powermap-admin.conf)，并同时设置
-`web_token`、mTLS 和来源 CIDR 限制。不要直接把管理端口暴露到公网。
+mTLS 和来源 CIDR 限制。不要直接把管理端口暴露到公网。
