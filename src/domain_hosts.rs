@@ -17,6 +17,7 @@ pub struct HostsStore {
 pub enum HostsError {
     Io(io::Error),
     InvalidDomain,
+    Unsupported,
 }
 
 impl fmt::Display for HostsError {
@@ -24,6 +25,7 @@ impl fmt::Display for HostsError {
         match self {
             Self::Io(error) => write!(f, "hosts file operation failed: {error}"),
             Self::InvalidDomain => write!(f, "domain must not contain line breaks"),
+            Self::Unsupported => write!(f, "the system hosts file is unsupported on this platform"),
         }
     }
 }
@@ -32,7 +34,7 @@ impl std::error::Error for HostsError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Io(error) => Some(error),
-            Self::InvalidDomain => None,
+            Self::InvalidDomain | Self::Unsupported => None,
         }
     }
 }
@@ -44,6 +46,24 @@ impl From<io::Error> for HostsError {
 }
 
 impl HostsStore {
+    /// Returns the native system hosts-file path for this platform.
+    pub fn default_path() -> Result<PathBuf, HostsError> {
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        {
+            Ok(PathBuf::from("/etc/hosts"))
+        }
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            Err(HostsError::Unsupported)
+        }
+    }
+
+    /// Opens an editor for the native system hosts file.
+    pub fn system() -> Result<Self, HostsError> {
+        Ok(Self::at(Self::default_path()?))
+    }
+
     /// Opens an editor for the hosts file at `path`.
     pub fn at(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
@@ -137,8 +157,37 @@ fn atomic_replace(path: &Path, contents: &[u8]) -> Result<(), HostsError> {
 mod tests {
     use super::HostsStore;
 
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    use std::path::PathBuf;
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    use super::HostsError;
+
     fn contents(file: &tempfile::NamedTempFile) -> String {
         std::fs::read_to_string(file.path()).unwrap()
+    }
+
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    #[test]
+    fn default_path_uses_etc_hosts_on_supported_platforms() {
+        assert_eq!(
+            HostsStore::default_path().unwrap(),
+            PathBuf::from("/etc/hosts")
+        );
+        assert_eq!(
+            HostsStore::system().unwrap().path,
+            PathBuf::from("/etc/hosts")
+        );
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[test]
+    fn default_path_reports_unsupported_platform() {
+        assert!(matches!(
+            HostsStore::default_path(),
+            Err(HostsError::Unsupported)
+        ));
+        assert!(matches!(HostsStore::system(), Err(HostsError::Unsupported)));
     }
 
     #[test]
