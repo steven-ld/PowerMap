@@ -249,13 +249,41 @@ web_tls_key = ""
 max_mappings = 256
 max_conns_per_mapping = 512
 
+# Plain TCP passthrough (default)
 [[mappings]]
 local = "127.0.0.1:6379"
 host = "192.168.1.101"
 port = 6379
+
+# UDP passthrough (DNS, WireGuard, game servers, ...)
+[[mappings]]
+local = "127.0.0.1:53"
+host = "192.168.1.1"
+port = 53
+mode = "udp"
+
+# HTTP gateway: one local port routed to multiple intranet backends by Host header
+[[mappings]]
+local = "127.0.0.1:8080"
+host = "192.168.1.101"   # fallback backend when no route matches
+port = 80
+mode = "http"
+routes = [
+  { host_match = "grafana.local", target_host = "192.168.1.10", target_port = 3000 },
+  { host_match = "wiki.local", target_host = "192.168.1.11", target_port = 8080 },
+]
+
+# Reverse mapping: expose local services to the server's intranet (deny-all by default)
+reverse_enabled = false
+reverse_allow_networks = []   # empty = deny all
+reverse_allow_ports = []      # empty = deny all
 ```
 
 An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. When set, the admin API accepts only `Authorization: Bearer <token>` and never `?token=`. The UI keeps a manually entered admin token only in current-page memory, so it must be entered again after a refresh. The client refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited.
+
+A mapping's `mode` defaults to `tcp` (plain passthrough); `udp` tunnels UDP datagrams; `http` enables a single-port HTTP gateway that matches each request's `Host` header against `routes` (up to 32), falling back to the mapping's own `host`/`port` when nothing matches (`routes` only apply in `http` mode).
+
+Reverse mapping exposes a service on the client side (this machine or its home network) to the server's intranet — the opposite direction of a normal mapping. It is **deny-all by default**: leaving `reverse_allow_networks` and `reverse_allow_ports` empty rejects every callback, so you must explicitly set `reverse_enabled` and list the allowed networks and ports. Which intranet addresses the server listens on is set by the `reverse` entries under `[[clients]]` (see below). This policy is also editable from the console's Connection tab.
 </details>
 
 <details>
@@ -283,9 +311,17 @@ id = "bob"
 token = "bob-token-..."
 allow_networks = ["10.0.0.0/8"]
 revoked = true
+
+# Reverse listener: the server listens on 0.0.0.0:9000 in its intranet and
+# hands each connection through the tunnel for alice's side to dial back.
+[[clients.reverse]]
+listen = "0.0.0.0:9000"
+target_host = "127.0.0.1"
+target_port = 5900
+name = "Home VNC"
 ```
 
-A top-level `token` remains valid for a single-tenant server and is normalized to a `default` client; startup logs make this compatibility mode explicit, so migration to `[[clients]]` is optional. `published_targets` explicitly shares IP/port suggestions with that client. Once connected, the console rechecks them by asking the server to dial each target, then offers only currently reachable services for one-click mapping. It never expands the allowlist: every listed port must still be in `allow_ports`. To prevent silently ineffective policies, the server rejects invalid CIDRs, port `0`, and empty or duplicate client ids/tokens. Restart B after changing clients, allowlists, published targets, or revocation, then distribute the refreshed credential file.
+A top-level `token` remains valid for a single-tenant server and is normalized to a `default` client; startup logs make this compatibility mode explicit, so migration to `[[clients]]` is optional. Reverse `reverse` entries let the server listen inside its intranet and hand inbound connections back through the tunnel for the matching client to dial on its own side; each listen address is unique across the whole server (up to 32 per client), and a single-tenant server can place `reverse` at the top level. **Whether a callback is allowed is decided by the client's `reverse_enabled`/`reverse_allow_*`** (deny-all by default) — a server-side reverse listener does not mean the client will accept it. `published_targets` explicitly shares IP/port suggestions with that client. Once connected, the console rechecks them by asking the server to dial each target, then offers only currently reachable services for one-click mapping. It never expands the allowlist: every listed port must still be in `allow_ports`. To prevent silently ineffective policies, the server rejects invalid CIDRs, port `0`, and empty or duplicate client ids/tokens. Restart B after changing clients, allowlists, published targets, or revocation, then distribute the refreshed credential file.
 
 For single-tenant mode, place the same `published_targets = [...]` block at the top level. For multi-tenant mode, put it under the matching `[[clients]]` entry and retain the `published_targets` field in the credential JSON distributed to that client. The console's refresh action only rechecks these explicitly published addresses; it never scans the intranet.
 </details>

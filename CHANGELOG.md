@@ -4,6 +4,13 @@
 
 ## [Unreleased]
 
+### Added
+
+- UDP 隧道：映射新增 `udp` 模式，本地绑定 UDP socket，数据报经隧道由 server 端拨 UDP 目标；适用于 DNS、WireGuard、游戏服务器等无连接协议。A 端按来源地址维护会话并在空闲 60 秒后回收。
+- HTTP 反向代理网关：映射新增 `http` 模式，单个本地端口按请求 `Host` 头分流到多个内网后端（`routes` 路由表，最多 32 条，空 `host_match` 为兜底后端）。
+- 反向映射：把本机（A 端）服务暴露给 server 端所在内网。复用同一条 A→B QUIC 连接的双向流，server 端在内网监听、把连接交回 A 端拨本地目标。**默认全部拒绝**：A 端需显式启用并列出允许回拨的网段与端口才放行（`reverse_enabled` + `reverse_allow_networks` + `reverse_allow_ports`）；server 端用 `[[clients]]` 下的 `reverse` 声明内网监听地址。管理页“连接设置”新增反向映射策略卡片（`GET`/`PUT /api/reverse`）。
+- `Mapping` 新增 `mode` 与 `routes` 字段；旧配置省略时按 `tcp` 处理，向后兼容。
+
 ## [0.3.0] - 2026-07-21
 
 ### Added

@@ -78,6 +78,7 @@ jobs:
       - name: Download uploaded archive and checksum
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
           TARGET: ${{ matrix.target }}
           EXTENSION: ${{ matrix.archive_extension }}
@@ -85,6 +86,7 @@ jobs:
         run: |
           mkdir dist
           gh release download "$TAG" \
+            --repo "$GH_REPO" \
             --pattern "powermap-${TARGET}.${EXTENSION}" \
             --pattern "powermap-${TARGET}.sha256" \
             --dir dist

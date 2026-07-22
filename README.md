@@ -249,13 +249,41 @@ web_tls_key = ""
 max_mappings = 256
 max_conns_per_mapping = 512
 
+# 默认 TCP 透传
 [[mappings]]
 local = "127.0.0.1:6379"
 host = "192.168.1.101"
 port = 6379
+
+# UDP 透传（DNS、WireGuard、游戏服务器等）
+[[mappings]]
+local = "127.0.0.1:53"
+host = "192.168.1.1"
+port = 53
+mode = "udp"
+
+# HTTP 网关：单端口按 Host 头分流到多个内网后端
+[[mappings]]
+local = "127.0.0.1:8080"
+host = "192.168.1.101"   # 未命中任何路由时的兜底后端
+port = 80
+mode = "http"
+routes = [
+  { host_match = "grafana.local", target_host = "192.168.1.10", target_port = 3000 },
+  { host_match = "wiki.local", target_host = "192.168.1.11", target_port = 8080 },
+]
+
+# 反向映射：把本机服务暴露给 server 端所在内网（默认全禁，需显式开启）
+reverse_enabled = false
+reverse_allow_networks = []   # 留空 = 全部拒绝
+reverse_allow_ports = []      # 留空 = 全部拒绝
 ```
 
 `web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。配置它后，管理 API 只能通过 `Authorization: Bearer <token>` 访问，不能使用 `?token=`。网页会在当前页面内存中临时保留手动输入的管理令牌，刷新页面后需要重新输入。非回环 `web_bind` 未设置 token、只设置一侧 TLS 文件、或只设置 `node_id`/`token` 时，client 会拒绝启动并指出配置项。`max_conns_per_mapping = 0` 表示不限制。
+
+映射的 `mode` 省略时为 `tcp`（裸透传）；`udp` 走 UDP 数据报隧道；`http` 启用单端口 HTTP 网关，按请求 `Host` 头匹配 `routes`（最多 32 条），未命中则回落到该映射的 `host`/`port` 兜底后端（`routes` 仅在 `http` 模式有效）。
+
+反向映射把 client 一侧（本机或家庭网络）的服务暴露给 server 所在内网，方向与正向相反。它**默认全部拒绝**：`reverse_allow_networks` 与 `reverse_allow_ports` 留空即拒绝一切回拨，必须显式启用 `reverse_enabled` 并列出允许的网段与端口才放行。具体在内网监听哪些地址由 server 端 `[[clients]]` 下的 `reverse` 决定（见下）。可在管理页“连接设置”中直接编辑该策略。
 </details>
 
 <details>
@@ -283,9 +311,16 @@ id = "bob"
 token = "bob-token-..."
 allow_networks = ["10.0.0.0/8"]
 revoked = true
+
+# 反向监听：server 在内网 0.0.0.0:9000 监听，把连接经隧道交给 alice 一侧回拨
+[[clients.reverse]]
+listen = "0.0.0.0:9000"
+target_host = "127.0.0.1"
+target_port = 5900
+name = "家中 VNC"
 ```
 
-顶层 `token` 也可用于单租户部署；它会兼容地映射为 `default` 客户，并在启动日志中明确提示，无需立刻迁移到 `[[clients]]`。`published_targets` 是显式分享给该 client 的 IP/端口候选；连接成功后，控制台会由 server 实际拨号检查，只显示当前可用的服务并支持一键填入。它不放宽白名单，端口必须仍在 `allow_ports` 中。为避免策略被静默覆盖，server 会拒绝无效 CIDR、端口 `0`、空或重复的客户 id/token。变更 `[[clients]]`、白名单、推荐目标或吊销状态后需要重启 server，并重新分发凭证文件。
+顶层 `token` 也可用于单租户部署；它会兼容地映射为 `default` 客户，并在启动日志中明确提示，无需立刻迁移到 `[[clients]]`。反向监听 `reverse` 让 server 在其内网监听，把入站连接经隧道交回对应 client 回拨自己一侧的目标；监听地址在整个 server 内唯一（最多 32 条/客户），单租户可把 `reverse` 写在顶层。**是否放行由 client 侧的 `reverse_enabled`/`reverse_allow_*` 决定**（默认全禁）——server 配置了反向监听不代表 client 会接受。`published_targets` 是显式分享给该 client 的 IP/端口候选；连接成功后，控制台会由 server 实际拨号检查，只显示当前可用的服务并支持一键填入。它不放宽白名单，端口必须仍在 `allow_ports` 中。为避免策略被静默覆盖，server 会拒绝无效 CIDR、端口 `0`、空或重复的客户 id/token。变更 `[[clients]]`、白名单、推荐目标或吊销状态后需要重启 server，并重新分发凭证文件。
 
 单租户把同一段 `published_targets = [...]` 写在顶层；多租户则写在对应的 `[[clients]]` 下，并在分发给该客户的凭证 JSON 中保留 `published_targets` 字段。控制台的“刷新”只重新检测这些明确发布的地址，不会扫描整个内网。
 </details>

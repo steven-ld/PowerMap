@@ -520,6 +520,47 @@
   }
   #ioMsg { font: 500 0.75rem/1 var(--font-mono); color: var(--success); }
 
+  /* ── 映射模式徽章（列表行内，区分 UDP / HTTP 网关）── */
+  .map-mode {
+    display: inline-flex; align-items: center; margin-left: 0.4rem; padding: 0.05rem 0.4rem;
+    font: 600 0.625rem/1.4 var(--font-mono); border-radius: 0.35rem; letter-spacing: 0.02em;
+    border: 1px solid var(--border); background: var(--muted); color: var(--muted-foreground); vertical-align: middle;
+  }
+  .map-mode-udp { background: color-mix(in srgb, var(--primary) 14%, transparent); color: var(--primary); border-color: color-mix(in srgb, var(--primary) 35%, transparent); }
+  .map-mode-http { background: color-mix(in srgb, var(--success) 16%, transparent); color: var(--success); border-color: color-mix(in srgb, var(--success) 38%, transparent); }
+
+  /* ── 映射模式选择行 ── */
+  .mapping-mode-row {
+    display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem;
+    margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px dashed var(--border);
+  }
+  .mapping-mode-row > .lbl { font: 700 0.78rem/1 var(--font-sans); color: var(--foreground); margin-right: 0.25rem; }
+  .mode-opt {
+    display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.65rem; cursor: pointer;
+    font: 500 0.8125rem/1 var(--font-sans); border: 1px solid var(--border); border-radius: var(--radius-md);
+    background: var(--card); color: var(--foreground); user-select: none;
+  }
+  .mode-opt:hover { border-color: var(--primary); }
+  .mode-opt:has(input:checked) { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); font-weight: 600; }
+  .mode-opt input { accent-color: var(--primary); margin: 0; }
+  .mode-hint { flex: 1 1 100%; font: 0.75rem/1.5 var(--font-sans); color: var(--muted-foreground); }
+
+  /* ── HTTP 网关路由编辑器 ── */
+  .http-routes { margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed var(--border); }
+  .http-routes-head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem; }
+  .route-rows { display: flex; flex-direction: column; gap: 0.5rem; }
+  .route-row { display: grid; grid-template-columns: 1fr auto 1fr 7rem auto; align-items: center; gap: 0.5rem; }
+  .route-row input { min-width: 0; }
+  .route-arrow { color: var(--muted-foreground); text-align: center; }
+  @media (max-width: 720px) {
+    .route-row { grid-template-columns: 1fr 1fr; }
+    .route-arrow { display: none; }
+  }
+
+  /* ── 反向映射启用开关 ── */
+  .reverse-toggle { display: inline-flex; align-items: center; gap: 0.4rem; font: 500 0.8125rem/1 var(--font-sans); color: var(--foreground); cursor: pointer; user-select: none; }
+  .reverse-toggle input { accent-color: var(--primary); margin: 0; }
+
   /* ── 数据表 ── */
   .table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: var(--card); }
   table { width: 100%; border-collapse: collapse; }
@@ -964,7 +1005,6 @@
             <button type="submit" class="btn btn-primary">保存反向策略</button>
           </div>
         </form>
-        <span id="reverseMsg"></span>
       </div>
     </div>
 
@@ -1619,6 +1659,38 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
   document.getElementById('credTokenIn').value = '';
   ioMsg('凭证已更新，正在用新凭证重连…');
   await refreshCred(); refreshTargetCatalog(); refreshStatus();
+});
+
+// ── 反向映射策略：读取并回填当前 deny-all 白名单，保存时解析逗号分隔的网段/端口。 ──
+async function refreshReverse() {
+  try {
+    const r = await (await api('/api/reverse')).json();
+    document.getElementById('revEnabled').checked = !!r.enabled;
+    document.getElementById('revNets').value = (r.allow_networks || []).join(', ');
+    document.getElementById('revPorts').value = (r.allow_ports || []).join(', ');
+  } catch (e) { if (String(e) === 'Error: unauthorized') return; }
+}
+document.getElementById('reverseForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const enabled = document.getElementById('revEnabled').checked;
+  const allow_networks = document.getElementById('revNets').value
+    .split(',').map(s => s.trim()).filter(Boolean);
+  const ports = [];
+  for (const part of document.getElementById('revPorts').value.split(',').map(s => s.trim()).filter(Boolean)) {
+    const n = Number(part);
+    if (!Number.isInteger(n) || n < 1 || n > 65535) { toast(`端口 ${part} 无效（需 1-65535）`, 'err'); return; }
+    ports.push(n);
+  }
+  if (enabled && (allow_networks.length === 0 || ports.length === 0)) {
+    toast('启用反向映射时，允许网段和端口都不能为空（默认全部拒绝）', 'err'); return;
+  }
+  const r = await api('/api/reverse', {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled, allow_networks, allow_ports: ports }),
+  });
+  if (!r.ok) { toast((await r.text()) || '保存失败', 'err'); return; }
+  await refreshReverse();
+  toast(enabled ? '反向策略已保存并启用' : '反向映射已关闭');
 });
 // ── 清除访问令牌：把本页内存里的 web_token 抹掉。仅在设置了 web_token（token 提示过）时可见。 ──
 // 只影响当前页面会话，不改动 server 端配置；下次请求 401 时会重新提示输入。
@@ -2517,6 +2589,7 @@ function showShortcutHelp() {
 refreshCred().then(refreshTargetCatalog);
 refresh();
 refreshStatus();
+refreshReverse();
 // ── 轮询：可选间隔 + 暂停。标签页隐藏时自动挂起以省资源，重新可见时立即刷新一次再恢复。 ──
 // 停留在事件页时一并刷新事件，让新事件自动出现。
 // 间隔与暂停态持久化到 localStorage：0 = 手动（不自动轮询，仍可手动刷新或切页触发）。
