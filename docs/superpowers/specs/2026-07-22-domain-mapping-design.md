@@ -23,8 +23,9 @@ probe, and enable/disable controls.
 
 1. The access node asks the expose node to resolve and dial the configured
    domain. Resolution occurs on the expose network so split DNS works.
-2. On approval, a local privileged helper binds `127.0.0.1:443` and adds the
-   exact domain to the system hosts file as a PowerMap-managed entry.
+2. The user starts PowerMap with administrator authority before enabling a
+   domain mapping. The process binds `127.0.0.1:443` and adds the exact domain
+   to the system hosts file as a PowerMap-managed entry.
 3. The access process receives accepted local TCP streams and opens ordinary
    TCP tunnels to the domain and port through expose.
 4. The TLS stream passes through unchanged. The browser continues to send the
@@ -36,24 +37,18 @@ general-purpose DNS resolver, or affect unrelated domains.
 
 ## Privilege Boundary
 
-PowerMap's main process remains unprivileged. Enabling a domain mapping invokes
-a narrowly scoped, platform-specific helper through the system administrator
-authorization mechanism. The helper may only:
-
-- bind the requested loopback port;
-- create, update, and remove hosts entries marked as PowerMap-managed; and
-- return the bound listener to the unprivileged runtime through a local IPC
-  channel.
-
-It must reject wildcard domains, non-loopback bind addresses, and hosts entries
-without its ownership marker. Disabling, deleting, or recovering a mapping only
-removes the exact entry written by PowerMap. A visible `Restore hosts` action
-removes all PowerMap-managed entries after explicit confirmation.
+PowerMap must run with administrator authority before an enabled domain mapping
+can modify the system hosts file or bind loopback port 443. The console clearly
+reports this prerequisite and does not attempt elevation itself. Domain mapping
+operations reject wildcard domains, non-loopback bind addresses, and hosts
+entries without a PowerMap ownership marker. Disabling, deleting, or recovering
+a mapping only removes the exact entry written by PowerMap. A visible `Restore
+hosts` action removes all PowerMap-managed entries after explicit confirmation.
 
 ## Failure Handling
 
-- If privilege is denied, the mapping remains disabled and no hosts entry is
-  changed.
+- If PowerMap is not running with administrator authority, the mapping remains
+  disabled and no hosts entry is changed.
 - If port 443 is occupied, the mapping remains disabled and identifies the
   blocked address.
 - If DNS resolution, policy validation, or remote dialing fails, hosts are not
@@ -68,4 +63,4 @@ separate configuration collection and API surface. Tests cover domain syntax,
 hosts ownership and rollback, privilege-denied behavior, listener conflicts,
 split-DNS resolution through expose, transparent TLS forwarding, and restart
 recovery. Manual acceptance tests cover macOS, Windows, and Linux administrator
-authorization flows.
+startup authorization and domain activation flows.
