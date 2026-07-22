@@ -21,7 +21,7 @@ body:
     attributes:
       label: 复现步骤 / Steps to reproduce
       placeholder: |
-        1. 启动 powermap-server ...
+        1. 启动 powermap --config /path/to/powermap.toml ...
         2. 在管理页添加映射 ...
         3. 看到错误 ...
     validations:
@@ -32,8 +32,8 @@ body:
     attributes:
       label: 哪一端 / Which side
       options:
-        - powermap-server（穿透端 / server）
-        - powermap-client（用户端 / client）
+        - expose（暴露侧）
+        - access（接入侧）
         - 两者 / both
         - 不确定 / not sure
     validations:
@@ -43,7 +43,7 @@ body:
     id: version
     attributes:
       label: 版本 / Version
-      description: "`powermap-client --version` 或管理页页脚显示的版本 / from --version or the admin footer"
+      description: "`powermap --version` 或管理页页脚显示的版本 / from --version or the admin footer"
       placeholder: "0.1.0"
     validations:
       required: true

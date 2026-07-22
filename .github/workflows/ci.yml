@@ -31,7 +31,10 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
 
       - name: Test
-        run: cargo test --all
+        run: cargo test --all-targets
+
+      - name: Release binary build
+        run: cargo build --release --bin powermap
 
   windows-installer:
     name: validate Windows deployment scripts
@@ -70,10 +73,10 @@ jobs:
         run: |
           sh -n scripts/install.sh
           docker compose config >/dev/null
-          sudo touch /usr/local/bin/powermap-server /usr/local/bin/powermap-client
-          sudo chmod 0755 /usr/local/bin/powermap-server /usr/local/bin/powermap-client
+          sudo touch /usr/local/bin/powermap
+          sudo chmod 0755 /usr/local/bin/powermap
           sudo useradd --system --no-create-home powermap
-          systemd-analyze verify deployment/systemd/powermap-server.service deployment/systemd/powermap-client.service
+          systemd-analyze verify deployment/systemd/powermap.service
           python3 - <<'PY'
           import pathlib
           import plistlib

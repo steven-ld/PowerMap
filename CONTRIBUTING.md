@@ -43,7 +43,7 @@ cargo fmt && cargo clippy --all-targets -- -D warnings && cargo test
 提 issue 时请附上：
 
 - 复现步骤、期望与实际行为；
-- 版本（`powermap-client --version` / 对应 commit 或 release tag）、操作系统；
+- 版本（`powermap --version` / 对应 commit 或 release tag）、操作系统；
 - 相关日志（`RUST_LOG=debug`），**请先脱敏**——不要粘贴 `token`、`node_id`、`credential.json` 等机密。
 
 ## 安全问题 / Security

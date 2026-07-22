@@ -9,6 +9,9 @@
 *.credential.json
 powermap-server.toml
 powermap-client.toml
+# Unified configuration and identity names used by the single-binary migration.
+powermap.toml
+powermap.key
 
 # Editor / OS
 .DS_Store
@@ -16,3 +19,7 @@ powermap-client.toml
 !.vscode/extensions.json
 *.swp
 *~
+
+# Local AI assistant settings and generated workspace metadata
+/.agents/
+/.claude/

@@ -1,5 +1,5 @@
 [Unit]
-Description=PowerMap intranet server
+Description=PowerMap unified private-network access
 Documentation=https://github.com/steven-ld/PowerMap/tree/main/deployment
 Wants=network-online.target
 After=network-online.target
@@ -10,7 +10,7 @@ User=powermap
 Group=powermap
 WorkingDirectory=/var/lib/powermap
 Environment=RUST_LOG=info
-ExecStart=/usr/local/bin/powermap-server --config /etc/powermap/powermap-server.toml
+ExecStart=/usr/local/bin/powermap --config /etc/powermap/powermap.toml
 Restart=on-failure
 RestartSec=5s
 TimeoutStopSec=20s

@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Install a released PowerMap client and server archive without requiring root.
+# Install the released PowerMap binary without requiring root.
 set -eu
 
 REPOSITORY="steven-ld/PowerMap"
@@ -70,7 +70,7 @@ download_asset() {
     echo "The release may not include assets for this platform yet, or the network request failed." >&2
     echo "Release page: $release_page" >&2
     if [ "$VERSION" = "latest" ]; then
-      echo "Retry shortly, or install a published version explicitly: sh install.sh v0.2.0" >&2
+      echo "Retry shortly, or install a published version explicitly: sh install.sh v0.4.0" >&2
     fi
     exit 1
   fi
@@ -87,11 +87,21 @@ download_asset "powermap-$target.sha256"
 
 tar -xzf "$tmpdir/$archive" -C "$tmpdir"
 mkdir -p "$INSTALL_DIR"
-install -m 755 "$tmpdir/powermap-server" "$INSTALL_DIR/powermap-server"
-install -m 755 "$tmpdir/powermap-client" "$INSTALL_DIR/powermap-client"
+install -m 755 "$tmpdir/powermap" "$INSTALL_DIR/powermap"
 
-echo "Installed powermap-server and powermap-client to $INSTALL_DIR"
+echo "Installed powermap to $INSTALL_DIR"
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) echo "Add $INSTALL_DIR to PATH to run PowerMap without an absolute path." ;;
 esac
+
+# A managed Linux installation can opt into restart-after-upgrade without
+# needing a separate stop/install/start sequence.
+if [ "${POWERMAP_RESTART_SERVICE:-0}" = "1" ]; then
+  if command -v systemctl >/dev/null 2>&1 && systemctl is-enabled --quiet powermap 2>/dev/null; then
+    sudo systemctl restart powermap
+    echo "Restarted powermap.service"
+  else
+    echo "powermap.service is not enabled; binary was upgraded but not restarted."
+  fi
+fi

@@ -5,7 +5,7 @@
 //! 并双向透传（支持半关闭）。多租户下每个 `[[clients]]` 各自独立 token 与白名单。
 //!
 //! 本模块只承载运行期逻辑；进程外壳（日志初始化、CLI 解析、配置加载）留在调用方
-//! （`powermap-server` binary 或将来的统一入口）。关停由外部传入的 `CancellationToken`
+//! （统一 `powermap` 入口）。关停由外部传入的 `CancellationToken`
 //! 驱动，便于两角色共存时统一协调退出。
 
 use std::collections::HashMap;
@@ -259,7 +259,7 @@ async fn run_reverse_listener(
 /// 运行暴露侧：加载好的 `cfg` 经校验后绑定 iroh endpoint、启动 ALPN 服务，直到
 /// `cancel` 触发。首次运行（既无顶层 token 也无 clients）会生成默认 token 并回写配置。
 pub async fn run(
-    mut cfg: config::BConfig,
+    cfg: config::BConfig,
     config_path: PathBuf,
     online_timeout: u64,
     cancel: CancellationToken,
@@ -268,13 +268,6 @@ pub async fn run(
 
     let identity_path = resolve_identity(&config_path, &cfg.identity);
     let secret_key = load_or_create_key(&identity_path)?;
-
-    // 首次运行（既无顶层 token 也无 clients）则生成一个默认 token 并回写配置
-    let freshly_set_up = cfg.token.is_empty() && cfg.clients.is_empty();
-    if freshly_set_up {
-        cfg.token = proto::to_hex(&SecretKey::generate().to_bytes());
-    }
-    config::save(&config_path, &cfg)?;
 
     // 归一化多租户客户端列表（顶层单 token 折叠为 id="default"）
     let clients = cfg.effective_clients();
@@ -357,14 +350,9 @@ pub async fn run(
             token: default_token.clone(),
             published_targets: cfg.published_targets.clone(),
         };
-        let cred_path = config_path.with_file_name("powermap-server.credential.json");
+        let cred_path = config_path.with_file_name("powermap.credential.json");
         std::fs::write(&cred_path, serde_json::to_string_pretty(&cred)?)?;
         tracing::info!("凭证已写入 {}（把它交给 A 端）", cred_path.display());
-        if freshly_set_up {
-            println!("--- 首次配置完成，把下面这份凭证交给 A 端 ---");
-            println!("{}", serde_json::to_string_pretty(&cred)?);
-            println!("-------------------------------------------");
-        }
     } else {
         tracing::info!("多租户模式：请分别向各客户分发其 node_id + token");
     }
@@ -403,7 +391,7 @@ pub async fn run(
     let router = Router::builder(endpoint)
         .accept(proto::ALPN, handler)
         .spawn();
-    tracing::info!("powermap-server 就绪，Ctrl+C 或 SIGTERM 退出");
+    tracing::info!("PowerMap expose 已就绪，Ctrl+C 或 SIGTERM 退出");
 
     cancel.cancelled().await;
     tracing::info!("正在关闭…");

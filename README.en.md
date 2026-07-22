@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [Contributing](CONTRIBUTING.md)
+[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [v0.4.0 Release Notes](docs/releases/v0.4.0.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -48,7 +48,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.2.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
+The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.4.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
 
 ## Where It Fits
 
@@ -74,7 +74,7 @@ The installers download the Release SHA-256 file and validate the archive before
 Download a prebuilt archive for your platform from [Releases](https://github.com/steven-ld/PowerMap/releases). For macOS Apple Silicon:
 
 ```bash
-VERSION=v0.2.0
+VERSION=v0.4.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin; Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 
@@ -84,7 +84,7 @@ shasum -a 256 -c powermap-$TARGET.sha256   # verify integrity
 tar xzf powermap-$TARGET.tar.gz
 ```
 
-This yields the `powermap-server` and `powermap-client` executables. On Windows, download `powermap-x86_64-pc-windows-msvc.zip`.
+This yields the `powermap` executable. On Windows, download `powermap-x86_64-pc-windows-msvc.zip`.
 
 Or build it yourself (requires Rust 1.85+):
 
@@ -94,30 +94,30 @@ cd PowerMap
 cargo build --release
 ```
 
-The build produces `target/release/powermap-server` and `target/release/powermap-client`.
+The build produces `target/release/powermap`.
 
-### 2. Start the server on an intranet machine
+### 2. Choose “expose this network” on the intranet machine
 
 ```bash
-./powermap-server
+./powermap
 ```
 
 On its first run, it creates:
 
 | File | Purpose |
 |---|---|
-| `powermap-server.key` | Persistent node identity, keeping the node id stable. |
-| `powermap-server.toml` | Server configuration and access controls. |
-| `powermap-server.credential.json` | The connection credential for the client. |
+| `powermap.key` | Persistent node identity, keeping the node id stable. |
+| `powermap.toml` | Unified configuration and access controls. |
+| `powermap.credential.json` | The connection credential for an access device. |
 
-Transfer `powermap-server.credential.json` securely to your home machine. It grants access to the intranet: never commit it, post it, or log it.
+Transfer `powermap.credential.json` securely to your access machine. It grants access to the intranet: never commit it, post it, or log it.
 
-> The first run only creates an identity and credential. Before a long-running deployment, edit `powermap-server.toml` and at least restrict `allow_networks` and `allow_ports`; add `published_targets` when you want the console to suggest services automatically. See [Server configuration and multi-tenancy](#server-configuration-and-multi-tenancy) for a complete example.
+> The first run creates the expose configuration and credential. Before a long-running deployment, at least restrict `allow_networks` and `allow_ports`; add `published_targets` when you want the console to suggest services automatically.
 
-### 3. Start the client and create a mapping
+### 3. Choose “access a remote network” and create a mapping
 
 ```bash
-./powermap-client --credential /path/to/powermap-server.credential.json
+./powermap
 ```
 
 Open <http://127.0.0.1:8088> and create this mapping:
@@ -127,7 +127,7 @@ Local listener: 127.0.0.1:6379
 Target service: 192.168.1.101:6379
 ```
 
-Save only after the console reports that target validation passed. When the server configuration includes `published_targets`, the console automatically presents verified remote IPs and service ports after connecting; click one to fill the form.
+Copy the share credential from the intranet device’s Local node table, then paste it in the home device’s Remote node table. Save only after target validation passes.
 
 Then use the service as usual:
 
@@ -150,16 +150,16 @@ curl -X POST http://127.0.0.1:8088/api/mappings \
 ```mermaid
 flowchart LR
     U["Local tool<br/>redis-cli / browser / IDE"] --> L["127.0.0.1:6379"]
-    L --> A["powermap-client<br/>home machine"]
-    A <-->|"iroh P2P · QUIC + rustls<br/>direct first, relay fallback"| B["powermap-server<br/>intranet machine"]
+    L --> A["powermap access<br/>access machine"]
+    A <-->|"iroh P2P · QUIC + rustls<br/>direct first, relay fallback"| B["powermap expose<br/>intranet machine"]
     B --> S["Intranet service<br/>192.168.1.101:6379"]
 ```
 
-- **client (A)** listens on local ports, provides the admin UI, and maintains the encrypted connection to B.
-- **server (B)** validates credentials and target allowlists, then dials the service on its intranet.
+- **access (A)** listens on local ports, provides the admin UI, and maintains the encrypted connection to expose.
+- **expose (B)** validates credentials and target allowlists, then dials the service on its intranet.
 - **relays** forward ciphertext only when direct connectivity is not possible.
 
-Each local TCP connection becomes a bidirectional QUIC stream on an existing connection. The client watchdog restores a dropped connection with exponential backoff.
+Each local TCP connection becomes a bidirectional QUIC stream on an existing connection. The access capability restores a dropped connection with exponential backoff.
 
 ## Admin UI
 
@@ -172,17 +172,17 @@ The UI binds to loopback only by default and shows connection state, transport p
 
 ## Deploy
 
-### Docker: run the server only
+### Docker: run a unified node
 
-The server is a good fit for an intranet appliance. `--network host` generally improves NAT-traversal success.
+A container is a good fit for an intranet appliance. `--network host` generally improves NAT-traversal success. To run expose-only, create a mounted `powermap.toml` containing only `[expose]`; without a config, the first start creates a default node with both expose and access capabilities.
 
 ```bash
 docker build -t powermap .
 
-docker run -d --name powermap-server --network host \
+docker run -d --name powermap --network host \
   -v "$PWD/data:/data" \
   -e RUST_LOG=info \
-  powermap powermap-server --config /data/powermap-server.toml
+  powermap powermap --config /data/powermap.toml
 ```
 
 Or use Compose:
@@ -191,15 +191,15 @@ Or use Compose:
 docker compose up -d --build
 ```
 
-Run the client natively where possible. Its mapped ports belong to its network namespace; Docker would add per-port publishing work.
+Run access natively where possible. Its mapped ports belong to its network namespace; Docker would add per-port publishing work.
 
 ### Managed services and secure remote administration
 
-Systemd, launchd, and Windows Task Scheduler templates, plus SSH and mTLS Nginx remote-admin guidance that keeps the PowerMap listener on loopback, are available in [deployment/README.md](deployment/README.md). They preserve configuration and mappings across restarts without publishing the admin UI to the Internet.
+Unified service templates, upgrade guidance, and SSH/mTLS Nginx remote administration are available in [deployment/README.md](deployment/README.md).
 
 | Goal | Recommended entry point |
 |---|---|
-| Short-lived access from a personal computer | Run `powermap-client` directly and use the local admin UI |
+| Short-lived access from a personal computer | Run `powermap` and use the local admin UI |
 | A long-running intranet device | [Managed deployment templates](deployment/README.md) |
 | View the local admin UI remotely | SSH tunneling; use an mTLS gateway only when necessary |
 | Automate mappings | `POST /api/mappings` with a Bearer `web_token` |
@@ -208,6 +208,23 @@ Systemd, launchd, and Windows Task Scheduler templates, plus SSH and mTLS Nginx 
 
 Releases include Linux x86_64 / aarch64, macOS Intel / Apple Silicon, and Windows x86_64 archives with SHA-256 checksums.
 
+### v0.4.0 upgrade and compatibility
+
+Starting with v0.4.0, every Release contains one `powermap` executable. The
+role-specific `powermap-server` and `powermap-client` binaries are no longer
+published. Start `powermap` directly; one `powermap.toml` can contain both
+`[expose]` and `[access]`, or only the capability required on that machine.
+
+When no unified config exists, the first start reads
+`powermap-server.toml` / `powermap-client.toml` in the same directory and
+merges them into `powermap.toml`. Legacy files are removed only after the new
+config is written successfully. Mappings without `mode` continue as TCP, and a
+single-tenant top-level `token` remains compatible as the `default` client.
+
+> Before rolling back to an old role-specific binary, back up
+> `powermap.toml`, `powermap.key`, and `powermap.credential.json`, as well as
+> any remaining legacy role configs. Older binaries do not read the unified config.
+
 ## Security Model
 
 | Control | Details |
@@ -215,7 +232,7 @@ Releases include Linux x86_64 / aarch64, macOS Intel / Apple Silicon, and Window
 | Credential | `node_id + token` is the access entry point. Handle `credential.json` like a password. |
 | End-to-end encryption | iroh's QUIC + rustls encrypts the link; relays see ciphertext only. |
 | Target allowlist | CIDR and port rules limit dialable targets and prevent DNS-rebinding bypasses. |
-| Multi-tenant access | `[[clients]]` supplies per-user tokens, allowlists, and concurrency caps; revoke independently. |
+| Multi-tenant access | `[[expose.clients]]` supplies per-user tokens, allowlists, and concurrency caps; revoke independently. |
 | Audit and limits | JSON audit events and limits on streams, mappings, connections, and dial time protect operations. |
 | Admin API authentication | When `web_token` is set, only `Authorization: Bearer <token>` is accepted. Query-string tokens are rejected so secrets do not reach history, proxy, or access logs. |
 
@@ -223,7 +240,7 @@ Releases include Linux x86_64 / aarch64, macOS Intel / Apple Silicon, and Window
 
 ## Operations
 
-The client exposes Prometheus metrics and a health endpoint:
+The access capability exposes Prometheus metrics and a health endpoint:
 
 ```bash
 curl http://127.0.0.1:8088/metrics
@@ -237,9 +254,10 @@ Metrics include tunnels, handshakes, rejections, dial failures, reconnects, and 
 Default config directories are `~/.config/powermap/` on Linux and `~/Library/Application Support/powermap/` on macOS. Use `--config` to override the path; command-line flags take precedence.
 
 <details>
-<summary><strong>Client configuration</strong></summary>
+<summary><strong>Unified configuration: access</strong></summary>
 
 ```toml
+[access]
 node_id = "a5d40b0a8d24..."
 token = "991fd0a3..."
 web_bind = "127.0.0.1:8088"
@@ -249,21 +267,26 @@ web_tls_key = ""
 max_mappings = 256
 max_conns_per_mapping = 512
 
+# Reverse mapping: expose local services to the expose intranet (deny-all by default)
+reverse_enabled = false
+reverse_allow_networks = []   # empty = deny all
+reverse_allow_ports = []      # empty = deny all
+
 # Plain TCP passthrough (default)
-[[mappings]]
+[[access.mappings]]
 local = "127.0.0.1:6379"
 host = "192.168.1.101"
 port = 6379
 
 # UDP passthrough (DNS, WireGuard, game servers, ...)
-[[mappings]]
+[[access.mappings]]
 local = "127.0.0.1:53"
 host = "192.168.1.1"
 port = 53
 mode = "udp"
 
 # HTTP gateway: one local port routed to multiple intranet backends by Host header
-[[mappings]]
+[[access.mappings]]
 local = "127.0.0.1:8080"
 host = "192.168.1.101"   # fallback backend when no route matches
 port = 80
@@ -273,29 +296,26 @@ routes = [
   { host_match = "wiki.local", target_host = "192.168.1.11", target_port = 8080 },
 ]
 
-# Reverse mapping: expose local services to the server's intranet (deny-all by default)
-reverse_enabled = false
-reverse_allow_networks = []   # empty = deny all
-reverse_allow_ports = []      # empty = deny all
 ```
 
-An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. When set, the admin API accepts only `Authorization: Bearer <token>` and never `?token=`. The UI keeps a manually entered admin token only in current-page memory, so it must be entered again after a refresh. The client refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited.
+An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. When set, the admin API accepts only `Authorization: Bearer <token>` and never `?token=`. The UI keeps a manually entered admin token only in current-page memory, so it must be entered again after a refresh. The access capability refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited.
 
 A mapping's `mode` defaults to `tcp` (plain passthrough); `udp` tunnels UDP datagrams; `http` enables a single-port HTTP gateway that matches each request's `Host` header against `routes` (up to 32), falling back to the mapping's own `host`/`port` when nothing matches (`routes` only apply in `http` mode).
 
-Reverse mapping exposes a service on the client side (this machine or its home network) to the server's intranet — the opposite direction of a normal mapping. It is **deny-all by default**: leaving `reverse_allow_networks` and `reverse_allow_ports` empty rejects every callback, so you must explicitly set `reverse_enabled` and list the allowed networks and ports. Which intranet addresses the server listens on is set by the `reverse` entries under `[[clients]]` (see below). This policy is also editable from the console's Connection tab.
+Reverse mapping exposes a service on the access side (this machine or its home network) to the expose intranet — the opposite direction of a normal mapping. It is **deny-all by default**: leaving `reverse_allow_networks` and `reverse_allow_ports` empty rejects every callback, so you must explicitly set `reverse_enabled` and list the allowed networks and ports. Which intranet addresses expose listens on is set by the `reverse` entries under `[[expose.clients]]` (see below). This policy is also editable from the console.
 </details>
 
 <details>
-<summary><strong>Server configuration and multi-tenancy</strong></summary>
+<summary><strong>Unified configuration: expose and multi-tenancy</strong></summary>
 
 ```toml
-identity = "powermap-server.key"
+[expose]
+identity = "powermap.key"
 max_streams_per_conn = 256
 dial_timeout_secs = 10
 audit_log = "/var/log/powermap/audit.jsonl"
 
-[[clients]]
+[[expose.clients]]
 id = "alice"
 token = "alice-token-..."
 allow_networks = ["192.168.1.0/24"]
@@ -306,34 +326,34 @@ published_targets = [
   { host = "192.168.1.102", port = 5432, label = "PostgreSQL" },
 ]
 
-[[clients]]
+[[expose.clients]]
 id = "bob"
 token = "bob-token-..."
 allow_networks = ["10.0.0.0/8"]
 revoked = true
 
-# Reverse listener: the server listens on 0.0.0.0:9000 in its intranet and
-# hands each connection through the tunnel for alice's side to dial back.
-[[clients.reverse]]
+# Reverse listener: expose listens on 0.0.0.0:9000 in its intranet and
+# hands each connection through the tunnel for alice's access side to dial back.
+[[expose.clients.reverse]]
 listen = "0.0.0.0:9000"
 target_host = "127.0.0.1"
 target_port = 5900
 name = "Home VNC"
 ```
 
-A top-level `token` remains valid for a single-tenant server and is normalized to a `default` client; startup logs make this compatibility mode explicit, so migration to `[[clients]]` is optional. Reverse `reverse` entries let the server listen inside its intranet and hand inbound connections back through the tunnel for the matching client to dial on its own side; each listen address is unique across the whole server (up to 32 per client), and a single-tenant server can place `reverse` at the top level. **Whether a callback is allowed is decided by the client's `reverse_enabled`/`reverse_allow_*`** (deny-all by default) — a server-side reverse listener does not mean the client will accept it. `published_targets` explicitly shares IP/port suggestions with that client. Once connected, the console rechecks them by asking the server to dial each target, then offers only currently reachable services for one-click mapping. It never expands the allowlist: every listed port must still be in `allow_ports`. To prevent silently ineffective policies, the server rejects invalid CIDRs, port `0`, and empty or duplicate client ids/tokens. Restart B after changing clients, allowlists, published targets, or revocation, then distribute the refreshed credential file.
+A top-level `token` remains valid for single-tenant expose and is normalized to a `default` client; startup logs make this compatibility mode explicit, so migration to `[[expose.clients]]` is optional. Reverse `reverse` entries let expose listen inside its intranet and hand inbound connections back through the tunnel for the matching access side to dial on its own side; each listen address is unique across the whole expose configuration (up to 32 per client), and a single-tenant expose config can place `reverse` at the top level. **Whether a callback is allowed is decided by the access side's `reverse_enabled`/`reverse_allow_*`** (deny-all by default) — a configured reverse listener does not mean access will accept it. `published_targets` explicitly shares IP/port suggestions with that access node. Once connected, the console rechecks them by asking expose to dial each target, then offers only currently reachable services for one-click mapping. It never expands the allowlist: every listed port must still be in `allow_ports`. To prevent silently ineffective policies, expose rejects invalid CIDRs, port `0`, and empty or duplicate client ids/tokens. Restart expose after changing clients, allowlists, published targets, or revocation, then distribute the refreshed credential file.
 
-For single-tenant mode, place the same `published_targets = [...]` block at the top level. For multi-tenant mode, put it under the matching `[[clients]]` entry and retain the `published_targets` field in the credential JSON distributed to that client. The console's refresh action only rechecks these explicitly published addresses; it never scans the intranet.
+For single-tenant mode, place the same `published_targets = [...]` block under `[expose]`. For multi-tenant mode, put it under the matching `[[expose.clients]]` entry and retain the `published_targets` field in the credential JSON distributed to that client. The console's refresh action only rechecks these explicitly published addresses; it never scans the intranet.
 </details>
 
 ## Troubleshooting
 
 | Symptom | What to do |
 |---|---|
-| Client cannot connect / server refuses it | Confirm that client `node_id` and `token` came from this server's credential file. |
+| Access cannot connect / expose refuses it | Confirm that the access `node_id` and `token` came from this expose node's credential file. |
 | Local port cannot bind | The port is in use. Choose another port or remove the existing mapping. |
 | Relay connection times out | The network or a relay may be temporarily unavailable. iroh will try other relays; retry after a short wait. |
-| A config change has no effect | Config is loaded at startup. Manage runtime mappings in the UI/API; restart B after changing server allowlists or `published_targets`, then distribute the refreshed credential. |
+| A config change has no effect | Config is loaded at startup. Manage runtime mappings in the UI/API; restart expose after changing its allowlists or `published_targets`, then distribute the refreshed credential. |
 
 ## Development and Contributing
 

@@ -4,16 +4,14 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-22
+
 ### Added
 
-- UDP 隧道：映射新增 `udp` 模式，本地绑定 UDP socket，数据报经隧道由 server 端拨 UDP 目标；适用于 DNS、WireGuard、游戏服务器等无连接协议。A 端按来源地址维护会话并在空闲 60 秒后回收。
+- UDP 隧道：映射新增 `udp` 模式，本地绑定 UDP socket，数据报经隧道由 expose 能力拨 UDP 目标；适用于 DNS、WireGuard、游戏服务器等无连接协议。access 端按来源地址维护会话并在空闲 60 秒后回收。
 - HTTP 反向代理网关：映射新增 `http` 模式，单个本地端口按请求 `Host` 头分流到多个内网后端（`routes` 路由表，最多 32 条，空 `host_match` 为兜底后端）。
-- 反向映射：把本机（A 端）服务暴露给 server 端所在内网。复用同一条 A→B QUIC 连接的双向流，server 端在内网监听、把连接交回 A 端拨本地目标。**默认全部拒绝**：A 端需显式启用并列出允许回拨的网段与端口才放行（`reverse_enabled` + `reverse_allow_networks` + `reverse_allow_ports`）；server 端用 `[[clients]]` 下的 `reverse` 声明内网监听地址。管理页“连接设置”新增反向映射策略卡片（`GET`/`PUT /api/reverse`）。
+- 反向映射：把本机 access 侧服务暴露给 expose 所在内网。复用同一条 QUIC 连接的双向流，expose 在内网监听、把连接交回 access 拨本地目标。**默认全部拒绝**：access 需显式启用并列出允许回拨的网段与端口才放行（`reverse_enabled` + `reverse_allow_networks` + `reverse_allow_ports`）；expose 用 `[[expose.clients]]` 下的 `reverse` 声明内网监听地址。
 - `Mapping` 新增 `mode` 与 `routes` 字段；旧配置省略时按 `tcp` 处理，向后兼容。
-
-## [0.3.0] - 2026-07-21
-
-### Added
 
 - 映射命名：`Mapping` 新增可选 `name` 字段（旧配置默认为空，向后兼容）。列表以名称为主标识、本地地址降为副信息，搜索同时覆盖名称。
 - 一键启用/停用全部映射（`POST /api/mappings/toggle-all`）：逐条重建把手，单条失败不影响其余并计入返回；列表头按钮随当前状态在“全部停用/全部启用”间切换。
@@ -30,6 +28,18 @@
 - 每条映射的迷你流量趋势图，历史留存于浏览器本地存储，刷新后不断档。
 - 命令面板（`⌘/Ctrl+K`）与键盘快捷键（`N` 新建、`R` 刷新、`1/2/3` 切页、`?` 帮助）。
 - 可选轮询间隔（2/5/10 秒或手动）与暂停开关；映射列表支持以某条为模板克隆新建。
+
+### Changed
+
+- 发布物、安装脚本、systemd、launchd、Windows 任务计划与 Docker 统一为单个 `powermap` 可执行文件；直接启动后按 `powermap.toml` 中的 `[expose]`、`[access]` 运行相应能力。
+- 管理控制台重组为概览、端口映射、节点和事件四个页面。节点页默认进入“远端节点”以连接其他设备；概览显示当前连接的对端 IP，映射创建默认 TCP，UDP / HTTP 作为高级选项。
+- 控制台视觉系统更新为冷灰画布、白色卡片和 `#3370FF` 主蓝；浏览器标题不再注入状态 emoji，favicon 更新为蓝色节点网络标识。
+
+### Compatibility
+
+- 首次启动时，如未存在 `powermap.toml`，会自动读取 `powermap-server.toml` 与 `powermap-client.toml`，合并并写入统一配置；只有新配置成功落盘后才删除旧文件。
+- 旧映射未填写 `mode` 时继续按 TCP 运行；旧的单租户 `token` 继续兼容并规范化为 `default` 客户。
+- 新 Release 不再提供 `powermap-server` 与 `powermap-client`。需要回退到旧二进制前，请备份 `powermap.toml`、`powermap.key` 与 `powermap.credential.json`，并保留原始 role 配置副本。
 
 ### Security
 
@@ -66,7 +76,7 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.3.0...HEAD
-[0.3.0]: https://github.com/steven-ld/PowerMap/compare/v0.2.0...v0.3.0
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/steven-ld/PowerMap/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/steven-ld/PowerMap/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/steven-ld/PowerMap/releases/tag/v0.1.0

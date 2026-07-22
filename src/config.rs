@@ -509,6 +509,182 @@ impl BConfig {
     }
 }
 
+/// 统一进程配置：一个节点可只暴露服务、只接入服务，或同时具备两种能力。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct Config {
+    #[serde(default)]
+    pub expose: Option<BConfig>,
+    #[serde(default)]
+    pub access: Option<AConfig>,
+}
+
+/// 首次设置时用户选择的使用场景。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scenario {
+    /// 在本机创建映射，访问另一端暴露的内网服务。
+    Access,
+    /// 把当前网络中的服务暴露给持有凭证的接入方。
+    Expose,
+    /// 同时接入另一网络并暴露当前网络。
+    Both,
+}
+
+impl Config {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.expose.is_none() && self.access.is_none() {
+            return Err("配置至少需要 expose 或 access 角色".into());
+        }
+        if let Some(expose) = &self.expose {
+            expose.validate()?;
+        }
+        if let Some(access) = &self.access {
+            access.validate()?;
+        }
+        Ok(())
+    }
+
+    fn default_node() -> Self {
+        Self::for_scenario(Scenario::Both)
+    }
+
+    /// 用安全默认值初始化用户选择的场景；反向访问仍默认禁用。
+    pub fn for_scenario(scenario: Scenario) -> Self {
+        match scenario {
+            Scenario::Access => Self {
+                expose: None,
+                access: Some(AConfig::default()),
+            },
+            Scenario::Expose => Self {
+                expose: Some(BConfig::default()),
+                access: None,
+            },
+            Scenario::Both => Self {
+                expose: Some(BConfig::default()),
+                access: Some(AConfig::default()),
+            },
+        }
+    }
+}
+
+/// 指定路径是旧配置时，调用方可明确其应迁移到的角色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LegacyRole {
+    Expose,
+    Access,
+}
+
+/// 统一配置加载的结果。迁移旧配置时 `path` 指向新写入的 `powermap.toml`。
+#[derive(Debug, Clone)]
+pub struct LoadedConfig {
+    pub config: Config,
+    pub path: PathBuf,
+}
+
+/// 加载统一配置，或在默认位置自动合并旧 server/client 配置。
+///
+/// 迁移的提交顺序是：解析全部旧文件 -> 校验组合配置 -> 原子写入新文件 -> 删除旧文件。
+/// 因而任何解析、校验或写入失败都会保留原文件。
+pub fn load_config(path: &Path, legacy_role: Option<LegacyRole>) -> Result<LoadedConfig> {
+    if path.exists() {
+        let raw = std::fs::read_to_string(path)
+            .with_context(|| format!("读取配置失败: {}", path.display()))?;
+        if raw.trim().is_empty() {
+            let config = Config::default_node();
+            return Ok(LoadedConfig {
+                config,
+                path: path.to_path_buf(),
+            });
+        }
+        if let Ok(config) = toml::from_str::<Config>(&raw) {
+            config.validate().map_err(anyhow::Error::msg)?;
+            return Ok(LoadedConfig {
+                config,
+                path: path.to_path_buf(),
+            });
+        }
+
+        let role = legacy_role
+            .or_else(|| infer_legacy_role(path))
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "{} 不是统一配置；请使用 powermap expose/access --config 指定旧配置角色",
+                    path.display()
+                )
+            })?;
+        return migrate_legacy_files(
+            path.with_file_name("powermap.toml"),
+            &[(path.to_path_buf(), role)],
+        );
+    }
+
+    let server = path.with_file_name("powermap-server.toml");
+    let client = path.with_file_name("powermap-client.toml");
+    let mut legacy = Vec::new();
+    if server.exists() {
+        legacy.push((server, LegacyRole::Expose));
+    }
+    if client.exists() {
+        legacy.push((client, LegacyRole::Access));
+    }
+    if legacy.is_empty() {
+        return Ok(LoadedConfig {
+            config: Config::default_node(),
+            path: path.to_path_buf(),
+        });
+    }
+    migrate_legacy_files(path.to_path_buf(), &legacy)
+}
+
+/// 将接入侧运行时修改写回统一配置，同时保留 expose 段。
+pub fn save_access(path: &Path, access: &AConfig) -> Result<()> {
+    let mut config = load_config(path, None)?.config;
+    config.access = Some(access.clone());
+    config.validate().map_err(anyhow::Error::msg)?;
+    save(path, &config)
+}
+
+fn infer_legacy_role(path: &Path) -> Option<LegacyRole> {
+    let name = path.file_name()?.to_string_lossy().to_ascii_lowercase();
+    if name.contains("server") {
+        Some(LegacyRole::Expose)
+    } else if name.contains("client") {
+        Some(LegacyRole::Access)
+    } else {
+        None
+    }
+}
+
+fn migrate_legacy_files(
+    new_path: PathBuf,
+    legacy: &[(PathBuf, LegacyRole)],
+) -> Result<LoadedConfig> {
+    let mut config = Config {
+        expose: None,
+        access: None,
+    };
+    for (path, role) in legacy {
+        match role {
+            LegacyRole::Expose => {
+                config.expose = Some(load_or_default::<BConfig>(path)?);
+            }
+            LegacyRole::Access => {
+                config.access = Some(load_or_default::<AConfig>(path)?);
+            }
+        }
+    }
+    config.validate().map_err(anyhow::Error::msg)?;
+    save(&new_path, &config)?;
+    for (path, _) in legacy {
+        std::fs::remove_file(path)
+            .with_context(|| format!("删除已迁移的旧配置失败: {}", path.display()))?;
+    }
+    Ok(LoadedConfig {
+        config,
+        path: new_path,
+    })
+}
+
 /// 校验一组反向监听：每条本身合法，且监听地址在整个 server 内不重复。
 fn validate_reverse(
     owner: &str,
@@ -591,7 +767,7 @@ fn validate_published_targets(
 }
 
 fn default_identity() -> String {
-    "powermap-server.key".to_string()
+    "powermap.key".to_string()
 }
 
 fn default_max_streams_per_conn() -> usize {
@@ -857,7 +1033,7 @@ revoked = true
     #[test]
     fn empty_b_config_uses_default_identity() {
         let b: BConfig = toml::from_str("").unwrap();
-        assert_eq!(b.identity, "powermap-server.key");
+        assert_eq!(b.identity, "powermap.key");
         assert!(b.token.is_empty());
     }
 
@@ -1061,5 +1237,66 @@ token = "shared-token"
         )
         .unwrap();
         assert!(duplicate_token.validate().is_err());
+    }
+
+    #[test]
+    fn unified_config_migrates_and_combines_legacy_roles() {
+        let unified = test_config_path("powermap.toml");
+        let dir = unified.parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        let server = dir.join("powermap-server.toml");
+        let client = dir.join("powermap-client.toml");
+        std::fs::write(&server, "token = \"server-token\"\n").unwrap();
+        std::fs::write(&client, "node_id = \"node\"\ntoken = \"client-token\"\n").unwrap();
+
+        let loaded = load_config(&unified, None).unwrap();
+
+        assert_eq!(loaded.path, unified);
+        assert_eq!(loaded.config.expose.unwrap().token, "server-token");
+        assert_eq!(loaded.config.access.unwrap().token, "client-token");
+        assert!(loaded.path.exists());
+        assert!(!server.exists());
+        assert!(!client.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn unified_config_keeps_legacy_files_when_migration_fails() {
+        let unified = test_config_path("powermap.toml");
+        let dir = unified.parent().unwrap();
+        std::fs::create_dir_all(dir).unwrap();
+        let server = dir.join("powermap-server.toml");
+        std::fs::write(&server, "allow_ports = [0]\n").unwrap();
+
+        assert!(load_config(&unified, None).is_err());
+
+        assert!(server.exists());
+        assert!(!unified.exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn scenario_configures_only_the_requested_roles() {
+        let access = Config::for_scenario(Scenario::Access);
+        assert!(access.access.is_some());
+        assert!(access.expose.is_none());
+        assert!(!access.access.unwrap().reverse_enabled);
+
+        let expose = Config::for_scenario(Scenario::Expose);
+        assert!(expose.expose.is_some());
+        assert!(expose.access.is_none());
+
+        let both = Config::for_scenario(Scenario::Both);
+        assert!(both.expose.is_some());
+        assert!(both.access.is_some());
+    }
+
+    #[test]
+    fn missing_unified_config_starts_a_dual_capability_node() {
+        let path = test_config_path("powermap.toml");
+        let loaded = load_config(&path, None).unwrap();
+
+        assert!(loaded.config.expose.is_some());
+        assert!(loaded.config.access.is_some());
     }
 }

@@ -6,11 +6,13 @@ on:
       - 'v*'
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   create-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/create-gh-release-action@v1
@@ -21,6 +23,8 @@ jobs:
 
   upload-assets:
     needs: create-release
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -40,8 +44,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          # 两个二进制打进同一个压缩包
-          bin: powermap-server,powermap-client
+          bin: powermap
           target: ${{ matrix.target }}
           # 归档名：powermap-<target>.tar.gz（Windows 为 .zip）
           archive: powermap-$target
@@ -74,6 +77,8 @@ jobs:
             os: windows-latest
             archive_extension: zip
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
     steps:
       - name: Download uploaded archive and checksum
         env:
@@ -102,8 +107,7 @@ jobs:
           shasum -a 256 -c "powermap-${TARGET}.sha256"
           mkdir unpacked
           tar -xzf "powermap-${TARGET}.${EXTENSION}" -C unpacked
-          ./unpacked/powermap-server --help
-          ./unpacked/powermap-client --help
+          ./unpacked/powermap --help
 
       - name: Verify checksum and execute help (Windows)
         if: runner.os == 'Windows'
@@ -119,7 +123,5 @@ jobs:
             throw "SHA-256 mismatch for $archive"
           }
           Expand-Archive -Path $archive -DestinationPath dist/unpacked
-          & dist/unpacked/powermap-server.exe --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & dist/unpacked/powermap-client.exe --help
+          & dist/unpacked/powermap.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

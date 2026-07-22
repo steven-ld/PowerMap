@@ -1,4 +1,4 @@
-# Install released PowerMap binaries for the current Windows user.
+# Install the released PowerMap binary for the current Windows user.
 [CmdletBinding()]
 param(
     [ValidatePattern('^(latest|v[0-9][0-9A-Za-z.\-+]*)$')]
@@ -12,7 +12,9 @@ param(
     }
     else {
         Join-Path $HOME 'AppData\Local\PowerMap\bin'
-    })
+    }),
+
+    [switch]$RestartTask
 )
 
 Set-StrictMode -Version Latest
@@ -53,7 +55,7 @@ function Download-ReleaseAsset {
             'The release may not include assets for this platform yet, or the network request failed. ' +
             "Release page: $releasePage"
         if ($Version -eq 'latest') {
-            $message += ' Retry shortly, or install a published version explicitly: .\install.ps1 -Version v0.2.0'
+            $message += ' Retry shortly, or install a published version explicitly: .\install.ps1 -Version v0.4.0'
         }
         throw $message
     }
@@ -82,17 +84,25 @@ try {
 
     $unpackDirectory = Join-Path $temporaryDirectory 'unpacked'
     Expand-Archive -LiteralPath $archivePath -DestinationPath $unpackDirectory -Force
-    $server = Get-ChildItem -LiteralPath $unpackDirectory -Filter 'powermap-server.exe' -File -Recurse | Select-Object -First 1
-    $client = Get-ChildItem -LiteralPath $unpackDirectory -Filter 'powermap-client.exe' -File -Recurse | Select-Object -First 1
-    if ($null -eq $server -or $null -eq $client) {
-        throw "The release archive does not contain both PowerMap executables."
+    $binary = Get-ChildItem -LiteralPath $unpackDirectory -Filter 'powermap.exe' -File -Recurse | Select-Object -First 1
+    if ($null -eq $binary) {
+        throw "The release archive does not contain the PowerMap executable."
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
-    Copy-Item -LiteralPath $server.FullName -Destination (Join-Path $InstallDir 'powermap-server.exe') -Force
-    Copy-Item -LiteralPath $client.FullName -Destination (Join-Path $InstallDir 'powermap-client.exe') -Force
+    Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $InstallDir 'powermap.exe') -Force
 
-    Write-Host "Installed powermap-server.exe and powermap-client.exe to $InstallDir"
+    Write-Host "Installed powermap.exe to $InstallDir"
+    if ($RestartTask) {
+        $task = Get-ScheduledTask -TaskName 'PowerMap' -ErrorAction SilentlyContinue
+        if ($null -ne $task) {
+            Start-ScheduledTask -TaskName 'PowerMap'
+            Write-Host 'Restarted PowerMap scheduled task.'
+        }
+        else {
+            Write-Host 'PowerMap scheduled task was not found; binary was upgraded but not restarted.'
+        }
+    }
     $pathEntries = $env:Path -split [System.IO.Path]::PathSeparator
     if ($pathEntries -notcontains $InstallDir) {
         Write-Host "Add $InstallDir to your user PATH to run PowerMap from any terminal."

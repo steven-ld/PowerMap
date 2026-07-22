@@ -3,38 +3,40 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="theme-color" content="#f5f6f7" media="(prefers-color-scheme: light)" />
+<meta name="theme-color" content="#171a1f" media="(prefers-color-scheme: dark)" />
 <title>PowerMap</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%20140%20140'%3E%3Crect%20width='140'%20height='140'%20rx='30'%20fill='%230D1B3A'/%3E%3Cpath%20d='M36%20108V34h39c25%200%2040%2014%2040%2035s-15%2035-40%2035H58'%20fill='none'%20stroke='%23377DFF'%20stroke-linecap='round'%20stroke-linejoin='round'%20stroke-width='18'/%3E%3Cpath%20d='M58%2069h43'%20fill='none'%20stroke='%23E8F1FF'%20stroke-linecap='round'%20stroke-width='7'/%3E%3Ccircle%20cx='36'%20cy='108'%20r='11'%20fill='%2357D5B0'/%3E%3Ccircle%20cx='115'%20cy='69'%20r='11'%20fill='%2357D5B0'/%3E%3Ccircle%20cx='58'%20cy='34'%20r='8'%20fill='%23E8F1FF'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='16'%20fill='%233370FF'/%3E%3Cpath%20d='M17%2044%2032%2032%2047%2020M17%2020l15%2012%2015%2012'%20fill='none'%20stroke='%23fff'%20stroke-linecap='round'%20stroke-linejoin='round'%20stroke-width='4'/%3E%3Ccircle%20cx='17'%20cy='20'%20r='6'%20fill='%23fff'/%3E%3Ccircle%20cx='47'%20cy='20'%20r='6'%20fill='%23fff'%20opacity='.88'/%3E%3Ccircle%20cx='17'%20cy='44'%20r='6'%20fill='%23fff'%20opacity='.88'/%3E%3Ccircle%20cx='47'%20cy='44'%20r='6'%20fill='%23fff'%20opacity='.88'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='6'%20fill='%23CFE0FF'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
 <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Noto+Sans+SC:wght@400;500;600;700;800&family=Plus+Jakarta+Sans:wght@600;700;800&display=swap" rel="stylesheet" />
 <style>
   /* ── PowerMap product system: shared with the public site ── */
   :root {
-    --background: #f6f5f0;
-    --foreground: #121212;
+    --background: #f5f6f7;
+    --foreground: #373c43;
     --card: #ffffff;
-    --card-foreground: #000000;
+    --card-foreground: #373c43;
     --popover: #ffffff;
-    --primary: #3366f0;
+    --primary: #3370ff;
     --primary-foreground: #ffffff;
-    --secondary: #ecebe6;
-    --secondary-foreground: #121212;
-    --muted: #efeee9;
-    --muted-foreground: #66645e;
-    --accent: #dce4ff;
-    --accent-foreground: #254ab0;
-    --destructive: #d54a4a;
+    --secondary: #f5f6f7;
+    --secondary-foreground: #373c43;
+    --muted: #f5f6f7;
+    --muted-foreground: #646a73;
+    --accent: #edf3ff;
+    --accent-foreground: #3370ff;
+    --destructive: #f54a45;
     --destructive-foreground: #ffffff;
-    --border: #deddd6;
-    --border-focus: #3366f0;
-    --input: #dfded8;
-    --ring: #3366f0;
-    --success: #238465;
+    --border: #e8e9eb;
+    --border-focus: #3370ff;
+    --input: #dcdee1;
+    --ring: #3370ff;
+    --success: #00a870;
     --success-foreground: #ffffff;
-    --warning: #a85a00;
+    --warning: #d46b08;
     --warning-foreground: #ffffff;
-    --info: #3366f0;
+    --info: #3370ff;
     --radius-sm: 0.5rem;
     --radius-md: 0.625rem;
     --radius-lg: 0.875rem;
@@ -44,30 +46,30 @@
     color-scheme: light;
   }
   html.dark {
-    --background: #11110f;
-    --foreground: #f7f6f1;
-    --card: #1a1a18;
+    --background: #171a1f;
+    --foreground: #f2f3f5;
+    --card: #22252b;
     --card-foreground: #ffffff;
-    --popover: #20201e;
-    --primary: #84a2ff;
-    --primary-foreground: #101010;
-    --secondary: #292927;
-    --secondary-foreground: #f7f6f1;
-    --muted: #242422;
-    --muted-foreground: #aaa8a0;
-    --accent: #25355f;
-    --accent-foreground: #dce4ff;
-    --destructive: #ff7770;
+    --popover: #2a2e35;
+    --primary: #5b8ff9;
+    --primary-foreground: #ffffff;
+    --secondary: #2a2e35;
+    --secondary-foreground: #f2f3f5;
+    --muted: #2a2e35;
+    --muted-foreground: #a6aab1;
+    --accent: #243b61;
+    --accent-foreground: #b9d4ff;
+    --destructive: #ff7875;
     --destructive-foreground: #ffffff;
-    --border: #3b3a37;
-    --border-focus: #84a2ff;
-    --input: #42413d;
-    --ring: #84a2ff;
-    --success: #79d9b5;
-    --success-foreground: #001f1d;
-    --warning: #ffae04;
+    --border: #3a3f47;
+    --border-focus: #5b8ff9;
+    --input: #3a3f47;
+    --ring: #5b8ff9;
+    --success: #3dd68c;
+    --success-foreground: #062f1d;
+    --warning: #ffb357;
     --warning-foreground: #000000;
-    --info: #2671f4;
+    --info: #5b8ff9;
     color-scheme: dark;
   }
 
@@ -83,6 +85,17 @@
     display: flex; flex-direction: column;
   }
   code, .mono { font-family: var(--font-mono); }
+
+  /* ── 跳转到主内容（键盘/读屏用户跳过导航）── */
+  .skip-link {
+    position: fixed; top: 0; left: 0; z-index: 1000; transform: translateY(-120%);
+    margin: 0.5rem; padding: 0.55rem 0.9rem; border-radius: var(--radius-md);
+    background: var(--primary); color: var(--primary-foreground);
+    font: 600 0.8125rem/1 var(--font-sans); text-decoration: none;
+    transition: transform 0.15s ease;
+  }
+  .skip-link:focus { transform: translateY(0); outline: 2px solid var(--ring); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) { .skip-link { transition: none; } }
 
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
@@ -261,6 +274,17 @@
   .btn-outline { background: var(--card); }
   .btn-sm { height: 2.5rem; }
   .cred-status { padding: 1rem; border-radius: .75rem; background: var(--muted); }
+  .node-table + .node-table { border-top: 1px solid var(--border); margin-top: 1.125rem; padding-top: 1.125rem; }
+  .node-table-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .65rem; }
+  .node-table-title { font-size: .875rem; font-weight: 700; }
+  .node-table-copy { margin: 0; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.45; }
+  .connection-peers { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-top: .7rem; color: var(--muted-foreground); font-size: .78rem; }
+  .connection-peer-label { font-weight: 600; }
+  .connection-peer-ip { padding: .28rem .48rem; border: 1px solid var(--border); border-radius: .35rem; background: var(--muted); color: var(--foreground); font: .75rem/1 var(--font-mono); }
+  .node-tabs { display: inline-flex; gap: .25rem; padding: .25rem; margin-bottom: 1rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--muted); }
+  .node-tab { min-height: 2.25rem; padding: 0 .75rem; border: 0; border-radius: .3rem; background: transparent; color: var(--muted-foreground); font: 700 .78rem/1 var(--font-sans); cursor: pointer; }
+  .node-tab[aria-selected="true"] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .node-panel.hidden { display: none; }
   .badge { padding: .25rem .55rem; border-radius: .45rem; }
   .table-wrap { overflow-x: auto; }
   thead th { padding: .9rem 1.1rem; background: var(--muted); }
@@ -290,7 +314,7 @@
     .grid.mapping { grid-template-columns: 1fr 1fr; }
     .grid.mapping .arrow { display: none; }
     .grid.mapping .mapping-actions { grid-column: 1 / -1; }
-    .mapping-actions .btn { flex: 1 1 0; }
+    .mapping-actions .btn { flex: 1 1 0; min-height: 2.75rem; }
     .target-catalog-head { align-items: flex-start; flex-direction: column; gap: .35rem; }
     .target-options { display: grid; grid-template-columns: 1fr; }
     .target-option { width: 100%; min-height: 2.75rem; }
@@ -303,20 +327,19 @@
 
   /* ── PowerMap console shell ── */
   body { min-width: 320px; background: var(--background); padding: 0; }
-  #mainPage { min-height: 100vh; overflow: hidden; background: var(--card); }
+  #mainPage { min-height: 100vh; overflow: hidden; background: var(--background); }
   .app-header { height: 4.75rem; border-bottom: 1px solid var(--border); background: var(--card); }
   .app-header-inner { display: flex; align-items: center; justify-content: space-between; max-width: none; height: 100%; padding: 0 2rem; }
   .console-brand { display: inline-flex; align-items: center; gap: .7rem; color: var(--foreground); text-decoration: none; font: 800 1.08rem/1 var(--font-display); letter-spacing: -.04em; }
-  .console-mark { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: .55rem; background: var(--foreground); color: #c6f25c; font: 500 .78rem/1 var(--font-mono); }
+  .console-mark { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: .55rem; background: var(--primary); color: var(--primary-foreground); font: 500 .78rem/1 var(--font-mono); }
   .console-brand small { padding-left: .7rem; border-left: 1px solid var(--border); color: var(--muted-foreground); font: 500 .72rem/1 var(--font-mono); letter-spacing: .04em; }
   .console-meta { color: var(--muted-foreground); font: 500 .75rem/1 var(--font-mono); }
   .app-shell { display: grid; grid-template-columns: 17rem minmax(0, 1fr); min-height: calc(100vh - 4.75rem); }
   .app-sidebar { display: flex; flex-direction: column; padding: 1.5rem 1rem; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--card) 92%, var(--background)); }
-  .sidebar-brand { padding: 0 .65rem 1rem; color: var(--muted-foreground); font: 500 .72rem/1 var(--font-mono); letter-spacing: .08em; }
   .header-nav { display: block; justify-self: auto; }
   .tabs { display: grid; gap: .45rem; padding: 0; border: 0; border-radius: 0; background: transparent; }
   .tab { justify-content: flex-start; width: 100%; height: 3rem; padding: 0 .8rem; border-radius: .5rem; font: 700 .9rem/1 var(--font-sans); letter-spacing: 0; color: var(--muted-foreground); }
-  .tab.active { color: #2451bd; background: #dce4ff; }
+  .tab.active { color: var(--accent-foreground); background: var(--accent); }
   .tab:hover { color: var(--foreground); background: var(--muted); }
   .tab-icon { width: 1rem; height: 1rem; opacity: 1; }
   .sidebar-static { display: block; margin: 1.65rem 0 .65rem; padding: 0 .65rem; color: var(--muted-foreground); font: 600 .68rem/1 var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
@@ -330,7 +353,11 @@
   .sidebar-bottom { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-top: auto; padding: 1.25rem .75rem 0; border-top: 1px solid var(--border); }
   .sidebar-bottom .conn { height: 2.25rem; padding: 0; border: 0; background: transparent; }
   .sidebar-bottom .path-chip { display: none !important; }
-  .workarea { min-width: 0; padding: clamp(1.5rem, 3vw, 2.75rem); background: var(--card); }
+  /* 实时详情仅属于概览；任务页保留清爽的导航与连接状态。 */
+  #mainPage[data-active-tab]:not([data-active-tab="dashboard"]) .sidebar-static,
+  #mainPage[data-active-tab]:not([data-active-tab="dashboard"]) .sidebar-monitor,
+  #mainPage[data-active-tab]:not([data-active-tab="dashboard"]) .sidebar-refresh { display: none; }
+  .workarea { min-width: 0; padding: clamp(1.5rem, 3vw, 2.75rem); background: var(--background); }
   .container { max-width: 76rem; padding: 0; }
   .workspace-head { align-items: flex-start; margin: 0 0 1.75rem; }
   .workspace-eyebrow { display: none; }
@@ -363,6 +390,16 @@
   td.status.disabled { color: var(--muted-foreground); }
   td.status::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .55rem; border-radius: 50%; background: currentColor; }
   td.status.disabled::before { background: transparent; border: 1.5px solid var(--muted-foreground); }
+  td.status .status-line { display: inline-flex; align-items: center; gap: .35rem; }
+  .conn-expand {
+    display: inline-flex; align-items: center; gap: .16rem; min-height: 1.5rem; padding: 0;
+    border: 0; background: transparent; color: var(--accent-foreground); cursor: pointer;
+    font: 600 .8rem/1 var(--font-sans); text-decoration: none;
+  }
+  .conn-expand:hover { color: var(--primary); text-decoration: underline; text-underline-offset: .18rem; }
+  .conn-expand:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: .2rem; }
+  .conn-expand svg { width: .8rem; height: .8rem; transition: transform .16s ease; }
+  .conn-expand.open svg { transform: rotate(180deg); }
   td.status .status-detail { display: block; max-width: 18rem; margin: .35rem 0 0 1.2rem; overflow: hidden; color: var(--muted-foreground); font: 500 .72rem/1.35 var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
   tr.is-disabled td.target, tr.is-disabled td.num { opacity: .5; }
   .btn-del { height: 2rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: .5rem; background: var(--card); }
@@ -374,7 +411,6 @@
     .console-brand small, .console-meta { display: none; }
     .app-shell { grid-template-columns: 1fr; min-height: calc(100vh - 4rem); }
     .app-sidebar { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: 1fr auto; padding: .75rem 1rem; border-right: 0; border-bottom: 1px solid var(--border); }
-    .sidebar-brand { display: none; }
     .header-nav { grid-column: 1; min-width: 0; }
     .tabs { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .35rem; }
     .tab { justify-content: center; height: 2.75rem; padding: 0 .5rem; font-family: var(--font-sans); font-size: .82rem; }
@@ -531,18 +567,45 @@
 
   /* ── 映射模式选择行 ── */
   .mapping-mode-row {
-    display: flex; align-items: center; flex-wrap: wrap; gap: 0.75rem;
+    display: flex; align-items: center; flex-wrap: wrap; gap: .75rem;
     margin-bottom: 1rem; padding-bottom: 1rem; border-bottom: 1px dashed var(--border);
   }
-  .mapping-mode-row > .lbl { font: 700 0.78rem/1 var(--font-sans); color: var(--foreground); margin-right: 0.25rem; }
-  .mode-opt {
-    display: inline-flex; align-items: center; gap: 0.35rem; padding: 0.3rem 0.65rem; cursor: pointer;
-    font: 500 0.8125rem/1 var(--font-sans); border: 1px solid var(--border); border-radius: var(--radius-md);
-    background: var(--card); color: var(--foreground); user-select: none;
+  .mapping-mode-row > .lbl { font: 700 .8125rem/1 var(--font-sans); color: var(--foreground); margin-right: .1rem; }
+  .protocol-segmented {
+    display: inline-flex; align-items: stretch; min-height: 2.5rem; max-width: 100%; overflow: hidden;
+    border: 1px solid var(--border); border-radius: .55rem; background: var(--muted);
   }
-  .mode-opt:hover { border-color: var(--primary); }
-  .mode-opt:has(input:checked) { border-color: var(--primary); background: color-mix(in srgb, var(--primary) 12%, transparent); color: var(--primary); font-weight: 600; }
-  .mode-opt input { accent-color: var(--primary); margin: 0; }
+  #advancedModes:not(.hidden) { display: contents; }
+  .mode-opt {
+    position: relative; display: inline-flex; align-items: center; justify-content: center; min-width: 4.5rem;
+    padding: 0 .85rem; cursor: pointer; font: 600 .8125rem/1 var(--font-sans);
+    border: 0; border-right: 1px solid var(--border); background: transparent; color: var(--muted-foreground); user-select: none;
+    transition: background-color .16s ease, color .16s ease, box-shadow .16s ease;
+  }
+  .mode-opt:last-child { border-right: 0; }
+  .mode-opt:hover { color: var(--foreground); background: color-mix(in srgb, var(--card) 72%, transparent); }
+  .mode-opt:has(input:checked) { background: var(--card); color: var(--primary); box-shadow: inset 0 -2px 0 var(--primary); }
+  .mode-opt input { position: absolute; width: 1px; height: 1px; margin: -1px; clip: rect(0 0 0 0); clip-path: inset(50%); overflow: hidden; white-space: nowrap; }
+  .mode-opt:has(input:focus-visible) { z-index: 1; outline: 2px solid var(--ring); outline-offset: -2px; }
+  .advanced-mode-toggle {
+    display: inline-flex; align-items: center; gap: .35rem; min-height: 2.5rem; padding: 0 .65rem;
+    border: 0; border-left: 1px solid var(--border); border-radius: 0; background: transparent; color: var(--muted-foreground);
+    font: 600 .8125rem/1 var(--font-sans); cursor: pointer;
+  }
+  .advanced-mode-toggle:hover { background: var(--muted); color: var(--foreground); }
+  .advanced-mode-toggle svg { width: .9rem; height: .9rem; transition: transform .16s ease; }
+  .advanced-mode-toggle[aria-expanded="true"] {
+    width: 2.5rem; justify-content: center; padding: 0; background: var(--card); color: var(--foreground);
+  }
+  .advanced-mode-toggle[aria-expanded="true"] .advanced-mode-label { display: none; }
+  .advanced-mode-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
+  .advanced-mode-toggle:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  @media (max-width: 520px) {
+    .mapping-mode-row { gap: .5rem; }
+    .mapping-mode-row > .lbl { flex-basis: 100%; }
+    .mode-opt { min-width: 0; padding: 0 .65rem; }
+    .mode-http-detail { display: none; }
+  }
   .mode-hint { flex: 1 1 100%; font: 0.75rem/1.5 var(--font-sans); color: var(--muted-foreground); }
 
   /* ── HTTP 网关路由编辑器 ── */
@@ -807,15 +870,16 @@
 </style>
 </head>
 <body>
+<a href="#mainContent" class="skip-link">跳到主内容</a>
 
 <div id="mainPage">
-  <header class="app-header"><div class="app-header-inner"><a class="console-brand" href="#mappings">PowerMap <small>内网穿透控制台</small></a><div class="console-actions"><a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">官网</a><span class="header-version">当前版本 <strong id="headerVer">加载中</strong></span><button id="themeToggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">外观</button></div></div></header>
+  <header class="app-header"><div class="app-header-inner"><a class="console-brand" href="#dashboard">PowerMap <small>内网穿透控制台</small></a><div class="console-actions"><a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">官网</a><span class="header-version">当前版本 <strong id="headerVer">加载中</strong></span><button id="themeToggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">外观</button></div></div></header>
   <div class="app-shell">
     <aside class="app-sidebar">
-      <div class="sidebar-brand">PowerMap</div>
       <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar" role="tablist" aria-label="页面">
-        <button type="button" class="tab active" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="true" aria-controls="tabMappings"><span>端口映射</span><span id="issueBadge" class="issue-badge hidden" title="存在异常映射">0</span></button>
-        <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>连接</span></button>
+        <button type="button" class="tab active" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="true" aria-controls="tabDashboard"><span>概览</span></button>
+        <button type="button" class="tab" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="false" aria-controls="tabMappings" tabindex="-1"><span>端口映射</span><span id="issueBadge" class="issue-badge hidden" title="存在异常映射">0</span></button>
+        <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>节点</span></button>
         <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件</span></button>
       </div></nav>
       <div class="sidebar-static">实时指标</div>
@@ -842,17 +906,19 @@
       </section>
       <div class="sidebar-bottom"><span class="conn"><span id="statusDot" class="status-dot"></span><span id="statusText">查询中</span><span id="pathChip" class="path-chip" style="display:none"></span></span></div>
     </aside>
-    <main class="workarea"><div class="container">
+    <main class="workarea" id="mainContent" tabindex="-1"><div class="container">
     <div class="workspace-head">
       <div><p class="workspace-eyebrow">PowerMap / local control</p><h1 class="workspace-title" id="workspaceTitle">端口映射</h1><p class="workspace-subtitle" id="workspaceSubtitle">将本地端口安全地映射至内网服务。</p></div>
       <button id="newMappingBtn" class="btn btn-primary" type="button">+ 新建映射</button>
     </div>
+    <!-- Tab: 概览 -->
+    <div id="tabDashboard" class="tab-content" role="tabpanel" aria-labelledby="tab-dashboard" tabindex="0">
     <!-- 指标卡 -->
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-card-title">连接状态</div>
         <div class="stat-body">
-          <div class="stat-main" role="status" aria-live="polite"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div><div class="stat-uptime" id="mUptime" title="当前连接已保持时长"></div></div>
+          <div class="stat-main" role="status" aria-live="polite"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div><div id="mPeerList" class="connection-peers hidden"></div><div class="stat-uptime" id="mUptime" title="当前连接已保持时长"></div></div>
           <canvas class="stat-spark" id="mRttSpark" width="120" height="72" title="往返延迟趋势" aria-hidden="true" style="display:none"></canvas>
         </div>
       </div>
@@ -883,20 +949,21 @@
       <span class="ops-item" id="opsReconnectItem">重连 <b id="opsReconnects">0</b></span>
       <span class="ops-item" id="opsLimitItem">并发限流 <b id="opsOverLimit">0</b></span>
     </div>
+    </div>
 
     <!-- Tab: 端口映射 -->
-    <div id="tabMappings" class="tab-content" role="tabpanel" aria-labelledby="tab-mappings" tabindex="0">
-      <section id="onboarding" class="onboarding" aria-labelledby="onboardingTitle">
+    <div id="tabMappings" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-mappings" tabindex="0">
+      <section id="onboarding" class="onboarding hidden" aria-labelledby="onboardingTitle">
         <div class="onboarding-head">
-          <div><h2 id="onboardingTitle" class="onboarding-title">完成首次映射</h2><p class="onboarding-copy">按顺序完成接入、验证和创建；每一步都会保留在当前控制台中。</p></div>
+          <div><h2 id="onboardingTitle" class="onboarding-title">接入远端内网</h2><p class="onboarding-copy">此设备已处于 access 场景。粘贴对方提供的凭证，再验证并创建本地入口。</p></div>
         </div>
         <div class="onboarding-steps">
-          <div id="onboardingCredential" class="onboarding-step"><span class="onboarding-step-no">01 / 接入</span><strong>连接 server</strong><p>粘贴 server 提供的凭证。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="connection">去接入</button></div>
-          <div id="onboardingPreflight" class="onboarding-step"><span class="onboarding-step-no">02 / 验证</span><strong>检查目标服务</strong><p>由 server 端实际校验策略和拨号。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="mapping">去填写</button></div>
+          <div id="onboardingCredential" class="onboarding-step"><span class="onboarding-step-no">01 / 接入</span><strong>添加远端凭证</strong><p>粘贴 expose 设备提供的凭证。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="connection">添加凭证</button></div>
+          <div id="onboardingPreflight" class="onboarding-step"><span class="onboarding-step-no">02 / 验证</span><strong>检查目标服务</strong><p>由 expose 设备实际校验策略和拨号。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="mapping">去填写</button></div>
           <div id="onboardingMapping" class="onboarding-step"><span class="onboarding-step-no">03 / 创建</span><strong>添加本地入口</strong><p>通过验证后保存第一条映射。</p><button class="btn btn-primary btn-sm" type="button" data-onboarding="mapping">创建映射</button></div>
         </div>
       </section>
-      <div class="card mapping-editor" id="mappingEditor">
+      <div class="card mapping-editor hidden" id="mappingEditor">
         <div class="card-header"><span class="card-title" id="mappingEditorTitle">添加映射</span></div>
         <p class="hint">
           本地地址默认 <kbd>127.0.0.1</kbd>，也可填 <kbd>127.0.0.2</kbd> 这类 127/8 虚拟 IP。
@@ -909,18 +976,20 @@
         <form id="f">
           <div class="mapping-mode-row" role="radiogroup" aria-label="映射模式">
             <span class="lbl">模式</span>
-            <label class="mode-opt"><input type="radio" name="mode" value="tcp" checked /> <span>TCP</span></label>
-            <label class="mode-opt"><input type="radio" name="mode" value="udp" /> <span>UDP</span></label>
-            <label class="mode-opt"><input type="radio" name="mode" value="http" /> <span>HTTP 网关</span></label>
+            <span class="protocol-segmented">
+              <label class="mode-opt"><input type="radio" name="mode" value="tcp" checked /> <span>TCP</span></label>
+              <span id="advancedModes" class="hidden"><label class="mode-opt"><input type="radio" name="mode" value="udp" /> <span>UDP</span></label><label class="mode-opt" aria-label="HTTP 网关"><input type="radio" name="mode" value="http" /> <span>HTTP <span class="mode-http-detail">网关</span></span></label></span>
+              <button id="advancedModeBtn" class="advanced-mode-toggle" type="button" aria-controls="advancedModes" aria-expanded="false" aria-label="显示高级协议" title="显示高级协议"><span class="advanced-mode-label">高级协议</span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>
+            </span>
             <span id="modeHint" class="mode-hint">裸 TCP 透传，适用于数据库、SSH、Web 等大多数服务。</span>
           </div>
-          <div class="field mapping-name-field"><span class="lbl">名称（可选）</span><input name="name" placeholder="例如 Redis 主库" maxlength="60" autocomplete="off" /></div>
+          <div class="field mapping-name-field"><label class="lbl" for="mf-name">名称（可选）</label><input id="mf-name" name="name" placeholder="例如 Redis 主库" maxlength="60" autocomplete="off" spellcheck="false" /></div>
           <div class="grid mapping">
-            <div class="field"><span class="lbl">本地地址</span><input name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" required /></div>
-            <div class="field"><span class="lbl">本地端口</span><input name="localPort" class="mono" type="number" placeholder="8080" required /></div>
+            <div class="field"><label class="lbl" for="mf-localAddr">本地地址</label><input id="mf-localAddr" name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" spellcheck="false" autocomplete="off" required /></div>
+            <div class="field"><label class="lbl" for="mf-localPort">本地端口</label><input id="mf-localPort" name="localPort" class="mono" type="number" placeholder="8080" required /></div>
             <div class="arrow">→</div>
-            <div class="field"><span class="lbl" id="hostLbl">目标主机</span><input name="host" class="mono" placeholder="192.168.1.101" required /></div>
-            <div class="field"><span class="lbl" id="portLbl">目标端口</span><input name="port" class="mono" type="number" placeholder="6379" required /></div>
+            <div class="field"><label class="lbl" id="hostLbl" for="mf-host">目标主机</label><input id="mf-host" name="host" class="mono" placeholder="192.168.1.101" spellcheck="false" autocomplete="off" required /></div>
+            <div class="field"><label class="lbl" id="portLbl" for="mf-port">目标端口</label><input id="mf-port" name="port" class="mono" type="number" placeholder="6379" required /></div>
             <div class="mapping-actions"><button id="cancelEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="preflightBtn" class="btn btn-outline" type="button">测试目标</button><button id="submitMappingBtn" type="submit" class="btn btn-primary">添加映射</button></div>
           </div>
           <div id="httpRoutes" class="http-routes hidden">
@@ -947,12 +1016,13 @@
     <div id="tabConnection" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-connection" tabindex="0">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">连接设置</span>
+          <span class="card-title">节点</span>
           <div class="card-actions">
             <button id="exportBtn" class="btn btn-outline btn-sm" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
               导出配置
             </button>
+            <button id="copyConfigBtn" class="btn btn-outline btn-sm" type="button">复制配置</button>
             <button id="importBtn" class="btn btn-outline btn-sm" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               导入配置
@@ -964,31 +1034,41 @@
             </button>
           </div>
         </div>
-        <div class="cred-status">
-          <span id="credBadge" class="badge no">未配置</span>
-          <span id="credNode" class="node-id"></span>
-          <button id="copyNode" class="btn btn-outline btn-sm" type="button" style="display:none">复制 node_id</button>
-          <button id="copyToken" class="btn btn-outline btn-sm" type="button" style="display:none">复制 token</button>
+        <div class="node-tabs" role="tablist" aria-label="节点类型">
+          <button class="node-tab" type="button" role="tab" id="node-tab-remote" aria-controls="nodeRemotePanel" aria-selected="true">远端节点</button>
+          <button class="node-tab" type="button" role="tab" id="node-tab-local" aria-controls="nodeLocalPanel" aria-selected="false" tabindex="-1">本机节点</button>
         </div>
-        <p class="hint" style="margin-bottom:12px">
-          粘贴 server 端 <kbd>credential.json</kbd> 内容，或在下方分栏填写 node_id 与 token。接入后即时切换连接目标并重连。
-        </p>
-        <form id="credForm">
+        <section id="nodeRemotePanel" class="node-panel node-table" role="tabpanel" aria-labelledby="node-tab-remote">
+          <div class="node-table-head"><span id="remoteNodeTitle" class="node-table-title">远端节点</span></div>
+          <p class="node-table-copy">粘贴对方 expose 设备生成的 <kbd>powermap.credential.json</kbd> 内容，接入后立即切换连接目标并重连。</p>
+          <div class="cred-status">
+            <span id="credBadge" class="badge no">未配置</span>
+            <span id="credNode" class="node-id"></span>
+            <button id="copyNode" class="btn btn-outline btn-sm" type="button" style="display:none">复制 node_id</button>
+            <button id="copyToken" class="btn btn-outline btn-sm" type="button" style="display:none">复制 token</button>
+          </div>
+          <form id="credForm">
           <div class="field" style="margin-bottom:12px">
-            <span class="lbl">凭证 JSON</span>
-            <textarea id="credJson" placeholder='{"node_id":"3b23...","token":"991f..."}'></textarea>
+            <label class="lbl" for="credJson">凭证 JSON</label>
+            <textarea id="credJson" placeholder='{"node_id":"3b23...","token":"991f..."}' spellcheck="false" autocomplete="off"></textarea>
           </div>
           <div class="grid cred">
-            <div class="field"><span class="lbl">node_id</span><input id="credNodeIn" class="mono" placeholder="3b2302e0..." /></div>
-            <div class="field"><span class="lbl">token</span><input id="credTokenIn" class="mono" placeholder="991fd0a3..." /></div>
+            <div class="field"><label class="lbl" for="credNodeIn">node_id</label><input id="credNodeIn" class="mono" placeholder="3b2302e0..." spellcheck="false" autocomplete="off" /></div>
+            <div class="field"><label class="lbl" for="credTokenIn">token</label><input id="credTokenIn" class="mono" placeholder="991fd0a3..." spellcheck="false" autocomplete="off" /></div>
             <button type="submit" class="btn btn-primary">接入 / 更新</button>
           </div>
-        </form>
+          </form>
+        </section>
+        <section id="nodeLocalPanel" class="node-panel node-table hidden" role="tabpanel" aria-labelledby="node-tab-local">
+          <div class="node-table-head"><span id="ownNodeTitle" class="node-table-title">本机节点</span><button id="copyOwnCredential" class="btn btn-outline btn-sm" type="button" style="display:none">复制分享凭证</button></div>
+          <p class="node-table-copy">把本机凭证交给对方，对方即可在自己的“远端节点”中接入。</p>
+          <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
+        </section>
         <hr class="divider-h" />
         <span id="ioMsg"></span>
       </div>
 
-      <div class="card">
+      <div class="card hidden">
         <div class="card-header">
           <span class="card-title">反向映射（把本机服务暴露给内网）</span>
           <label class="reverse-toggle"><input id="revEnabled" type="checkbox" /> <span>启用</span></label>
@@ -1000,8 +1080,8 @@
         </p>
         <form id="reverseForm">
           <div class="grid cred">
-            <div class="field"><span class="lbl">允许回拨网段（CIDR，逗号分隔）</span><input id="revNets" class="mono" placeholder="127.0.0.0/8, 192.168.1.0/24" /></div>
-            <div class="field"><span class="lbl">允许回拨端口（逗号分隔）</span><input id="revPorts" class="mono" placeholder="8080, 5900" /></div>
+            <div class="field"><label class="lbl" for="revNets">允许回拨网段（CIDR，逗号分隔）</label><input id="revNets" class="mono" placeholder="127.0.0.0/8, 192.168.1.0/24" spellcheck="false" autocomplete="off" autocapitalize="off" /></div>
+            <div class="field"><label class="lbl" for="revPorts">允许回拨端口（逗号分隔）</label><input id="revPorts" class="mono" placeholder="8080, 5900" spellcheck="false" autocomplete="off" /></div>
             <button type="submit" class="btn btn-primary">保存反向策略</button>
           </div>
         </form>
@@ -1131,6 +1211,20 @@ const modalEls = {
 };
 let modalResolve = null;
 let modalLastFocus = null;
+// ── 焦点陷阱：在开启的对话框内循环 Tab，防止焦点逃到背景。modal 与命令面板共用。 ──
+// 传入 dialog 容器与 keydown 事件；仅处理 Tab，其余按键交回各自处理器。
+function trapTab(container, e) {
+  if (e.key !== 'Tab') return;
+  const focusable = container.querySelectorAll(
+    'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  );
+  const visible = [...focusable].filter(el => el.offsetParent !== null || el === document.activeElement);
+  if (visible.length === 0) return;
+  const first = visible[0];
+  const last = visible[visible.length - 1];
+  if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+  else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+}
 function closeModal(value) {
   if (!modalResolve) return;
   const done = modalResolve; modalResolve = null;
@@ -1176,6 +1270,7 @@ modalEls.confirm.addEventListener('click', () => closeModal(modalValue()));
 modalEls.backdrop.addEventListener('mousedown', (e) => { if (e.target === modalEls.backdrop) closeModal(null); });
 document.addEventListener('keydown', (e) => {
   if (!modalResolve) return;
+  trapTab(modalEls.backdrop, e);
   const inTextarea = modalEls.field.style.display !== 'none';
   if (e.key === 'Escape') { e.preventDefault(); closeModal(null); }
   else if (e.key === 'Enter' && (!inTextarea || (e.metaKey || e.ctrlKey))) {
@@ -1207,14 +1302,16 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 
 // ── 标签页切换 ──
 const TAB_KEY = 'powermap_tab';
-const tabViews = { mappings: 'tabMappings', connection: 'tabConnection', events: 'tabEvents' };
+const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', connection: 'tabConnection', events: 'tabEvents' };
 const TAB_META = {
+  dashboard: { title: '概览', subtitle: '查看节点连接、映射隧道和实时流量。' },
   mappings: { title: '端口映射', subtitle: '将本地端口安全地映射至内网服务。' },
-  connection: { title: '连接设置', subtitle: '管理穿透端凭证与连接状态。' },
+  connection: { title: '节点', subtitle: '分享本机身份，或连接到其他节点。' },
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
 };
 function selectTab(name) {
-  if (!tabViews[name]) name = 'mappings';
+  if (!tabViews[name]) name = 'dashboard';
+  document.getElementById('mainPage').dataset.activeTab = name;
   for (const [k, id] of Object.entries(tabViews)) {
     document.getElementById(id).classList.toggle('hidden', k !== name);
   }
@@ -1224,7 +1321,7 @@ function selectTab(name) {
     b.setAttribute('aria-selected', on ? 'true' : 'false');
     b.tabIndex = on ? 0 : -1;
   });
-  const meta = TAB_META[name] || TAB_META.mappings;
+  const meta = TAB_META[name] || TAB_META.dashboard;
   document.getElementById('workspaceTitle').textContent = meta.title;
   document.getElementById('workspaceSubtitle').textContent = meta.subtitle;
   const newMapping = document.getElementById('newMappingBtn');
@@ -1251,8 +1348,29 @@ document.getElementById('tabBar').addEventListener('keydown', (e) => {
   selectTab(tabs[next].dataset.tab);
   tabs[next].focus();
 });
+function selectNodeTab(kind) {
+  const local = kind !== 'remote';
+  document.getElementById('nodeLocalPanel').classList.toggle('hidden', !local);
+  document.getElementById('nodeRemotePanel').classList.toggle('hidden', local);
+  for (const button of document.querySelectorAll('.node-tab')) {
+    const selected = button.id === (local ? 'node-tab-local' : 'node-tab-remote');
+    button.setAttribute('aria-selected', selected ? 'true' : 'false');
+    button.tabIndex = selected ? 0 : -1;
+  }
+}
+document.querySelector('.node-tabs').addEventListener('click', (e) => {
+  const button = e.target.closest('.node-tab');
+  if (button) selectNodeTab(button.id === 'node-tab-remote' ? 'remote' : 'local');
+});
+document.querySelector('.node-tabs').addEventListener('keydown', (e) => {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return;
+  e.preventDefault();
+  const remote = e.key === 'ArrowLeft' || e.key === 'Home';
+  selectNodeTab(remote ? 'remote' : 'local');
+  document.getElementById(remote ? 'node-tab-remote' : 'node-tab-local').focus();
+});
 window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
-selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'mappings');
+selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'dashboard');
 
 // ── 映射编辑器：新建 / 编辑双模式。editMode 为 null 表示新建，否则存原映射 local。 ──
 let editMode = null;
@@ -1269,7 +1387,9 @@ function openEditorForCreate() {
   form.elements.name.value = '';
   document.getElementById('routeRows').innerHTML = '';
   setMode('tcp');
+  setAdvancedModes(false);
   applyEditorMode();
+  editor.classList.remove('hidden');
   editor.classList.add('open');
   editor.querySelector('[name=localPort]').focus();
 }
@@ -1284,10 +1404,12 @@ function openEditorForEdit(local, host, port, name, mode, routes) {
   form.elements.host.value = host;
   form.elements.port.value = port;
   setMode(mode || 'tcp');
+  setAdvancedModes((mode || 'tcp') !== 'tcp');
   renderRouteRows(routes || []);
   latestPreflight = { key: '', ready: false };
   document.getElementById('preflightResult').classList.add('hidden');
   applyEditorMode();
+  editor.classList.remove('hidden');
   editor.classList.add('open');
   editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   form.elements.host.focus();
@@ -1305,10 +1427,12 @@ function openEditorForClone(local, host, port, name) {
   form.elements.host.value = host;
   form.elements.port.value = port;
   setMode('tcp');
+  setAdvancedModes(false);
   document.getElementById('routeRows').innerHTML = '';
   latestPreflight = { key: '', ready: false };
   document.getElementById('preflightResult').classList.add('hidden');
   applyEditorMode();
+  editor.classList.remove('hidden');
   editor.classList.add('open');
   editor.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   form.elements.localPort.focus();
@@ -1323,15 +1447,28 @@ function closeEditor() {
   applyEditorMode();
   document.getElementById('preflightResult').classList.add('hidden');
   document.getElementById('mappingEditor').classList.remove('open');
+  document.getElementById('mappingEditor').classList.add('hidden');
 }
 // 模式切换：UDP 无 HTTP 路由；HTTP 网关显示路由表并把"目标"改称"兜底后端"。
 function currentMode() {
   const el = document.querySelector('input[name=mode]:checked');
   return el ? el.value : 'tcp';
 }
+function setAdvancedModes(open) {
+  document.getElementById('advancedModes').classList.toggle('hidden', !open);
+  const button = document.getElementById('advancedModeBtn');
+  button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  button.setAttribute('aria-label', open ? '收起高级协议' : '显示高级协议');
+  button.title = open ? '收起高级协议' : '显示高级协议';
+}
+document.getElementById('advancedModeBtn').addEventListener('click', () => {
+  const panel = document.getElementById('advancedModes');
+  setAdvancedModes(panel.classList.contains('hidden'));
+});
 function setMode(mode) {
   const radio = document.querySelector(`input[name=mode][value="${mode}"]`);
   if (radio) radio.checked = true;
+  if (mode !== 'tcp') setAdvancedModes(true);
   applyModeUI();
 }
 function applyModeUI() {
@@ -1355,10 +1492,10 @@ function applyModeUI() {
 function routeRowHtml(r) {
   r = r || {};
   return `<div class="route-row">` +
-    `<input class="mono route-host" placeholder="grafana.local（留空=兜底）" value="${esc(r.host_match || '')}" maxlength="255" />` +
-    `<span class="route-arrow">→</span>` +
-    `<input class="mono route-thost" placeholder="192.168.1.10" value="${esc(r.target_host || '')}" maxlength="255" />` +
-    `<input class="mono route-tport" type="number" placeholder="3000" value="${r.target_port || ''}" />` +
+    `<input class="mono route-host" aria-label="匹配的 Host（留空为兜底）" placeholder="grafana.local（留空=兜底）" value="${esc(r.host_match || '')}" maxlength="255" spellcheck="false" autocomplete="off" autocapitalize="off" />` +
+    `<span class="route-arrow" aria-hidden="true">→</span>` +
+    `<input class="mono route-thost" aria-label="后端主机" placeholder="192.168.1.10" value="${esc(r.target_host || '')}" maxlength="255" spellcheck="false" autocomplete="off" autocapitalize="off" />` +
+    `<input class="mono route-tport" aria-label="后端端口" type="number" placeholder="3000" value="${r.target_port || ''}" />` +
     `<button type="button" class="btn-quiet route-del">删除</button></div>`;
 }
 function renderRouteRows(routes) {
@@ -1603,6 +1740,18 @@ async function copyText(t) {
 
 // ── 连接设置：凭证状态 / 复制 / 接入 ──
 let curCred = { node_id: '', token: '', configured: false, token_hidden: false, published_targets: [] };
+let ownCredential = null;
+async function refreshOwnNode() {
+  try {
+    const node = await (await api('/api/node')).json();
+    ownCredential = node.credential || null;
+    const badge = document.getElementById('ownNodeBadge');
+    badge.textContent = node.configured ? '可分享' : '准备中';
+    badge.className = 'badge ' + (node.configured ? 'ok' : 'no');
+    document.getElementById('ownNodeId').innerHTML = node.node_id ? ('<b>node_id</b> ' + esc(node.node_id)) : '正在初始化本机身份…';
+    document.getElementById('copyOwnCredential').style.display = ownCredential ? '' : 'none';
+  } catch (e) { if (String(e) === 'Error: unauthorized') return; }
+}
 async function refreshCred() {
   try {
     const c = await (await api('/api/credential')).json();
@@ -1617,6 +1766,23 @@ async function refreshCred() {
     return c;
   } catch (e) { if (String(e) === 'Error: unauthorized') return null; }
 }
+function renderConnectedPeers(connected, ips) {
+  const list = document.getElementById('mPeerList');
+  const unique = [...new Set(Array.isArray(ips) ? ips.filter(Boolean) : [])];
+  list.replaceChildren();
+  if (!connected) { list.classList.add('hidden'); return; }
+  list.classList.remove('hidden');
+  const label = document.createElement('span');
+  label.className = 'connection-peer-label';
+  label.textContent = unique.length ? '正在连接' : '正在连接远端节点（经中继）';
+  list.appendChild(label);
+  for (const ip of unique) {
+    const item = document.createElement('span');
+    item.className = 'connection-peer-ip';
+    item.textContent = ip;
+    list.appendChild(item);
+  }
+}
 document.getElementById('copyNode').addEventListener('click', async () => {
   const ok = await copyText(curCred.node_id || '');
   ioMsg(ok ? 'node_id 已复制' : '复制失败，请手动选取');
@@ -1624,6 +1790,10 @@ document.getElementById('copyNode').addEventListener('click', async () => {
 document.getElementById('copyToken').addEventListener('click', async () => {
   const ok = await copyText(curCred.token || '');
   ioMsg(ok ? 'token 已复制' : '复制失败，请手动选取');
+});
+document.getElementById('copyOwnCredential').addEventListener('click', async () => {
+  const ok = ownCredential && await copyText(JSON.stringify(ownCredential, null, 2));
+  ioMsg(ok ? '本机分享凭证已复制' : '复制失败，请稍后重试');
 });
 document.getElementById('credForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -1720,10 +1890,20 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
   const blob = await r.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'powermap-client.config.json';
+  a.href = url; a.download = 'powermap.config.json';
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
   ioMsg('配置已导出');
+});
+document.getElementById('copyConfigBtn').addEventListener('click', async () => {
+  const r = await api('/api/export');
+  if (!r.ok) { toast((await r.text()) || '读取配置失败', 'err'); return; }
+  const ok = await copyText(await r.text());
+  if (ok) {
+    ioMsg('配置已复制到剪贴板');
+  } else {
+    toast('复制失败，请使用导出配置', 'err');
+  }
 });
 document.getElementById('importBtn').addEventListener('click', () => {
   document.getElementById('importFile').click();
@@ -1920,12 +2100,11 @@ async function refresh() {
     const health = mappingState(s);
     const rowRate = rowRateHTML(m.local, s, elapsed);
     const active = Number(s.active_conns || 0);
-    // 活跃时把当前连接数并到状态标签，让用户看出“哪条映射正在忙”。
-    const label = health.state === 'active' && active > 0 ? `${health.label} · ${active} 连接` : health.label;
+    const label = health.label;
     const expanded = expandedRows.has(m.local);
-    // 有活跃连接时才让状态可点开明细；连接数用作可见的展开提示。
+    // 有活跃连接时才显示同一状态行内的明细入口。
     const connToggle = active > 0
-      ? `<button class="conn-expand${expanded ? ' open' : ''}" data-local="${esc(m.local)}" aria-expanded="${expanded ? 'true' : 'false'}" title="查看连接明细">${active} 连接 ▾</button>`
+      ? `<button class="conn-expand${expanded ? ' open' : ''}" data-local="${esc(m.local)}" aria-expanded="${expanded ? 'true' : 'false'}" title="查看连接明细">${active} 个连接<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>`
       : '';
     const tr = document.createElement('tr');
     if (!enabled) tr.className = 'is-disabled';
@@ -1938,7 +2117,7 @@ async function refresh() {
       : `<span class="map-local mono only">${esc(m.local)}${modeBadge}</span>`;
     tr.innerHTML = `<td class="mapcol">${nameCell}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
-                   `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span>${esc(label)}</span><span class="status-detail">${esc(health.detail)}</span>${connToggle}</td>` +
+                   `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span class="status-line"><span>${esc(label)}</span>${connToggle}</span><span class="status-detail">${esc(health.detail)}</span></td>` +
                    `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}${rowRate}<canvas class="row-spark" width="108" height="30" data-local="${esc(m.local)}" aria-hidden="true"></canvas></td>` +
                    `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}">${enabled ? '停用' : '启用'}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令">命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}" title="以此为模板新建">克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}">复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}">编辑</button><button class="btn-del" data-id="${esc(m.local)}">断开</button></span></td>`;
     $rows.appendChild(tr);
@@ -2183,7 +2362,7 @@ function updateOnboarding(list) {
   setOnboardingStep('onboardingCredential', curCred.configured);
   setOnboardingStep('onboardingPreflight', latestPreflight.ready);
   setOnboardingStep('onboardingMapping', mappingDone);
-  document.getElementById('onboarding').classList.toggle('hidden', curCred.configured && mappingDone);
+  document.getElementById('onboarding').classList.add('hidden');
 }
 document.querySelectorAll('[data-onboarding]').forEach(button => button.addEventListener('click', () => {
   const target = button.dataset.onboarding;
@@ -2280,6 +2459,12 @@ async function refreshStatus() {
     if (!s.configured) { cls = ''; label = '未配置'; }
     else if (s.connected) { cls = 'ok'; label = '已连接'; }
     else { cls = 'warn'; label = '未连接'; }
+    const remoteBadge = document.getElementById('credBadge');
+    if (s.configured) {
+      remoteBadge.textContent = s.connected ? '已连接' : '未连接';
+      remoteBadge.className = 'badge ' + (s.connected ? 'ok' : 'no');
+    }
+    renderConnectedPeers(s.connected, s.connected_ips);
     dot.className = 'status-dot ' + cls;
     txt.textContent = label;
     mDot.className = 'status-dot ' + cls;
@@ -2306,6 +2491,7 @@ async function refreshStatus() {
     renderPathChip(pathChip, null, false);
     renderPathChip(mPathChip, null, false);
     renderUptime(null);
+    renderConnectedPeers(false, []);
     prevConnected = null;
     setTabTitle('err');
   }
@@ -2352,10 +2538,8 @@ function drawRttSpark() {
   });
   ctx.stroke();
 }
-// 标签页标题状态点：ok=已连接 warn=未连接 err=服务不可用 idle=未配置。
-const TITLE_DOT = { ok: '\u{1F7E2} ', warn: '\u{1F7E1} ', err: '\u{1F534} ', idle: '' };
 function setTabTitle(state) {
-  const next = (TITLE_DOT[state] || '') + 'PowerMap';
+  const next = 'PowerMap';
   if (document.title !== next) document.title = next;
 }
 function renderOps(s) {
@@ -2587,6 +2771,7 @@ function showShortcutHelp() {
 }
 
 refreshCred().then(refreshTargetCatalog);
+refreshOwnNode();
 refresh();
 refreshStatus();
 refreshReverse();
@@ -2601,6 +2786,7 @@ let pollPaused = localStorage.getItem(POLL_PAUSE_KEY) === '1';
 function poll() {
   refreshStatus();
   refresh();
+  refreshOwnNode();
   if (location.hash.slice(1) === 'events') refreshEvents();
 }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }

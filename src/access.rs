@@ -14,7 +14,7 @@
 //! - 可选 TLS（web_tls_cert/web_tls_key），远程管理时保护 Bearer token；
 //! - 映射条数与单映射并发连接数有上限，防止无限增长耗尽资源。
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -128,6 +128,42 @@ impl Link {
             Some(c) => c.close_reason().is_none(),
             None => false,
         }
+    }
+
+    /// 返回当前活跃连接可确认的远端直连 IP。中继地址不属于节点地址，故不在此返回。
+    async fn connected_ips(&self) -> Vec<String> {
+        let target = match self.creds.read().await.target {
+            Some(target) => target,
+            None => return Vec::new(),
+        };
+        let conn = {
+            let guard = self.conn.lock().await;
+            match guard.as_ref() {
+                Some(conn) if conn.close_reason().is_none() => conn.clone(),
+                _ => return Vec::new(),
+            }
+        };
+
+        let mut ips = BTreeSet::new();
+        for path in conn.paths().iter() {
+            if !path.is_selected() {
+                continue;
+            }
+            if let iroh::TransportAddr::Ip(addr) = path.remote_addr() {
+                ips.insert(addr.ip().to_string());
+            }
+        }
+        if let Some(info) = self.endpoint.remote_info(target).await {
+            for addr in info.addrs() {
+                if !matches!(addr.usage(), iroh::endpoint::TransportAddrUsage::Active) {
+                    continue;
+                }
+                if let iroh::TransportAddr::Ip(socket) = addr.addr() {
+                    ips.insert(socket.ip().to_string());
+                }
+            }
+        }
+        ips.into_iter().collect()
     }
 
     /// 当前到 B 的穿透质量快照：路径（direct / relay / unknown）、往返延迟、中继主机。
@@ -649,6 +685,8 @@ struct Status {
     over_limit: u64,
     /// 当前连接建立时刻（unix 毫秒）；未连接时为 null，供管理页展示"已连接时长"。
     connected_since: Option<u64>,
+    /// 当前活跃连接中可确认的远端直连 IP；经中继时可能为空。
+    connected_ips: Vec<String>,
 }
 
 async fn status(State(st): State<AppState>) -> Json<Status> {
@@ -669,6 +707,11 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
     } else {
         None
     };
+    let connected_ips = if connected {
+        st.link.connected_ips().await
+    } else {
+        Vec::new()
+    };
     Json(Status {
         connected,
         configured: creds.target.is_some(),
@@ -684,6 +727,7 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
         reconnects: m.reconnects.load(Ordering::Relaxed),
         over_limit: m.over_limit.load(Ordering::Relaxed),
         connected_since,
+        connected_ips,
     })
 }
 
@@ -1370,6 +1414,19 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn status_exposes_connected_ip_list_for_the_console() {
+        let app = app(test_state("").await);
+        let response = app
+            .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert!(body["connected_ips"].as_array().is_some());
+    }
+
+    #[tokio::test]
     async fn credential_view_preserves_published_targets_for_the_console() {
         let state = test_state("").await;
         let node_id = state.link.endpoint.id().to_string();
@@ -1397,6 +1454,28 @@ mod integration_tests {
         let body = response_json(response).await;
         assert_eq!(body["published_targets"][0]["host"], "192.168.1.101");
         assert_eq!(body["published_targets"][0]["port"], 6379);
+    }
+
+    #[tokio::test]
+    async fn node_api_reads_the_local_share_credential() {
+        let state = test_state("").await;
+        let credential_path = state.config_path.with_file_name("powermap.credential.json");
+        std::fs::write(
+            &credential_path,
+            r#"{"node_id":"local-node","token":"local-token","published_targets":[]}"#,
+        )
+        .unwrap();
+
+        let response = app(state)
+            .oneshot(Request::get("/api/node").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = response_json(response).await;
+
+        assert_eq!(body["configured"], true);
+        assert_eq!(body["node_id"], "local-node");
+        assert_eq!(body["token"], "local-token");
+        std::fs::remove_file(credential_path).unwrap();
     }
 
     #[tokio::test]
@@ -2409,6 +2488,7 @@ fn app(state: AppState) -> Router {
         .route("/api/mappings/{id}", put(update).delete(remove))
         .route("/api/mappings/{id}/toggle", post(toggle))
         .route("/api/mappings/toggle-all", post(toggle_all))
+        .route("/api/node", get(get_node))
         .route("/api/credential", get(get_credential).post(set_credential))
         .route("/api/reverse", get(get_reverse).put(set_reverse))
         .route("/api/export", get(export_config))
@@ -2492,7 +2572,7 @@ async fn build_config(st: &AppState) -> config::AConfig {
 
 async fn save_config(st: &AppState) {
     let cfg = build_config(st).await;
-    if let Err(e) = config::save(&st.config_path, &cfg) {
+    if let Err(e) = config::save_access(&st.config_path, &cfg) {
         tracing::error!(error = %e, "保存配置失败");
     }
 }
@@ -2527,6 +2607,46 @@ struct CredentialView {
     token: String,
     token_hidden: bool,
     published_targets: Vec<config::PublishedTarget>,
+}
+
+/// 当前节点的可分享凭证。expose 启动完成前没有凭证时返回 configured=false，
+/// 控制台下一次轮询会自动刷新。
+#[derive(Serialize)]
+struct NodeView {
+    configured: bool,
+    node_id: String,
+    token: String,
+    token_hidden: bool,
+    credential: Option<tunnel::Credential>,
+}
+
+/// GET /api/node —— 读取本机 expose 写出的凭证，供控制台展示和一键复制。
+async fn get_node(State(st): State<AppState>) -> Json<NodeView> {
+    let path = st.config_path.with_file_name("powermap.credential.json");
+    let credential = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|body| serde_json::from_str::<tunnel::Credential>(&body).ok());
+    let expose = token_exposable(&st);
+    match credential {
+        Some(credential) => Json(NodeView {
+            configured: true,
+            node_id: credential.node_id.clone(),
+            token: if expose {
+                credential.token.clone()
+            } else {
+                String::new()
+            },
+            token_hidden: !expose,
+            credential: expose.then_some(credential),
+        }),
+        None => Json(NodeView {
+            configured: false,
+            node_id: String::new(),
+            token: String::new(),
+            token_hidden: false,
+            credential: None,
+        }),
+    }
 }
 
 /// GET /api/credential —— 供网页查看/复制当前凭证。
@@ -2598,7 +2718,7 @@ async fn export_config(State(st): State<AppState>) -> Response {
                 ("content-type", "application/json"),
                 (
                     "content-disposition",
-                    "attachment; filename=\"powermap-client.config.json\"",
+                    "attachment; filename=\"powermap.config.json\"",
                 ),
             ],
             body,
@@ -2827,7 +2947,7 @@ pub async fn run(
         );
     }
 
-    config::save(&config_path, &cfg)?;
+    config::save_access(&config_path, &cfg)?;
     tracing::info!("配置文件: {}", config_path.display());
 
     let metrics = Metrics::new();

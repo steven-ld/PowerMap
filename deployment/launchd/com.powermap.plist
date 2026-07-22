@@ -3,10 +3,10 @@
 <plist version="1.0">
 <dict>
   <key>Label</key>
-  <string>com.powermap.client</string>
+  <string>com.powermap</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/powermap-client</string>
+    <string>/usr/local/bin/powermap</string>
   </array>
   <key>RunAtLoad</key>
   <true/>
@@ -20,8 +20,8 @@
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>
-  <string>/Users/REPLACE_ME/Library/Logs/PowerMap/powermap-client.log</string>
+  <string>/Users/REPLACE_ME/Library/Logs/PowerMap/powermap.log</string>
   <key>StandardErrorPath</key>
-  <string>/Users/REPLACE_ME/Library/Logs/PowerMap/powermap-client.log</string>
+  <string>/Users/REPLACE_ME/Library/Logs/PowerMap/powermap.log</string>
 </dict>
 </plist>
