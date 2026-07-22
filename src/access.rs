@@ -21,7 +21,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
@@ -526,6 +526,8 @@ struct Inner {
 type DomainListenerFuture = Pin<Box<dyn Future<Output = io::Result<TcpListener>> + Send>>;
 type DomainListenerFactory = Arc<dyn Fn() -> DomainListenerFuture + Send + Sync>;
 type DomainAdminCheck = Arc<dyn Fn() -> Result<(), DomainAuthorityError> + Send + Sync>;
+type DomainPreflightFuture = Pin<Box<dyn Future<Output = Result<(), (StatusCode, String)>> + Send>>;
+type DomainPreflight = Arc<dyn Fn(&config::DomainMapping) -> DomainPreflightFuture + Send + Sync>;
 
 /// Why this process cannot safely manage the system-level domain mapping resources.
 #[derive(Debug, Clone, Copy)]
@@ -571,6 +573,14 @@ fn system_domain_listener() -> DomainListenerFactory {
     Arc::new(|| Box::pin(async { TcpListener::bind("127.0.0.1:443").await }))
 }
 
+fn domain_preflight(link: Link) -> DomainPreflight {
+    Arc::new(move |mapping| {
+        let link = link.clone();
+        let mapping = mapping.clone();
+        Box::pin(async move { preflight_domain_mapping(&link, &mapping).await })
+    })
+}
+
 /// Runtime state for a domain mapping. It is intentionally separate from ordinary port mappings:
 /// its listener always belongs to loopback HTTPS and its hosts ownership must be tracked.
 struct DomainMappingHandle {
@@ -578,7 +588,7 @@ struct DomainMappingHandle {
     task: JoinHandle<()>,
     stats: Arc<Stats>,
     cancel: CancellationToken,
-    hosts_managed: bool,
+    hosts_managed: Arc<AtomicBool>,
     local_listener: bool,
     last_error: Arc<RwLock<Option<String>>>,
 }
@@ -597,9 +607,11 @@ struct AppState {
     max_mappings: usize,
     max_conns_per_mapping: usize,
     domains: Arc<Mutex<DomainInner>>,
+    domain_operations: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     hosts: HostsStore,
     domain_listener: DomainListenerFactory,
     domain_admin_check: DomainAdminCheck,
+    domain_preflight: DomainPreflight,
     config_path: PathBuf,
     metrics: Arc<Metrics>,
     events: Arc<EventLog>,
@@ -840,6 +852,7 @@ mod integration_tests {
             domains: Arc::new(Mutex::new(DomainInner {
                 mappings: HashMap::new(),
             })),
+            domain_operations: Arc::new(Mutex::new(HashMap::new())),
             hosts: {
                 let path = std::env::temp_dir().join(format!("powermap-hosts-test-{suffix}"));
                 std::fs::write(&path, "").unwrap();
@@ -849,6 +862,14 @@ mod integration_tests {
                 Box::pin(async { TcpListener::bind("127.0.0.1:0").await })
             }),
             domain_admin_check: Arc::new(|| Ok(())),
+            domain_preflight: Arc::new(|_| {
+                Box::pin(async {
+                    Err((
+                        StatusCode::BAD_GATEWAY,
+                        "test state has no configured domain preflight".into(),
+                    ))
+                })
+            }),
             config_path: std::env::temp_dir().join(format!("powermap-client-test-{suffix}.toml")),
             metrics: Metrics::new(),
             events: EventLog::new(200),
@@ -982,6 +1003,117 @@ mod integration_tests {
         )
         .await;
         assert_eq!(listed[0]["enabled"], false);
+    }
+
+    #[tokio::test]
+    async fn failed_disable_cleanup_preserves_retryable_hosts_error_state() {
+        let mut state = test_state("").await;
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let original_hosts = state.hosts.clone();
+        let mapping = config::DomainMapping::new("api.example.test");
+        let handle = start_domain_mapping_owned(&state, mapping.clone())
+            .await
+            .unwrap();
+        state
+            .domains
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.domain.clone(), handle);
+        assert!(original_hosts.has_loopback(&mapping.domain).unwrap());
+
+        // Simulate a hosts store that fails during cleanup after a successful activation.
+        let missing_hosts = state.config_path.with_extension("missing-hosts");
+        let _ = std::fs::remove_file(&missing_hosts);
+        state.hosts = HostsStore::at(missing_hosts);
+        let response = toggle_domain_mapping(State(state.clone()), Path(mapping.domain.clone()))
+            .await
+            .unwrap()
+            .0;
+        assert!(!response.enabled);
+        assert!(response.hosts_managed);
+        assert!(response.last_error.is_some());
+
+        let status = list_domain_mappings(State(state.clone())).await.0;
+        assert!(status[0].hosts_managed);
+        assert!(status[0].last_error.as_deref().unwrap().contains("hosts"));
+        let mut saved = build_config(&state).await;
+        assert!(!saved.domain_mappings[0].enabled);
+
+        // A restarted runtime can detect the retained exact marker and presents it for retry.
+        let mut restarted = test_state("").await;
+        restarted.hosts = original_hosts;
+        let recovered = start_domain_mapping_owned(&restarted, saved.domain_mappings.remove(0))
+            .await
+            .unwrap();
+        let recovered_status = domain_status(&recovered).await;
+        assert!(recovered_status.hosts_managed);
+        assert!(recovered_status.last_error.is_some());
+    }
+
+    #[tokio::test]
+    async fn concurrent_create_does_not_rollback_the_published_mapping_hosts_marker() {
+        use std::sync::atomic::AtomicUsize;
+
+        let mut state = test_state("admin-token").await;
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let hosts = state.hosts.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_entered = Arc::new(tokio::sync::Notify::new());
+        let release_first = Arc::new(tokio::sync::Notify::new());
+        state.domain_listener = {
+            let calls = calls.clone();
+            let first_entered = first_entered.clone();
+            let release_first = release_first.clone();
+            Arc::new(move || {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                let first_entered = first_entered.clone();
+                let release_first = release_first.clone();
+                Box::pin(async move {
+                    if call == 0 {
+                        first_entered.notify_one();
+                        release_first.notified().await;
+                        TcpListener::bind("127.0.0.1:0").await
+                    } else {
+                        Err(io::Error::new(
+                            io::ErrorKind::AddrInUse,
+                            "simulated bind conflict",
+                        ))
+                    }
+                })
+            })
+        };
+        let app = app(state);
+        let first_app = app.clone();
+        let first = tokio::spawn(async move {
+            first_app
+                .oneshot(authenticated_post(
+                    "/api/domain-mappings",
+                    r#"{"domain":"api.example.test"}"#,
+                ))
+                .await
+                .unwrap()
+        });
+        first_entered.notified().await;
+
+        let second_app = app.clone();
+        let second = tokio::spawn(async move {
+            second_app
+                .oneshot(authenticated_post(
+                    "/api/domain-mappings",
+                    r#"{"domain":"api.example.test"}"#,
+                ))
+                .await
+                .unwrap()
+        });
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        release_first.notify_one();
+
+        assert_eq!(first.await.unwrap().status(), StatusCode::OK);
+        assert_eq!(second.await.unwrap().status(), StatusCode::CONFLICT);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(hosts.has_loopback("api.example.test").unwrap());
     }
 
     fn http_mapping(routes: Vec<config::HttpRoute>) -> config::Mapping {
@@ -1819,7 +1951,7 @@ async fn domain_status(handle: &DomainMappingHandle) -> DomainMappingStatus {
         domain: mapping.domain.clone(),
         remote_port: mapping.remote_port,
         enabled: mapping.enabled,
-        hosts_managed: handle.hosts_managed,
+        hosts_managed: handle.hosts_managed.load(Ordering::Relaxed),
         local_listener: handle.local_listener && diagnostics.listener_active,
         last_error: handle.last_error.read().await.clone(),
     }
@@ -1886,7 +2018,7 @@ fn disabled_domain_handle(
         task,
         stats,
         cancel,
-        hosts_managed,
+        hosts_managed: Arc::new(AtomicBool::new(hosts_managed)),
         local_listener: false,
         last_error: Arc::new(RwLock::new(last_error)),
     }
@@ -1895,17 +2027,17 @@ fn disabled_domain_handle(
 /// Preflight runs through the existing expose TCP path, so DNS and policy are evaluated from
 /// the expose network. The opened stream is dropped immediately; TLS bytes are never read.
 async fn preflight_domain_mapping(
-    st: &AppState,
+    link: &Link,
     mapping: &config::DomainMapping,
 ) -> Result<(), (StatusCode, String)> {
     let request = proto::OpenRequest {
-        token: st.link.token().await,
+        token: link.token().await,
         host: mapping.domain.clone(),
         port: mapping.remote_port,
         kind: proto::TunnelKind::Tcp,
         register: false,
     };
-    match tokio::time::timeout(Duration::from_secs(8), open_with_retry(&st.link, &request)).await {
+    match tokio::time::timeout(Duration::from_secs(8), open_with_retry(link, &request)).await {
         Ok(Ok((_send, _recv))) => Ok(()),
         Ok(Err(error)) => Err((
             StatusCode::BAD_GATEWAY,
@@ -1930,13 +2062,21 @@ async fn start_domain_mapping_owned(
     mapping: config::DomainMapping,
 ) -> Result<DomainMappingHandle, (StatusCode, String)> {
     if !mapping.enabled {
-        return Ok(disabled_domain_handle(mapping, false, None));
+        let (hosts_managed, last_error) = match st.hosts.has_loopback(&mapping.domain) {
+            Ok(true) => (
+                true,
+                Some("检测到 PowerMap hosts 条目，等待停用或删除时重试清理".into()),
+            ),
+            Ok(false) => (false, None),
+            Err(error) => (true, Some(format!("无法检查 hosts 清理状态：{error}"))),
+        };
+        return Ok(disabled_domain_handle(mapping, hosts_managed, last_error));
     }
     mapping
         .validate()
         .map_err(|reason| (StatusCode::BAD_REQUEST, reason))?;
     (st.domain_admin_check)().map_err(domain_authority_http)?;
-    preflight_domain_mapping(st, &mapping).await?;
+    (st.domain_preflight)(&mapping).await?;
 
     st.hosts
         .ensure_loopback(&mapping.domain)
@@ -2020,7 +2160,7 @@ async fn start_domain_mapping_owned(
         task,
         stats,
         cancel,
-        hosts_managed: true,
+        hosts_managed: Arc::new(AtomicBool::new(true)),
         local_listener: true,
         last_error: Arc::new(RwLock::new(None)),
     })
@@ -2043,6 +2183,27 @@ async fn stop_domain_mapping(
     Ok(())
 }
 
+/// Serializes all ownership transitions for one domain. The marker and loopback listener are
+/// shared resources, so a competing create must not roll back a mapping that has just won them.
+async fn lock_domain_operation(st: &AppState, domain: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    let lock = {
+        let mut operations = st.domain_operations.lock().await;
+        operations
+            .entry(domain.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
+
+async fn record_domain_cleanup_failure(st: &AppState, domain: &str, error: String) {
+    let domains = st.domains.lock().await;
+    if let Some(handle) = domains.mappings.get(domain) {
+        handle.hosts_managed.store(true, Ordering::Relaxed);
+        *handle.last_error.write().await = Some(error);
+    }
+}
+
 async fn create_domain_mapping(
     State(st): State<AppState>,
     Json(body): Json<DomainMappingBody>,
@@ -2055,6 +2216,7 @@ async fn create_domain_mapping(
     mapping
         .validate()
         .map_err(|reason| (StatusCode::BAD_REQUEST, reason))?;
+    let _operation = lock_domain_operation(&st, &mapping.domain).await;
     if st
         .domains
         .lock()
@@ -2095,6 +2257,7 @@ async fn update_domain_mapping(
             "路径与请求体中的 domain 必须一致".into(),
         ));
     }
+    let _operation = lock_domain_operation(&st, &domain).await;
     let old_handle = {
         let domains = st.domains.lock().await;
         domains
@@ -2123,13 +2286,25 @@ async fn update_domain_mapping(
         return Ok(Json(status));
     }
     let handle = start_domain_mapping_owned(&st, mapping.clone()).await?;
-    let status = domain_status(&handle).await;
-    let old = st.domains.lock().await.mappings.insert(domain, handle);
+    let enabled = mapping.enabled;
+    let old = st
+        .domains
+        .lock()
+        .await
+        .mappings
+        .insert(domain.clone(), handle);
     if let Some(old) = old {
-        if let Err(error) = stop_domain_mapping(&st, old, !status.enabled).await {
+        if let Err(error) = stop_domain_mapping(&st, old, !enabled).await {
             tracing::error!(%error, "替换域名映射后清理旧 hosts 条目失败");
+            if !enabled {
+                record_domain_cleanup_failure(&st, &domain, error).await;
+            }
         }
     }
+    let status = {
+        let domains = st.domains.lock().await;
+        domain_status(domains.mappings.get(&domain).expect("域名映射仍存在")).await
+    };
     save_config(&st).await;
     Ok(Json(status))
 }
@@ -2138,6 +2313,7 @@ async fn toggle_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
+    let _operation = lock_domain_operation(&st, &domain).await;
     let previous = {
         let domains = st.domains.lock().await;
         domains
@@ -2154,13 +2330,25 @@ async fn toggle_domain_mapping(
         ..previous
     };
     let handle = start_domain_mapping_owned(&st, mapping).await?;
-    let status = domain_status(&handle).await;
-    let old = st.domains.lock().await.mappings.insert(domain, handle);
+    let enabled = handle.mapping.read().await.enabled;
+    let old = st
+        .domains
+        .lock()
+        .await
+        .mappings
+        .insert(domain.clone(), handle);
     if let Some(old) = old {
-        if let Err(error) = stop_domain_mapping(&st, old, !status.enabled).await {
+        if let Err(error) = stop_domain_mapping(&st, old, !enabled).await {
             tracing::error!(%error, "停用域名映射后清理 hosts 条目失败");
+            if !enabled {
+                record_domain_cleanup_failure(&st, &domain, error).await;
+            }
         }
     }
+    let status = {
+        let domains = st.domains.lock().await;
+        domain_status(domains.mappings.get(&domain).expect("域名映射仍存在")).await
+    };
     save_config(&st).await;
     Ok(Json(status))
 }
@@ -2169,6 +2357,7 @@ async fn remove_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> impl IntoResponse {
+    let _operation = lock_domain_operation(&st, &domain).await;
     let handle = st.domains.lock().await.mappings.remove(&domain);
     match handle {
         Some(handle) => {
@@ -3607,12 +3796,14 @@ pub async fn run(
         domains: Arc::new(Mutex::new(DomainInner {
             mappings: HashMap::new(),
         })),
+        domain_operations: Arc::new(Mutex::new(HashMap::new())),
         // Unsupported platforms retain ordinary port mappings. Domain operations themselves
         // return a typed unsupported-platform error before this inert path can be used.
         hosts: HostsStore::system()
             .unwrap_or_else(|_| HostsStore::at("/unsupported/powermap-hosts")),
         domain_listener: system_domain_listener(),
         domain_admin_check: Arc::new(current_process_admin),
+        domain_preflight: domain_preflight(link.clone()),
         config_path: config_path.clone(),
         metrics: metrics.clone(),
         events: events.clone(),

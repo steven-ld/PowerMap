@@ -25,3 +25,9 @@
 - `git diff --check`
 
 The attempted combined command `cargo test config::tests domain_hosts::tests -- --nocapture` was rejected by Cargo because it accepts one test filter; both filters were then run separately and passed.
+
+## Review Follow-up
+
+- `failed_disable_cleanup_preserves_retryable_hosts_error_state` proves a failed disable keeps a disabled mapping with `hosts_managed = true` and an actionable error in both the response and persisted runtime configuration. A restarted runtime detects the retained exact marker and keeps the cleanup state visible for a later disable/delete retry.
+- `concurrent_create_does_not_rollback_the_published_mapping_hosts_marker` holds the first injected listener activation while a second create competes for the same domain. The per-domain operation lock admits only the first activation; the second returns conflict without invoking its simulated bind failure or removing the successful mapping's marker.
+- Follow-up verification: both focused regressions pass, and `cargo test --all-targets` passes with 71 tests.
