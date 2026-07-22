@@ -1041,7 +1041,7 @@
     <div id="tabDomains" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-domains" tabindex="0">
       <div class="card">
         <div class="card-header"><span class="card-title">新建域名映射</span></div>
-        <p class="domain-notice"><strong>需要管理员权限。</strong> 创建或删除域名映射时，PowerMap 可能需要写入本机 hosts 文件并启动本地监听器；首次操作请按系统提示授权。</p>
+        <p class="domain-notice"><strong>需要管理员身份启动。</strong> 域名映射仅支持 macOS/Linux，且会修改本机 hosts 文件并监听 443。请先以管理员身份启动 PowerMap，并配置 <code>web_token</code> 后再创建。</p>
         <form id="domainForm">
           <div class="domain-form-grid">
             <div class="field"><label class="lbl" for="domainName">域名</label><input id="domainName" name="domain" class="mono" type="text" placeholder="app.internal.test" autocomplete="off" spellcheck="false" required /></div>
