@@ -274,13 +274,13 @@ impl AConfig {
             target.validate()?;
         }
         // 反向映射的允许网段必须是合法 CIDR；deny-all 语义下留空是合法的（表示全拒绝）。
-        for cidr in &self.reverse_allow_networks {
-            cidr.parse::<IpNet>()
-                .map_err(|_| format!("reverse_allow_networks 包含无效 CIDR: {cidr}"))?;
-        }
-        if self.reverse_allow_ports.contains(&0) {
-            return Err("reverse_allow_ports 不能包含 0".into());
-        }
+        // 只校验格式，空集=拒绝的语义留给运行期 ReversePolicy。
+        validate_allowlist(
+            "reverse_allow_networks",
+            "reverse_allow_ports",
+            &self.reverse_allow_networks,
+            &self.reverse_allow_ports,
+        )?;
         Ok(())
     }
 }
@@ -527,19 +527,40 @@ fn validate_reverse(
     Ok(())
 }
 
-fn validate_policy(
-    owner: &str,
+/// 校验一组「网段 CIDR + 端口」白名单：CIDR 必须可解析、端口不得为 0。
+///
+/// 这是正向（`allow_*`）与反向（`reverse_allow_*`）共用的底层校验；两者只是错误
+/// 文案里的字段名不同，因此把网段/端口的标签作为参数传入，保持各自原有的报错措辞。
+/// **注意**：本函数只校验「格式合法性」，不涉及空集语义（空=放行还是空=拒绝由运行期
+/// 的 `TargetPolicy` / `ReversePolicy` 决定），因此正反向都能安全共用。
+pub fn validate_allowlist(
+    net_label: &str,
+    port_label: &str,
     allow_networks: &[String],
     allow_ports: &[u16],
 ) -> std::result::Result<(), String> {
     for cidr in allow_networks {
         cidr.parse::<IpNet>()
-            .map_err(|_| format!("{owner} 的 allow_networks 包含无效 CIDR: {cidr}"))?;
+            .map_err(|_| format!("{net_label} 包含无效 CIDR: {cidr}"))?;
     }
     if allow_ports.contains(&0) {
-        return Err(format!("{owner} 的 allow_ports 不能包含 0"));
+        return Err(format!("{port_label} 不能包含 0"));
     }
     Ok(())
+}
+
+/// 正向目标白名单校验：沿用 `{owner} 的 allow_networks / allow_ports` 的报错措辞。
+fn validate_policy(
+    owner: &str,
+    allow_networks: &[String],
+    allow_ports: &[u16],
+) -> std::result::Result<(), String> {
+    validate_allowlist(
+        &format!("{owner} 的 allow_networks"),
+        &format!("{owner} 的 allow_ports"),
+        allow_networks,
+        allow_ports,
+    )
 }
 
 fn validate_published_targets(

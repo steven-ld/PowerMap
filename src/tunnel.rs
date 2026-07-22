@@ -71,29 +71,88 @@ pub fn token_ok(expected: &str, got: &str) -> bool {
     diff == 0
 }
 
-/// B 端目标访问策略：限制 token 持有者可拨号的内网范围。CIDR 在启动时解析一次。
+/// 网段+端口白名单的底层管道：只负责 CIDR 解析、成员判断、DNS 安全解析。
+///
+/// **不含任何"空集"策略**——空网段/空端口的含义（放行还是拒绝）由外层
+/// `TargetPolicy`（正向：空=放行）和 `ReversePolicy`（反向：空=拒绝）各自决定。
+/// 这样两种相反的安全语义保持显式、互不干扰，只共享解析与匹配这条管道。
 #[derive(Debug, Clone, Default)]
-pub struct TargetPolicy {
+struct Allowlist {
     nets: Vec<IpNet>,
     ports: Vec<u16>,
 }
 
-impl TargetPolicy {
-    /// 从配置的字符串/端口列表构建；解析失败的 CIDR 会被记日志后跳过。
-    pub fn from_config(allow_networks: &[String], allow_ports: &[u16]) -> Self {
+impl Allowlist {
+    /// 从配置的字符串/端口列表构建；解析失败的 CIDR 记日志后跳过。
+    /// `ctx` 仅用于日志，标明是正向还是反向白名单。
+    fn from_config(allow_networks: &[String], allow_ports: &[u16], ctx: &str) -> Self {
         let nets = allow_networks
             .iter()
             .filter_map(|s| match s.parse::<IpNet>() {
                 Ok(n) => Some(n),
                 Err(_) => {
-                    tracing::warn!(cidr = %s, "无法解析允许网段，已忽略");
+                    tracing::warn!(cidr = %s, ctx, "无法解析 CIDR，已忽略");
                     None
                 }
             })
             .collect();
-        TargetPolicy {
+        Allowlist {
             nets,
             ports: allow_ports.to_vec(),
+        }
+    }
+
+    fn nets_empty(&self) -> bool {
+        self.nets.is_empty()
+    }
+
+    fn ports_empty(&self) -> bool {
+        self.ports.is_empty()
+    }
+
+    fn contains_port(&self, port: u16) -> bool {
+        self.ports.contains(&port)
+    }
+
+    fn contains_ip(&self, ip: IpAddr) -> bool {
+        self.nets.iter().any(|n| n.contains(&ip))
+    }
+
+    /// 纯 DNS 解析（只解析这一次，供调用方直接拨号返回的地址，避免 DNS 重绑定 TOCTOU）。
+    /// 不做任何白名单判断——是否放行由调用方按各自空集语义决定。
+    async fn resolve(&self, host: &str, port: u16) -> std::result::Result<Vec<SocketAddr>, String> {
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|e| format!("解析 {host} 失败: {e}"))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(format!("解析 {host} 无结果"));
+        }
+        Ok(addrs)
+    }
+
+    /// 过滤到落在允许网段内的地址。调用方需自行判断 nets 为空时的语义。
+    fn filter_to_nets(&self, addrs: Vec<SocketAddr>) -> Vec<SocketAddr> {
+        addrs
+            .into_iter()
+            .filter(|sa| self.contains_ip(sa.ip()))
+            .collect()
+    }
+}
+
+/// B 端目标访问策略：限制 token 持有者可拨号的内网范围。CIDR 在启动时解析一次。
+///
+/// **正向语义**：空网段/空端口 = 放行全部（默认放开，由 B 端管理员显式收紧）。
+#[derive(Debug, Clone, Default)]
+pub struct TargetPolicy {
+    inner: Allowlist,
+}
+
+impl TargetPolicy {
+    /// 从配置的字符串/端口列表构建；解析失败的 CIDR 会被记日志后跳过。
+    pub fn from_config(allow_networks: &[String], allow_ports: &[u16]) -> Self {
+        TargetPolicy {
+            inner: Allowlist::from_config(allow_networks, allow_ports, "allow_networks"),
         }
     }
 
@@ -114,34 +173,26 @@ impl TargetPolicy {
         if !self.port_allowed(port) {
             return Err(format!("目标端口 {port} 不在允许列表"));
         }
-        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|e| format!("解析 {host} 失败: {e}"))?
-            .collect();
-        if addrs.is_empty() {
-            return Err(format!("解析 {host} 无结果"));
-        }
-        if self.nets.is_empty() {
+        let addrs = self.inner.resolve(host, port).await?;
+        // 正向语义：网段为空即放行全部解析结果。
+        if self.inner.nets_empty() {
             return Ok(addrs);
         }
-        let allowed: Vec<SocketAddr> = addrs
-            .into_iter()
-            .filter(|sa| self.ip_allowed(sa.ip()))
-            .collect();
+        let allowed = self.inner.filter_to_nets(addrs);
         if allowed.is_empty() {
             return Err(format!("{host} 解析结果均不在允许网段"));
         }
         Ok(allowed)
     }
 
-    /// 端口是否允许（纯函数，便于测试）。
+    /// 端口是否允许（纯函数，便于测试）。未配端口时全部允许。
     pub fn port_allowed(&self, port: u16) -> bool {
-        self.ports.is_empty() || self.ports.contains(&port)
+        self.inner.ports_empty() || self.inner.contains_port(port)
     }
 
     /// 某 IP 是否落在允许网段内（纯函数，便于测试）。未配网段时全部允许。
     pub fn ip_allowed(&self, ip: IpAddr) -> bool {
-        self.nets.is_empty() || self.nets.iter().any(|n| n.contains(&ip))
+        self.inner.nets_empty() || self.inner.contains_ip(ip)
     }
 }
 
@@ -202,27 +253,15 @@ impl ClientRegistry {
 #[derive(Debug, Clone, Default)]
 pub struct ReversePolicy {
     enabled: bool,
-    nets: Vec<IpNet>,
-    ports: Vec<u16>,
+    inner: Allowlist,
 }
 
 impl ReversePolicy {
     /// 从 A 端配置构建。`enabled` 为总开关；网段/端口留空即 deny-all。
     pub fn from_config(enabled: bool, allow_networks: &[String], allow_ports: &[u16]) -> Self {
-        let nets = allow_networks
-            .iter()
-            .filter_map(|s| match s.parse::<IpNet>() {
-                Ok(n) => Some(n),
-                Err(_) => {
-                    tracing::warn!(cidr = %s, "反向策略：无法解析 CIDR，已忽略");
-                    None
-                }
-            })
-            .collect();
         ReversePolicy {
             enabled,
-            nets,
-            ports: allow_ports.to_vec(),
+            inner: Allowlist::from_config(allow_networks, allow_ports, "reverse_allow_networks"),
         }
     }
 
@@ -233,28 +272,20 @@ impl ReversePolicy {
         host: &str,
         port: u16,
     ) -> std::result::Result<Vec<SocketAddr>, String> {
+        // 反向语义：总开关关闭、或网段/端口任一为空，一律拒绝（deny-all）。
         if !self.enabled {
             return Err("反向映射未启用（reverse_enabled = false）".into());
         }
-        if self.ports.is_empty() || self.nets.is_empty() {
+        if self.inner.ports_empty() || self.inner.nets_empty() {
             return Err(
                 "反向映射默认拒绝：需显式配置 reverse_allow_networks 与 reverse_allow_ports".into(),
             );
         }
-        if !self.ports.contains(&port) {
+        if !self.inner.contains_port(port) {
             return Err(format!("反向目标端口 {port} 不在 reverse_allow_ports 中"));
         }
-        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
-            .await
-            .map_err(|e| format!("解析 {host} 失败: {e}"))?
-            .collect();
-        if addrs.is_empty() {
-            return Err(format!("解析 {host} 无结果"));
-        }
-        let allowed: Vec<SocketAddr> = addrs
-            .into_iter()
-            .filter(|sa| self.nets.iter().any(|n| n.contains(&sa.ip())))
-            .collect();
+        let addrs = self.inner.resolve(host, port).await?;
+        let allowed = self.inner.filter_to_nets(addrs);
         if allowed.is_empty() {
             return Err(format!("{host} 解析结果均不在 reverse_allow_networks 内"));
         }

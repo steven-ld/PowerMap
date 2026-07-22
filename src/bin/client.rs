@@ -527,7 +527,10 @@ struct AppState {
 }
 
 /// A 端反向映射运行期配置。空网段/端口即 deny-all（见 [`tunnel::ReversePolicy`]）。
-#[derive(Clone, Default)]
+///
+/// 同时作为 `GET`/`PUT /api/reverse` 的 JSON 线格式：内存态与线格式字段完全一致，
+/// 故用同一个类型，避免内存态 / 视图两副本各自维护。
+#[derive(Clone, Default, Serialize, Deserialize)]
 struct ReverseConfig {
     enabled: bool,
     allow_networks: Vec<String>,
@@ -2442,47 +2445,27 @@ fn app(state: AppState) -> Router {
         .layer(from_fn_with_state(state, require_auth))
 }
 
-/// 反向映射策略的读写视图（GET/PUT /api/reverse）。
-#[derive(Serialize, Deserialize)]
-struct ReverseView {
-    /// 反向映射总开关。
-    enabled: bool,
-    /// 允许 A 端回拨的目标网段（CIDR）；空即 deny-all。
-    allow_networks: Vec<String>,
-    /// 允许 A 端回拨的目标端口；空即 deny-all。
-    allow_ports: Vec<u16>,
-}
-
 /// GET /api/reverse —— 读取当前反向映射策略（deny-all 语义）。
-async fn get_reverse(State(st): State<AppState>) -> Json<ReverseView> {
-    let r = st.reverse.read().await;
-    Json(ReverseView {
-        enabled: r.enabled,
-        allow_networks: r.allow_networks.clone(),
-        allow_ports: r.allow_ports.clone(),
-    })
+/// 直接返回运行期的 [`ReverseConfig`]（其 serde 表示即为 API 线格式）。
+async fn get_reverse(State(st): State<AppState>) -> Json<ReverseConfig> {
+    Json(st.reverse.read().await.clone())
 }
 
 /// PUT /api/reverse —— 更新反向映射策略并持久化。校验 CIDR 合法、端口非 0。
 /// 开关/白名单变更对后续新反向流即时生效（反向流建立时实时读取策略）。
 async fn set_reverse(
     State(st): State<AppState>,
-    Json(body): Json<ReverseView>,
-) -> Result<Json<ReverseView>, (StatusCode, String)> {
-    for cidr in &body.allow_networks {
-        if cidr.parse::<ipnet::IpNet>().is_err() {
-            return Err((StatusCode::BAD_REQUEST, format!("无效 CIDR: {cidr}")));
-        }
-    }
-    if body.allow_ports.contains(&0) {
-        return Err((StatusCode::BAD_REQUEST, "端口不能为 0".into()));
-    }
-    {
-        let mut r = st.reverse.write().await;
-        r.enabled = body.enabled;
-        r.allow_networks = body.allow_networks.clone();
-        r.allow_ports = body.allow_ports.clone();
-    }
+    Json(body): Json<ReverseConfig>,
+) -> Result<Json<ReverseConfig>, (StatusCode, String)> {
+    // 与 config::AConfig::validate 共用同一套格式校验（空集=拒绝的语义由运行期策略负责）。
+    config::validate_allowlist(
+        "reverse_allow_networks",
+        "reverse_allow_ports",
+        &body.allow_networks,
+        &body.allow_ports,
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    *st.reverse.write().await = body.clone();
     save_config(&st).await;
     st.events.push(
         "info",
