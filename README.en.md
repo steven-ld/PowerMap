@@ -272,6 +272,12 @@ reverse_enabled = false
 reverse_allow_networks = []   # empty = deny all
 reverse_allow_ports = []      # empty = deny all
 
+# Domain mapping: access this domain through the remote node (HTTPS 443 by default)
+[[access.domain_mappings]]
+domain = "ai-router.dl-aiot.com"
+remote_port = 443
+enabled = true
+
 # Plain TCP passthrough (default)
 [[access.mappings]]
 local = "127.0.0.1:6379"
@@ -298,7 +304,7 @@ routes = [
 
 ```
 
-An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. When set, the admin API accepts only `Authorization: Bearer <token>` and never `?token=`. The UI keeps a manually entered admin token only in current-page memory, so it must be entered again after a refresh. The access capability refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited.
+An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. When set, the admin API accepts only `Authorization: Bearer <token>` and never `?token=`. The UI keeps a manually entered admin token only in current-page memory, so it must be entered again after a refresh. The access capability refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. `max_conns_per_mapping = 0` means unlimited. Domain mappings require a lowercase fully qualified DNS name (no wildcards or IP literals); omitted `remote_port` defaults to HTTPS port `443`, and omitted `enabled` defaults to enabled.
 
 A mapping's `mode` defaults to `tcp` (plain passthrough); `udp` tunnels UDP datagrams; `http` enables a single-port HTTP gateway that matches each request's `Host` header against `routes` (up to 32), falling back to the mapping's own `host`/`port` when nothing matches (`routes` only apply in `http` mode).
 

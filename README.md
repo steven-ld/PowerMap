@@ -271,6 +271,12 @@ reverse_enabled = false
 reverse_allow_networks = []   # 留空 = 全部拒绝
 reverse_allow_ports = []      # 留空 = 全部拒绝
 
+# 域名映射：通过远端节点访问此域名（默认 HTTPS 443）
+[[access.domain_mappings]]
+domain = "ai-router.dl-aiot.com"
+remote_port = 443
+enabled = true
+
 # 默认 TCP 透传
 [[access.mappings]]
 local = "127.0.0.1:6379"
@@ -297,7 +303,7 @@ routes = [
 
 ```
 
-`web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。配置它后，管理 API 只能通过 `Authorization: Bearer <token>` 访问，不能使用 `?token=`。网页会在当前页面内存中临时保留手动输入的管理令牌，刷新页面后需要重新输入。非回环 `web_bind` 未设置 token、只设置一侧 TLS 文件、或只设置 `node_id`/`token` 时，access 能力会拒绝启动并指出配置项。`max_conns_per_mapping = 0` 表示不限制。
+`web_token` 为空表示管理页不鉴权；仅适用于默认本地监听。配置它后，管理 API 只能通过 `Authorization: Bearer <token>` 访问，不能使用 `?token=`。网页会在当前页面内存中临时保留手动输入的管理令牌，刷新页面后需要重新输入。非回环 `web_bind` 未设置 token、只设置一侧 TLS 文件、或只设置 `node_id`/`token` 时，access 能力会拒绝启动并指出配置项。`max_conns_per_mapping = 0` 表示不限制。域名映射要求小写的完整 DNS 域名（不接受通配符或 IP 地址）；省略 `remote_port` 时默认使用 HTTPS 的 `443`，省略 `enabled` 时默认启用。
 
 映射的 `mode` 省略时为 `tcp`（裸透传）；`udp` 走 UDP 数据报隧道；`http` 启用单端口 HTTP 网关，按请求 `Host` 头匹配 `routes`（最多 32 条），未命中则回落到该映射的 `host`/`port` 兜底后端（`routes` 仅在 `http` 模式有效）。
 

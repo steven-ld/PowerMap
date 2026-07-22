@@ -98,6 +98,59 @@ fn default_enabled() -> bool {
     true
 }
 
+fn default_https_port() -> u16 {
+    443
+}
+
+/// A domain name that should be exposed through the remote node.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DomainMapping {
+    /// Lowercase DNS domain name, for example "ai-router.dl-aiot.com".
+    pub domain: String,
+    /// Remote HTTPS port. Defaults to 443 for legacy-compatible concise config.
+    #[serde(default = "default_https_port")]
+    pub remote_port: u16,
+    /// Whether this mapping is active. Defaults to enabled when omitted.
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+}
+
+impl DomainMapping {
+    pub fn new(domain: impl Into<String>) -> Self {
+        Self {
+            domain: domain.into(),
+            remote_port: default_https_port(),
+            enabled: default_enabled(),
+        }
+    }
+
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let domain = self.domain.as_str();
+        if domain.is_empty() || domain.len() > 253 || !domain.contains('.') {
+            return Err("domain 必须是长度不超过 253 的完整 DNS 名称".into());
+        }
+        if domain.parse::<std::net::IpAddr>().is_ok() {
+            return Err("domain 不能是 IP 地址".into());
+        }
+        for label in domain.split('.') {
+            if label.is_empty()
+                || label.len() > 63
+                || label.starts_with('-')
+                || label.ends_with('-')
+                || !label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+            {
+                return Err("domain 必须由小写 DNS 标签组成".into());
+            }
+        }
+        if self.remote_port == 0 {
+            return Err("domain 的 remote_port 不能为 0".into());
+        }
+        Ok(())
+    }
+}
+
 /// B 端明确允许在 client 管理页中推荐的目标服务。
 ///
 /// 这不是一条额外的访问授权：实际拨号仍由 allow_networks / allow_ports
@@ -207,6 +260,9 @@ pub struct AConfig {
     /// 映射规则列表（持久化，重启自动恢复）
     #[serde(default)]
     pub mappings: Vec<Mapping>,
+    /// 域名映射规则（持久化，重启自动恢复）。
+    #[serde(default)]
+    pub domain_mappings: Vec<DomainMapping>,
     /// 从 B 端凭证带入的推荐目标；只用于管理页自动填写，不改变访问授权。
     #[serde(default)]
     pub published_targets: Vec<PublishedTarget>,
@@ -235,6 +291,7 @@ impl Default for AConfig {
             max_mappings: default_max_mappings(),
             max_conns_per_mapping: default_max_conns_per_mapping(),
             mappings: Vec::new(),
+            domain_mappings: Vec::new(),
             published_targets: Vec::new(),
             reverse_enabled: false,
             reverse_allow_networks: Vec::new(),
@@ -269,6 +326,9 @@ impl AConfig {
             if !locals.insert(&mapping.local) {
                 return Err(format!("本地监听地址 {} 重复", mapping.local));
             }
+        }
+        for mapping in &self.domain_mappings {
+            mapping.validate()?;
         }
         for target in &self.published_targets {
             target.validate()?;
@@ -951,11 +1011,33 @@ mod tests {
                 mode: MappingMode::Tcp,
                 routes: Vec::new(),
             }],
+            domain_mappings: vec![DomainMapping::new("ai-router.dl-aiot.com")],
             ..Default::default()
         };
         let s = toml::to_string(&cfg).unwrap();
         let back: AConfig = toml::from_str(&s).unwrap();
         assert_eq!(cfg, back);
+    }
+
+    #[test]
+    fn domain_mapping_roundtrips_and_defaults_to_https() {
+        let mapping = DomainMapping::new("ai-router.dl-aiot.com");
+        assert_eq!(mapping.remote_port, 443);
+        assert!(mapping.validate().is_ok());
+
+        let serialized = toml::to_string(&mapping).unwrap();
+        let roundtripped: DomainMapping = toml::from_str(&serialized).unwrap();
+        assert_eq!(mapping, roundtripped);
+
+        let defaults: DomainMapping = toml::from_str("domain = \"ai-router.dl-aiot.com\"").unwrap();
+        assert_eq!(defaults, mapping);
+    }
+
+    #[test]
+    fn domain_mapping_rejects_wildcards_ips_and_invalid_labels() {
+        for domain in ["*.example.com", "127.0.0.1", "-bad.example", "bad..example"] {
+            assert!(DomainMapping::new(domain).validate().is_err());
+        }
     }
 
     #[test]
@@ -965,6 +1047,7 @@ mod tests {
         assert_eq!(a.max_mappings, 256);
         assert_eq!(a.max_conns_per_mapping, 512);
         assert!(a.web_tls_cert.is_empty() && a.web_tls_key.is_empty());
+        assert!(a.domain_mappings.is_empty());
     }
 
     #[test]
