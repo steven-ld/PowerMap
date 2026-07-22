@@ -525,6 +525,8 @@ struct AppState {
     web_tls_key: String,
     max_mappings: usize,
     max_conns_per_mapping: usize,
+    /// Domain mappings are configured outside the port-mapping runtime and must survive saves.
+    domain_mappings: Vec<config::DomainMapping>,
     config_path: PathBuf,
     metrics: Arc<Metrics>,
     events: Arc<EventLog>,
@@ -762,6 +764,7 @@ mod integration_tests {
             web_tls_key: String::new(),
             max_mappings: 8,
             max_conns_per_mapping: 8,
+            domain_mappings: Vec::new(),
             config_path: std::env::temp_dir().join(format!("powermap-client-test-{suffix}.toml")),
             metrics: Metrics::new(),
             events: EventLog::new(200),
@@ -770,6 +773,23 @@ mod integration_tests {
             })),
             reverse: Arc::new(RwLock::new(ReverseConfig::default())),
         }
+    }
+
+    #[tokio::test]
+    async fn save_config_preserves_loaded_domain_mappings() {
+        let mut state = test_state("").await;
+        let domain_mappings = vec![config::DomainMapping::new("ai-router.dl-aiot.com")];
+        state.domain_mappings = domain_mappings.clone();
+
+        save_config(&state).await;
+
+        let saved = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config
+            .access
+            .unwrap();
+        assert_eq!(saved.domain_mappings, domain_mappings);
+        std::fs::remove_file(&state.config_path).unwrap();
     }
 
     async fn response_json(response: Response) -> Value {
@@ -2563,6 +2583,7 @@ async fn build_config(st: &AppState) -> config::AConfig {
         max_mappings: st.max_mappings,
         max_conns_per_mapping: st.max_conns_per_mapping,
         mappings,
+        domain_mappings: st.domain_mappings.clone(),
         published_targets,
         reverse_enabled: reverse.enabled,
         reverse_allow_networks: reverse.allow_networks,
@@ -2976,6 +2997,7 @@ pub async fn run(
         web_tls_key: cfg.web_tls_key.clone(),
         max_mappings: cfg.max_mappings,
         max_conns_per_mapping: cfg.max_conns_per_mapping,
+        domain_mappings: cfg.domain_mappings.clone(),
         config_path: config_path.clone(),
         metrics: metrics.clone(),
         events: events.clone(),
