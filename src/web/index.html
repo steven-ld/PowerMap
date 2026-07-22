@@ -866,14 +866,25 @@
           <div id="targetOptions" class="target-options"></div>
         </section>
         <form id="f">
+          <div class="mapping-mode-row" role="radiogroup" aria-label="映射模式">
+            <span class="lbl">模式</span>
+            <label class="mode-opt"><input type="radio" name="mode" value="tcp" checked /> <span>TCP</span></label>
+            <label class="mode-opt"><input type="radio" name="mode" value="udp" /> <span>UDP</span></label>
+            <label class="mode-opt"><input type="radio" name="mode" value="http" /> <span>HTTP 网关</span></label>
+            <span id="modeHint" class="mode-hint">裸 TCP 透传，适用于数据库、SSH、Web 等大多数服务。</span>
+          </div>
           <div class="field mapping-name-field"><span class="lbl">名称（可选）</span><input name="name" placeholder="例如 Redis 主库" maxlength="60" autocomplete="off" /></div>
           <div class="grid mapping">
             <div class="field"><span class="lbl">本地地址</span><input name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" required /></div>
             <div class="field"><span class="lbl">本地端口</span><input name="localPort" class="mono" type="number" placeholder="8080" required /></div>
             <div class="arrow">→</div>
-            <div class="field"><span class="lbl">目标主机</span><input name="host" class="mono" placeholder="192.168.1.101" required /></div>
-            <div class="field"><span class="lbl">目标端口</span><input name="port" class="mono" type="number" placeholder="6379" required /></div>
+            <div class="field"><span class="lbl" id="hostLbl">目标主机</span><input name="host" class="mono" placeholder="192.168.1.101" required /></div>
+            <div class="field"><span class="lbl" id="portLbl">目标端口</span><input name="port" class="mono" type="number" placeholder="6379" required /></div>
             <div class="mapping-actions"><button id="cancelEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="preflightBtn" class="btn btn-outline" type="button">测试目标</button><button id="submitMappingBtn" type="submit" class="btn btn-primary">添加映射</button></div>
+          </div>
+          <div id="httpRoutes" class="http-routes hidden">
+            <div class="http-routes-head"><span class="lbl">Host 路由（按请求 Host 头分流到不同后端；上面的目标作为兜底）</span><button id="addRouteBtn" class="btn-quiet" type="button">+ 添加路由</button></div>
+            <div id="routeRows" class="route-rows"></div>
           </div>
           <div id="preflightResult" class="preflight-result hidden" role="status" aria-live="polite"></div>
         </form>
@@ -934,6 +945,26 @@
         </form>
         <hr class="divider-h" />
         <span id="ioMsg"></span>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">反向映射（把本机服务暴露给内网）</span>
+          <label class="reverse-toggle"><input id="revEnabled" type="checkbox" /> <span>启用</span></label>
+        </div>
+        <p class="hint" style="margin-bottom:12px">
+          反向映射让 server 端在其内网监听，把连接经隧道交回本机，由本机拨号本地或家庭网络里的目标。
+          这会让持有 server 的一方触达你这台机器上的服务，因此<strong>默认全部拒绝</strong>：必须显式填写允许的网段与端口才会放行。
+          具体在内网监听哪些地址，由 server 端的 <kbd>reverse</kbd> 配置决定。
+        </p>
+        <form id="reverseForm">
+          <div class="grid cred">
+            <div class="field"><span class="lbl">允许回拨网段（CIDR，逗号分隔）</span><input id="revNets" class="mono" placeholder="127.0.0.0/8, 192.168.1.0/24" /></div>
+            <div class="field"><span class="lbl">允许回拨端口（逗号分隔）</span><input id="revPorts" class="mono" placeholder="8080, 5900" /></div>
+            <button type="submit" class="btn btn-primary">保存反向策略</button>
+          </div>
+        </form>
+        <span id="reverseMsg"></span>
       </div>
     </div>
 
@@ -1196,11 +1227,13 @@ function openEditorForCreate() {
   const form = document.getElementById('f');
   editMode = null;
   form.elements.name.value = '';
+  document.getElementById('routeRows').innerHTML = '';
+  setMode('tcp');
   applyEditorMode();
   editor.classList.add('open');
   editor.querySelector('[name=localPort]').focus();
 }
-function openEditorForEdit(local, host, port, name) {
+function openEditorForEdit(local, host, port, name, mode, routes) {
   const editor = document.getElementById('mappingEditor');
   const form = document.getElementById('f');
   const [addr, lport] = splitLocal(local);
@@ -1210,6 +1243,8 @@ function openEditorForEdit(local, host, port, name) {
   form.elements.localPort.value = lport;
   form.elements.host.value = host;
   form.elements.port.value = port;
+  setMode(mode || 'tcp');
+  renderRouteRows(routes || []);
   latestPreflight = { key: '', ready: false };
   document.getElementById('preflightResult').classList.add('hidden');
   applyEditorMode();
@@ -1229,6 +1264,8 @@ function openEditorForClone(local, host, port, name) {
   form.elements.localPort.value = '';
   form.elements.host.value = host;
   form.elements.port.value = port;
+  setMode('tcp');
+  document.getElementById('routeRows').innerHTML = '';
   latestPreflight = { key: '', ready: false };
   document.getElementById('preflightResult').classList.add('hidden');
   applyEditorMode();
@@ -1240,11 +1277,67 @@ function closeEditor() {
   const form = document.getElementById('f');
   form.reset();
   form.elements.localAddr.value = '127.0.0.1';
+  document.getElementById('routeRows').innerHTML = '';
+  setMode('tcp');
   editMode = null;
   applyEditorMode();
   document.getElementById('preflightResult').classList.add('hidden');
   document.getElementById('mappingEditor').classList.remove('open');
 }
+// 模式切换：UDP 无 HTTP 路由；HTTP 网关显示路由表并把"目标"改称"兜底后端"。
+function currentMode() {
+  const el = document.querySelector('input[name=mode]:checked');
+  return el ? el.value : 'tcp';
+}
+function setMode(mode) {
+  const radio = document.querySelector(`input[name=mode][value="${mode}"]`);
+  if (radio) radio.checked = true;
+  applyModeUI();
+}
+function applyModeUI() {
+  const mode = currentMode();
+  const routes = document.getElementById('httpRoutes');
+  const hint = document.getElementById('modeHint');
+  const hostLbl = document.getElementById('hostLbl');
+  const portLbl = document.getElementById('portLbl');
+  routes.classList.toggle('hidden', mode !== 'http');
+  if (mode === 'udp') {
+    hint.textContent = 'UDP 透传，适用于 DNS、WireGuard、游戏服务器等无连接协议。';
+    hostLbl.textContent = '目标主机'; portLbl.textContent = '目标端口';
+  } else if (mode === 'http') {
+    hint.textContent = 'HTTP 网关：单个本地端口按请求 Host 头分流到多个内网后端。';
+    hostLbl.textContent = '兜底后端主机'; portLbl.textContent = '兜底后端端口';
+  } else {
+    hint.textContent = '裸 TCP 透传，适用于数据库、SSH、Web 等大多数服务。';
+    hostLbl.textContent = '目标主机'; portLbl.textContent = '目标端口';
+  }
+}
+function routeRowHtml(r) {
+  r = r || {};
+  return `<div class="route-row">` +
+    `<input class="mono route-host" placeholder="grafana.local（留空=兜底）" value="${esc(r.host_match || '')}" maxlength="255" />` +
+    `<span class="route-arrow">→</span>` +
+    `<input class="mono route-thost" placeholder="192.168.1.10" value="${esc(r.target_host || '')}" maxlength="255" />` +
+    `<input class="mono route-tport" type="number" placeholder="3000" value="${r.target_port || ''}" />` +
+    `<button type="button" class="btn-quiet route-del">删除</button></div>`;
+}
+function renderRouteRows(routes) {
+  document.getElementById('routeRows').innerHTML = (routes || []).map(routeRowHtml).join('');
+}
+function collectRoutes() {
+  return [...document.querySelectorAll('#routeRows .route-row')].map(row => ({
+    host_match: row.querySelector('.route-host').value.trim(),
+    target_host: row.querySelector('.route-thost').value.trim(),
+    target_port: Number(row.querySelector('.route-tport').value),
+  })).filter(r => r.target_host && r.target_port);
+}
+document.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', applyModeUI));
+document.getElementById('addRouteBtn').addEventListener('click', () => {
+  document.getElementById('routeRows').insertAdjacentHTML('beforeend', routeRowHtml());
+});
+document.getElementById('routeRows').addEventListener('click', e => {
+  if (e.target.classList.contains('route-del')) e.target.closest('.route-row').remove();
+});
 // 把 host:port 形式的本地地址拆成 [地址, 端口]，兼容 IPv6 的 [::1]:8080。
 function splitLocal(local) {
   const i = local.lastIndexOf(':');
@@ -1331,7 +1424,10 @@ function mappingKey(body) { return [body.local, body.host, body.port].join('|');
 function collectMapping(form) {
   const fd = new FormData(form);
   const addr = (fd.get('localAddr') || '127.0.0.1').trim() || '127.0.0.1';
-  return { local: addr + ':' + Number(fd.get('localPort')), host: String(fd.get('host') || '').trim(), port: Number(fd.get('port')), name: String(fd.get('name') || '').trim() };
+  const mode = String(fd.get('mode') || 'tcp');
+  const body = { local: addr + ':' + Number(fd.get('localPort')), host: String(fd.get('host') || '').trim(), port: Number(fd.get('port')), name: String(fd.get('name') || '').trim(), mode };
+  if (mode === 'http') body.routes = collectRoutes();
+  return body;
 }
 function renderPreflight(result) {
   const el = document.getElementById('preflightResult');
@@ -1699,6 +1795,8 @@ async function refresh() {
     [list, st] = await Promise.all([api('/api/mappings').then(r=>r.json()), api('/api/stats').then(r=>r.json())]);
   } catch (e) { if (String(e)==='Error: unauthorized') return; throw e; }
   const statMap = Object.fromEntries((st||[]).map(s => [s.local, s]));
+  // 保存完整映射对象（含 mode/routes），供编辑按钮回填，避免把 routes 塞进 data 属性。
+  mappingByLocal = Object.fromEntries((list || []).map(m => [m.local, m]));
   const now = Date.now();
   const elapsed = rateState.ts ? (now - rateState.ts) / 1000 : 0;
   const nextRows = new Map();
@@ -1760,9 +1858,12 @@ async function refresh() {
     const tr = document.createElement('tr');
     if (!enabled) tr.className = 'is-disabled';
     // 名称作为主标识，本地地址降为副信息；未命名则本地地址仍作主标识。
+    const modeBadge = m.mode && m.mode !== 'tcp'
+      ? `<span class="map-mode map-mode-${esc(m.mode)}">${esc(m.mode.toUpperCase())}</span>`
+      : '';
     const nameCell = m.name
-      ? `<span class="map-name">${esc(m.name)}</span><span class="map-local mono">${esc(m.local)}</span>`
-      : `<span class="map-local mono only">${esc(m.local)}</span>`;
+      ? `<span class="map-name">${esc(m.name)}${modeBadge}</span><span class="map-local mono">${esc(m.local)}</span>`
+      : `<span class="map-local mono only">${esc(m.local)}${modeBadge}</span>`;
     tr.innerHTML = `<td class="mapcol">${nameCell}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
                    `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span>${esc(label)}</span><span class="status-detail">${esc(health.detail)}</span>${connToggle}</td>` +
@@ -1827,6 +1928,8 @@ async function refresh() {
   rateState.rows = nextRows;
   rateState.totalTx = totalTx; rateState.totalRx = totalRx; rateState.ts = now;
 }
+// 最近一次列表的 local → 完整映射对象查找表，供编辑按钮取出 mode/routes。
+let mappingByLocal = {};
 // ── 搜索过滤：输入即时刷新列表；仅在映射较多时显示输入框 ──
 let mappingFilter = '';
 document.getElementById('mappingSearch').addEventListener('input', (e) => {
@@ -1961,7 +2064,8 @@ $rows.addEventListener('click', async (e) => {
   }
   const edit = e.target.closest('button.btn-edit');
   if (edit) {
-    openEditorForEdit(edit.dataset.local, edit.dataset.host, Number(edit.dataset.port), edit.dataset.name || '');
+    const m = mappingByLocal[edit.dataset.local] || {};
+    openEditorForEdit(edit.dataset.local, edit.dataset.host, Number(edit.dataset.port), edit.dataset.name || '', m.mode || 'tcp', m.routes || []);
     return;
   }
   const btn = e.target.closest('button.btn-del');

@@ -16,14 +16,67 @@ use serde::{Deserialize, Serialize};
 
 static SAVE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// 一条映射承载的传输/代理模式。旧配置省略此字段时按 tcp 处理，保持兼容。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum MappingMode {
+    /// 裸 TCP 透传（默认，原有行为）。
+    #[default]
+    Tcp,
+    /// UDP 透传：本地绑定 UDP socket，数据报经隧道到达 B 端后由 B 拨 UDP 目标。
+    Udp,
+    /// HTTP 反向代理网关：单个本地端口按 Host 头路由到多个内网 HTTP 后端。
+    Http,
+}
+
+impl MappingMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            MappingMode::Tcp => "tcp",
+            MappingMode::Udp => "udp",
+            MappingMode::Http => "http",
+        }
+    }
+}
+
+/// HTTP 网关的一条路由：按请求的 Host 头（不含端口）匹配到具体内网后端。
+/// `host_match` 为空表示兜底路由，匹配任意未命中的 Host。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HttpRoute {
+    /// 要匹配的 Host 头（大小写不敏感，比较时忽略端口），例如 "grafana.local"。
+    #[serde(default)]
+    pub host_match: String,
+    /// 命中后拨号的内网目标主机。
+    pub target_host: String,
+    /// 命中后拨号的内网目标端口。
+    pub target_port: u16,
+}
+
+impl HttpRoute {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let m = self.host_match.trim();
+        if m.len() > 255 || m.chars().any(|c| c.is_ascii_whitespace()) {
+            return Err("HTTP 路由的 host_match 不能含空白且不超过 255 字符".into());
+        }
+        let host = self.target_host.trim();
+        if host.is_empty() || host.len() > 255 || host.chars().any(|c| c.is_ascii_whitespace()) {
+            return Err("HTTP 路由的 target_host 必须是有效 IP 或主机名".into());
+        }
+        if self.target_port == 0 {
+            return Err("HTTP 路由的 target_port 不能为 0".into());
+        }
+        Ok(())
+    }
+}
+
 /// 一条端口映射：本地监听地址 → B 端所在内网里的目标 host:port。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Mapping {
     /// 本地监听地址，可填 127.0.0.1:8080，也可填 127.0.0.2:6379 这类 127/8 虚拟 IP
     pub local: String,
-    /// 目标主机（B 端内网里能访问到的 IP / 主机名）
+    /// 目标主机（B 端内网里能访问到的 IP / 主机名）。HTTP 网关模式下作为兜底后端。
     pub host: String,
-    /// 目标端口
+    /// 目标端口。HTTP 网关模式下作为兜底后端端口。
     pub port: u16,
     /// 是否启用；停用后释放本地端口、不再接受连接，但保留在配置里可随时再启用。
     /// 旧配置没有此字段时默认启用，保持向后兼容。
@@ -33,6 +86,12 @@ pub struct Mapping {
     /// 旧配置没有此字段时为空，保持向后兼容。
     #[serde(default)]
     pub name: String,
+    /// 传输/代理模式（tcp / udp / http）。旧配置省略时为 tcp。
+    #[serde(default)]
+    pub mode: MappingMode,
+    /// HTTP 网关模式下的按 Host 路由表；其他模式忽略。
+    #[serde(default)]
+    pub routes: Vec<HttpRoute>,
 }
 
 fn default_enabled() -> bool {
@@ -92,6 +151,28 @@ impl Mapping {
         if self.name.chars().count() > 60 {
             return Err("映射名称不能超过 60 个字符".into());
         }
+        // HTTP 网关模式：校验每条路由，且兜底 Host（空 host_match）最多一条。
+        if self.mode == MappingMode::Http {
+            if self.routes.len() > 32 {
+                return Err("HTTP 网关的路由最多 32 条".into());
+            }
+            let mut catch_all = 0;
+            let mut seen = HashSet::new();
+            for route in &self.routes {
+                route.validate()?;
+                let key = route.host_match.trim().to_ascii_lowercase();
+                if key.is_empty() {
+                    catch_all += 1;
+                } else if !seen.insert(key) {
+                    return Err(format!("HTTP 路由的 host_match {} 重复", route.host_match));
+                }
+            }
+            if catch_all > 1 {
+                return Err("HTTP 网关最多只能有一条兜底路由（空 host_match）".into());
+            }
+        } else if !self.routes.is_empty() {
+            return Err("仅 HTTP 网关模式可配置 routes".into());
+        }
         Ok(())
     }
 }
@@ -129,6 +210,17 @@ pub struct AConfig {
     /// 从 B 端凭证带入的推荐目标；只用于管理页自动填写，不改变访问授权。
     #[serde(default)]
     pub published_targets: Vec<PublishedTarget>,
+    /// 反向映射总开关：是否接受 B 端发起的反向隧道（把 A 侧服务暴露给内网）。
+    /// 默认关闭；即使 B 端配置了反向监听，A 端不开此开关也一律拒绝，避免被动暴露本机服务。
+    #[serde(default)]
+    pub reverse_enabled: bool,
+    /// 反向映射允许 A 端拨号的目标网段（CIDR）。
+    /// 与正向白名单相反：留空表示**全部拒绝**（deny-all），必须显式列出才放行。
+    #[serde(default)]
+    pub reverse_allow_networks: Vec<String>,
+    /// 反向映射允许 A 端拨号的目标端口。留空表示**全部拒绝**（deny-all）。
+    #[serde(default)]
+    pub reverse_allow_ports: Vec<u16>,
 }
 
 impl Default for AConfig {
@@ -144,6 +236,9 @@ impl Default for AConfig {
             max_conns_per_mapping: default_max_conns_per_mapping(),
             mappings: Vec::new(),
             published_targets: Vec::new(),
+            reverse_enabled: false,
+            reverse_allow_networks: Vec::new(),
+            reverse_allow_ports: Vec::new(),
         }
     }
 }
@@ -178,6 +273,14 @@ impl AConfig {
         for target in &self.published_targets {
             target.validate()?;
         }
+        // 反向映射的允许网段必须是合法 CIDR；deny-all 语义下留空是合法的（表示全拒绝）。
+        for cidr in &self.reverse_allow_networks {
+            cidr.parse::<IpNet>()
+                .map_err(|_| format!("reverse_allow_networks 包含无效 CIDR: {cidr}"))?;
+        }
+        if self.reverse_allow_ports.contains(&0) {
+            return Err("reverse_allow_ports 不能包含 0".into());
+        }
         Ok(())
     }
 }
@@ -192,6 +295,40 @@ fn default_max_mappings() -> usize {
 
 fn default_max_conns_per_mapping() -> usize {
     512
+}
+
+/// 一条反向监听：B 端在内网某地址监听，把连接经隧道交给 A 端拨自己一侧的目标。
+/// 与正向相反——发起端是 B，拨号端是 A，因此受 A 端的 reverse_allow_* 策略约束。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReverseListen {
+    /// B 端内网监听地址（内网设备可访问），例如 0.0.0.0:9000 或 192.168.1.5:9000。
+    pub listen: String,
+    /// A 端一侧要拨号的目标主机（A 端本机或其家庭网络里的地址）。
+    pub target_host: String,
+    /// A 端一侧要拨号的目标端口。
+    pub target_port: u16,
+    /// 可选可读名称，仅用于日志与展示。
+    #[serde(default)]
+    pub name: String,
+}
+
+impl ReverseListen {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.listen.parse::<SocketAddr>().is_err() {
+            return Err(format!("反向监听地址 {} 不是合法的 host:port", self.listen));
+        }
+        let host = self.target_host.trim();
+        if host.is_empty() || host.len() > 255 || host.chars().any(|c| c.is_ascii_whitespace()) {
+            return Err("反向监听的 target_host 必须是有效 IP 或主机名".into());
+        }
+        if self.target_port == 0 {
+            return Err("反向监听的 target_port 不能为 0".into());
+        }
+        if self.name.chars().count() > 60 {
+            return Err("反向监听名称不能超过 60 个字符".into());
+        }
+        Ok(())
+    }
 }
 
 /// 一个客户端凭证（多租户）：各自独立 token + 独立目标白名单，可单独吊销/轮换。
@@ -210,6 +347,10 @@ pub struct ClientCred {
     /// 仅对该客户公开的推荐目标，client 会在创建映射时实际拨号验证后展示。
     #[serde(default)]
     pub published_targets: Vec<PublishedTarget>,
+    /// 该客户的反向监听：B 端在内网监听、交给 A 端拨其一侧目标。
+    /// 实际是否放行由 A 端的 reverse_enabled / reverse_allow_* 决定（deny-all）。
+    #[serde(default)]
+    pub reverse: Vec<ReverseListen>,
     /// 该客户的最大并发隧道数（0 = 不限）
     #[serde(default)]
     pub max_streams: usize,
@@ -242,6 +383,9 @@ pub struct BConfig {
     /// 单租户模式下向 client 推荐的目标服务；需同时受白名单允许。
     #[serde(default)]
     pub published_targets: Vec<PublishedTarget>,
+    /// 单租户模式下的反向监听（折叠进 default 客户）。
+    #[serde(default)]
+    pub reverse: Vec<ReverseListen>,
     /// 多租户客户端列表
     #[serde(default)]
     pub clients: Vec<ClientCred>,
@@ -264,6 +408,7 @@ impl Default for BConfig {
             allow_networks: Vec::new(),
             allow_ports: Vec::new(),
             published_targets: Vec::new(),
+            reverse: Vec::new(),
             clients: Vec::new(),
             max_streams_per_conn: default_max_streams_per_conn(),
             dial_timeout_secs: default_dial_timeout_secs(),
@@ -284,6 +429,7 @@ impl BConfig {
                 allow_networks: self.allow_networks.clone(),
                 allow_ports: self.allow_ports.clone(),
                 published_targets: self.published_targets.clone(),
+                reverse: self.reverse.clone(),
                 max_streams: 0,
                 revoked: false,
             });
@@ -320,6 +466,9 @@ impl BConfig {
             &self.allow_networks,
             &self.allow_ports,
         )?;
+        // 反向监听地址在整个 server 内唯一（多个客户不能抢同一个内网监听端口）。
+        let mut reverse_listens = HashSet::new();
+        validate_reverse("默认客户", &self.reverse, &mut reverse_listens)?;
         let mut ids = HashSet::new();
         let mut tokens = HashSet::new();
         if !self.token.is_empty() {
@@ -350,9 +499,32 @@ impl BConfig {
                 &client.allow_networks,
                 &client.allow_ports,
             )?;
+            validate_reverse(
+                &format!("客户 {}", client.id),
+                &client.reverse,
+                &mut reverse_listens,
+            )?;
         }
         Ok(())
     }
+}
+
+/// 校验一组反向监听：每条本身合法，且监听地址在整个 server 内不重复。
+fn validate_reverse(
+    owner: &str,
+    reverse: &[ReverseListen],
+    seen_listens: &mut HashSet<String>,
+) -> std::result::Result<(), String> {
+    if reverse.len() > 32 {
+        return Err(format!("{owner} 的 reverse 最多可配置 32 条"));
+    }
+    for r in reverse {
+        r.validate()?;
+        if !seen_listens.insert(r.listen.clone()) {
+            return Err(format!("反向监听地址 {} 重复", r.listen));
+        }
+    }
+    Ok(())
 }
 
 fn validate_policy(
@@ -579,6 +751,8 @@ mod tests {
                 port: 80,
                 enabled: true,
                 name: String::new(),
+                mode: MappingMode::Tcp,
+                routes: Vec::new(),
             }],
             ..Default::default()
         };
@@ -650,6 +824,7 @@ revoked = true
                 allow_networks: vec![],
                 allow_ports: vec![],
                 published_targets: vec![],
+                reverse: vec![],
                 max_streams: 0,
                 revoked: false,
             }],
@@ -725,6 +900,7 @@ allow_ports = [22, 443]
                     allow_networks: vec!["192.168.0.0/16".into()],
                     allow_ports: vec![],
                     published_targets: vec![],
+                    reverse: vec![],
                     max_streams: 4,
                     revoked: false,
                 },
@@ -738,6 +914,7 @@ allow_ports = [22, 443]
                         allow_networks: vec![],
                         allow_ports: vec![],
                         published_targets: vec![],
+                        reverse: vec![],
                         max_streams: 0,
                         revoked: false,
                     }
@@ -791,6 +968,8 @@ revoked = false
             port,
             enabled: true,
             name: String::new(),
+            mode: MappingMode::default(),
+            routes: Vec::new(),
         };
         assert!(m("127.0.0.1:8080", "10.0.0.1", 80).validate().is_ok());
         assert!(m("not-an-addr", "10.0.0.1", 80).validate().is_err());

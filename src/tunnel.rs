@@ -195,6 +195,142 @@ impl ClientRegistry {
     }
 }
 
+/// A 端反向映射策略：约束 B 端可让 A 拨号的目标（A 本机或家庭网络）。
+///
+/// 与正向 `TargetPolicy` 语义**相反**：这里空列表表示**全部拒绝**（deny-all）。
+/// 反向隧道会让持有 B 的一方触达 A 侧服务，因此默认不放行任何目标，必须显式列出。
+#[derive(Debug, Clone, Default)]
+pub struct ReversePolicy {
+    enabled: bool,
+    nets: Vec<IpNet>,
+    ports: Vec<u16>,
+}
+
+impl ReversePolicy {
+    /// 从 A 端配置构建。`enabled` 为总开关；网段/端口留空即 deny-all。
+    pub fn from_config(enabled: bool, allow_networks: &[String], allow_ports: &[u16]) -> Self {
+        let nets = allow_networks
+            .iter()
+            .filter_map(|s| match s.parse::<IpNet>() {
+                Ok(n) => Some(n),
+                Err(_) => {
+                    tracing::warn!(cidr = %s, "反向策略：无法解析 CIDR，已忽略");
+                    None
+                }
+            })
+            .collect();
+        ReversePolicy {
+            enabled,
+            nets,
+            ports: allow_ports.to_vec(),
+        }
+    }
+
+    /// 解析目标并返回**允许拨号的具体地址集合**（deny-all：未开启或列表为空时一律拒绝）。
+    /// 与正向一样只解析一次，随后直接拨返回的地址，避免 DNS 重绑定（TOCTOU）。
+    pub async fn resolve_allowed(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> std::result::Result<Vec<SocketAddr>, String> {
+        if !self.enabled {
+            return Err("反向映射未启用（reverse_enabled = false）".into());
+        }
+        if self.ports.is_empty() || self.nets.is_empty() {
+            return Err(
+                "反向映射默认拒绝：需显式配置 reverse_allow_networks 与 reverse_allow_ports".into(),
+            );
+        }
+        if !self.ports.contains(&port) {
+            return Err(format!("反向目标端口 {port} 不在 reverse_allow_ports 中"));
+        }
+        let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, port))
+            .await
+            .map_err(|e| format!("解析 {host} 失败: {e}"))?
+            .collect();
+        if addrs.is_empty() {
+            return Err(format!("解析 {host} 无结果"));
+        }
+        let allowed: Vec<SocketAddr> = addrs
+            .into_iter()
+            .filter(|sa| self.nets.iter().any(|n| n.contains(&sa.ip())))
+            .collect();
+        if allowed.is_empty() {
+            return Err(format!("{host} 解析结果均不在 reverse_allow_networks 内"));
+        }
+        Ok(allowed)
+    }
+}
+
+/// A 端处理一条 B 发起的反向隧道流：读握手头、按 A 端 deny-all 策略校验、
+/// 拨号 A 一侧目标、双向透传（支持半关闭）。token 无需再验（连接已在注册时认证）。
+pub async fn serve_reverse_stream<W, R>(
+    send: W,
+    recv: R,
+    policy: &ReversePolicy,
+    dial_timeout: Duration,
+    metrics: &Arc<Metrics>,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let mut send = send;
+    let mut recv = recv;
+    let req = proto::read_open(&mut recv).await?;
+
+    let allowed = match policy.resolve_allowed(&req.host, req.port).await {
+        Ok(a) => a,
+        Err(reason) => {
+            Metrics::inc(&metrics.target_denied);
+            Metrics::inc(&metrics.tunnels_failed);
+            tracing::warn!(host = %req.host, port = req.port, %reason, "反向目标被 A 端策略拒绝");
+            proto::write_status(&mut send, proto::STATUS_ERR, &reason).await?;
+            bail!(reason);
+        }
+    };
+
+    let mut tcp = None;
+    let mut last_err = String::from("no address");
+    for sa in &allowed {
+        match tokio::time::timeout(dial_timeout, TcpStream::connect(sa)).await {
+            Ok(Ok(s)) => {
+                tcp = Some(s);
+                break;
+            }
+            Ok(Err(e)) => last_err = e.to_string(),
+            Err(_) => last_err = format!("拨号 {sa} 超时"),
+        }
+    }
+    let tcp = match tcp {
+        Some(t) => t,
+        None => {
+            Metrics::inc(&metrics.dial_failed);
+            Metrics::inc(&metrics.tunnels_failed);
+            proto::write_status(&mut send, proto::STATUS_ERR, &last_err).await?;
+            bail!(last_err);
+        }
+    };
+
+    proto::write_status(&mut send, proto::STATUS_OK, "").await?;
+    metrics.tunnel_open();
+
+    let (mut t_read, mut t_write) = tokio::io::split(tcp);
+    let up = async {
+        copy_count(&mut recv, &mut t_write, &[&metrics.bytes_rx]).await?;
+        t_write.shutdown().await.ok();
+        Ok::<_, std::io::Error>(())
+    };
+    let down = async {
+        copy_count(&mut t_read, &mut send, &[&metrics.bytes_tx]).await?;
+        send.shutdown().await.ok();
+        Ok::<_, std::io::Error>(())
+    };
+    let _ = tokio::try_join!(up, down);
+    metrics.tunnel_close();
+    Ok(())
+}
+
 /// 审计事件。序列化为一行 JSON，写入 tracing（target="audit"）与可选文件。
 #[derive(Serialize)]
 pub struct AuditEvent<'a> {
@@ -302,18 +438,34 @@ pub struct ServeCtx {
     pub peer: String,
 }
 
-/// B 端：处理一条隧道流 —— 读握手头、认证 token、按策略解析并校验目标、
-/// 在内网拨号（带超时、直连已校验地址）、双向转发。
-pub async fn serve_stream<W, R>(send: W, recv: R, ctx: &ServeCtx) -> Result<()>
+/// B 端：读一条流的握手头并转发（正向隧道）。register 流由 server 层单独处理，
+/// 不应走到这里；若误入则拒绝。保留此薄封装供仅需正向的调用方与测试使用。
+pub async fn serve_stream<W, R>(mut send: W, mut recv: R, ctx: &ServeCtx) -> Result<()>
 where
     W: AsyncWrite + Unpin,
     R: AsyncRead + Unpin,
 {
-    let mut send = send;
-    let mut recv = recv;
-    let m = &ctx.metrics;
-
     let req = proto::read_open(&mut recv).await?;
+    if req.register {
+        proto::write_status(&mut send, proto::STATUS_ERR, "unexpected register stream").await?;
+        bail!("unexpected register stream in serve_stream");
+    }
+    serve_forward(send, recv, req, ctx).await
+}
+
+/// B 端正向隧道：认证 token、按策略解析并校验目标、在内网拨号、双向转发。
+/// 握手头已由调用方读出并传入，便于 server 层先分流 register / 正向流。
+pub async fn serve_forward<W, R>(
+    mut send: W,
+    recv: R,
+    req: proto::OpenRequest,
+    ctx: &ServeCtx,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let m = &ctx.metrics;
     let target = format!("{}:{}", req.host, req.port);
 
     // 1) 认证
@@ -377,11 +529,31 @@ where
         }
     };
 
-    // 4) 拨号：仅拨已校验地址，带超时，逐个尝试
+    // 4) 按隧道类型分派：UDP 绑定并连接 UDP 目标；TCP 拨号已校验地址。
+    match req.kind {
+        proto::TunnelKind::Udp => serve_udp(send, recv, &allowed, ctx, client, &target).await,
+        proto::TunnelKind::Tcp => serve_tcp(send, recv, &allowed, ctx, client, &target).await,
+    }
+}
+
+/// B 端 TCP 隧道：拨号已校验地址（带超时、逐个尝试），双向透传并支持半关闭。
+async fn serve_tcp<W, R>(
+    mut send: W,
+    mut recv: R,
+    allowed: &[SocketAddr],
+    ctx: &ServeCtx,
+    client: &ClientPolicy,
+    target: &str,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let m = &ctx.metrics;
     let mut tcp = None;
     let mut last_err = String::from("no address");
     let mut timed_out = false;
-    for sa in &allowed {
+    for sa in allowed {
         match tokio::time::timeout(ctx.dial_timeout, TcpStream::connect(sa)).await {
             Ok(Ok(s)) => {
                 tcp = Some(s);
@@ -407,7 +579,7 @@ where
                 ts_ms: now_ms(),
                 client_id: &client.id,
                 peer: &ctx.peer,
-                target: &target,
+                target,
                 result: if timed_out {
                     "dial_timeout"
                 } else {
@@ -426,7 +598,7 @@ where
         ts_ms: now_ms(),
         client_id: &client.id,
         peer: &ctx.peer,
-        target: &target,
+        target,
         result: "ok",
         detail: "",
     });
@@ -446,6 +618,122 @@ where
     };
     let _ = tokio::try_join!(up, down);
     m.tunnel_close();
+    Ok(())
+}
+
+/// B 端 UDP 隧道：绑定与目标同族的 UDP socket 并 connect 到第一个已校验地址，
+/// 然后在 QUIC 流（长度前缀数据报）与 UDP socket 之间双向搬运数据报。
+///
+/// UDP 无连接，没有 EOF 概念，因此隧道生命周期由 QUIC 流决定：A 端关闭流（或断开）
+/// 时上行结束，进而结束整条隧道；下行方向在流关闭后自然不再写入。
+async fn serve_udp<W, R>(
+    mut send: W,
+    mut recv: R,
+    allowed: &[SocketAddr],
+    ctx: &ServeCtx,
+    client: &ClientPolicy,
+    target: &str,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    let m = &ctx.metrics;
+    // UDP 目标只取第一个已校验地址（已受 allow_networks/allow_ports 约束）。
+    let dst = match allowed.first() {
+        Some(sa) => *sa,
+        None => {
+            Metrics::inc(&m.dial_failed);
+            Metrics::inc(&m.tunnels_failed);
+            proto::write_status(&mut send, proto::STATUS_ERR, "no address").await?;
+            bail!("no address");
+        }
+    };
+    // 绑定与目标同族的临时端口，connect 后仅收发该目标，避免误收无关来源。
+    let bind_addr: SocketAddr = if dst.is_ipv4() {
+        (std::net::Ipv4Addr::UNSPECIFIED, 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    let socket = match tokio::net::UdpSocket::bind(bind_addr).await {
+        Ok(s) => s,
+        Err(e) => {
+            Metrics::inc(&m.dial_failed);
+            Metrics::inc(&m.tunnels_failed);
+            let reason = format!("绑定 UDP socket 失败: {e}");
+            proto::write_status(&mut send, proto::STATUS_ERR, &reason).await?;
+            bail!(reason);
+        }
+    };
+    if let Err(e) = socket.connect(dst).await {
+        Metrics::inc(&m.dial_failed);
+        Metrics::inc(&m.tunnels_failed);
+        let reason = format!("连接 UDP 目标 {dst} 失败: {e}");
+        proto::write_status(&mut send, proto::STATUS_ERR, &reason).await?;
+        bail!(reason);
+    }
+
+    proto::write_status(&mut send, proto::STATUS_OK, "").await?;
+    m.tunnel_open();
+    ctx.audit.record(&AuditEvent {
+        ts_ms: now_ms(),
+        client_id: &client.id,
+        peer: &ctx.peer,
+        target,
+        result: "ok",
+        detail: "udp",
+    });
+
+    let socket = Arc::new(socket);
+    let result = relay_udp(&mut send, &mut recv, &socket, &m.bytes_tx, &m.bytes_rx).await;
+    m.tunnel_close();
+    result
+}
+
+/// 在 QUIC 流与已 connect 的 UDP socket 之间双向搬运数据报，直到流结束或出错。
+/// `stream_tx` 计入下行（socket→流），`stream_rx` 计入上行（流→socket）。
+pub async fn relay_udp<W, R>(
+    send: &mut W,
+    recv: &mut R,
+    socket: &Arc<tokio::net::UdpSocket>,
+    stream_tx: &AtomicU64,
+    stream_rx: &AtomicU64,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+    R: AsyncRead + Unpin,
+{
+    // 上行：从 QUIC 流读长度前缀数据报，发到 UDP 目标。
+    let up = async {
+        let mut buf = Vec::with_capacity(2048);
+        loop {
+            match proto::read_datagram(recv, &mut buf).await? {
+                None => break, // 流干净结束
+                Some(n) => {
+                    socket.send(&buf[..n]).await?;
+                    stream_rx.fetch_add(n as u64, Ordering::Relaxed);
+                }
+            }
+        }
+        Ok::<_, std::io::Error>(())
+    };
+    // 下行：从 UDP 目标收包，加长度前缀写回 QUIC 流。
+    let down = async {
+        let mut buf = vec![0u8; proto::MAX_DATAGRAM_LEN as usize];
+        loop {
+            let n = socket.recv(&mut buf).await?;
+            proto::write_datagram(send, &buf[..n]).await?;
+            stream_tx.fetch_add(n as u64, Ordering::Relaxed);
+        }
+        #[allow(unreachable_code)]
+        Ok::<_, std::io::Error>(())
+    };
+    // 上行结束（流关闭）即结束整条隧道；下行随任务取消停止。
+    tokio::select! {
+        r = up => { r?; }
+        r = down => { r?; }
+    }
+    send.shutdown().await.ok();
     Ok(())
 }
 
@@ -516,6 +804,7 @@ mod tests {
                 allow_networks: vec![],
                 allow_ports: vec![],
                 published_targets: vec![],
+                reverse: vec![],
                 max_streams: 0,
                 revoked: false,
             },
@@ -525,6 +814,7 @@ mod tests {
                 allow_networks: vec![],
                 allow_ports: vec![],
                 published_targets: vec![],
+                reverse: vec![],
                 max_streams: 0,
                 revoked: true,
             },
@@ -560,5 +850,77 @@ mod tests {
         assert!(d3 > d0, "应随失败次数增长");
         assert!(d_big <= Duration::from_millis(31_000));
         assert!(d_big >= Duration::from_millis(30_000));
+    }
+
+    #[tokio::test]
+    async fn reverse_policy_denies_by_default() {
+        // 未启用：一律拒绝。
+        let disabled = ReversePolicy::from_config(false, &["127.0.0.0/8".into()], &[80]);
+        assert!(disabled.resolve_allowed("127.0.0.1", 80).await.is_err());
+
+        // 启用但网段/端口为空：deny-all。
+        let empty = ReversePolicy::from_config(true, &[], &[]);
+        assert!(empty.resolve_allowed("127.0.0.1", 80).await.is_err());
+        let no_ports = ReversePolicy::from_config(true, &["127.0.0.0/8".into()], &[]);
+        assert!(no_ports.resolve_allowed("127.0.0.1", 80).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn reverse_policy_allows_only_explicit_target() {
+        let p = ReversePolicy::from_config(true, &["127.0.0.0/8".into()], &[80]);
+        // 端口与网段都命中才放行。
+        let addrs = p.resolve_allowed("127.0.0.1", 80).await.unwrap();
+        assert!(addrs.iter().all(|sa| sa.ip().is_loopback()));
+        // 端口不在白名单：拒绝。
+        assert!(p.resolve_allowed("127.0.0.1", 22).await.is_err());
+        // 网段外的目标：拒绝（8.8.8.8 不在 127/8）。
+        assert!(p.resolve_allowed("8.8.8.8", 80).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn udp_relay_round_trips_datagrams_through_a_stream() {
+        // 起一个 UDP echo 目标。
+        let target = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        tokio::spawn(async move {
+            let mut buf = [0u8; 1500];
+            for _ in 0..2 {
+                let (n, from) = target.recv_from(&mut buf).await.unwrap();
+                target.send_to(&buf[..n], from).await.unwrap();
+            }
+        });
+
+        // 用内存双工模拟 A 侧的 QUIC 流：一端喂上行数据报，另一端读下行。
+        let (a_side, b_side) = tokio::io::duplex(64 * 1024);
+        let (mut a_read, mut a_write) = tokio::io::split(a_side);
+        let (b_read, b_write) = tokio::io::split(b_side);
+
+        // B 侧：绑定并 connect UDP echo 目标，跑 relay。
+        let sock = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        sock.connect(target_addr).await.unwrap();
+        let sock = Arc::new(sock);
+        let tx = AtomicU64::new(0);
+        let rx = AtomicU64::new(0);
+        let relay = async {
+            let mut w = b_write;
+            let mut r = b_read;
+            let _ = relay_udp(&mut w, &mut r, &sock, &tx, &rx).await;
+        };
+
+        let client = async {
+            // 上行发一个数据报。
+            proto::write_datagram(&mut a_write, b"ping").await.unwrap();
+            // 读回下行（echo）。
+            let mut buf = Vec::new();
+            let n = proto::read_datagram(&mut a_read, &mut buf).await.unwrap();
+            assert_eq!(n, Some(4));
+            assert_eq!(&buf[..], b"ping");
+            // 关闭上行流，结束 relay。
+            a_write.shutdown().await.ok();
+        };
+
+        tokio::join!(relay, client);
+        assert_eq!(rx.load(Ordering::Relaxed), 4); // 上行计入 rx
+        assert_eq!(tx.load(Ordering::Relaxed), 4); // 下行计入 tx
     }
 }

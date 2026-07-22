@@ -34,7 +34,7 @@ use iroh::{Endpoint, PublicKey};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Mutex, RwLock, Semaphore};
+use tokio::sync::{Mutex, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -521,6 +521,23 @@ struct AppState {
     metrics: Arc<Metrics>,
     events: Arc<EventLog>,
     inner: Arc<Mutex<Inner>>,
+    /// 反向映射策略（deny-all）：是否接受 B 端发起的反向隧道，及允许 A 拨号的目标。
+    /// 用 RwLock 承载，便于后续通过管理页在运行期开关；save/export 从此读回持久化。
+    reverse: Arc<RwLock<ReverseConfig>>,
+}
+
+/// A 端反向映射运行期配置。空网段/端口即 deny-all（见 [`tunnel::ReversePolicy`]）。
+#[derive(Clone, Default)]
+struct ReverseConfig {
+    enabled: bool,
+    allow_networks: Vec<String>,
+    allow_ports: Vec<u16>,
+}
+
+impl ReverseConfig {
+    fn policy(&self) -> tunnel::ReversePolicy {
+        tunnel::ReversePolicy::from_config(self.enabled, &self.allow_networks, &self.allow_ports)
+    }
 }
 
 /// 在一条已有的连接上开流并完成握手。流类型是 noq 的私有类型，对外用 trait 对象承载。
@@ -568,8 +585,11 @@ async fn open_with_retry(
     Err(last.unwrap_or_else(|| anyhow::anyhow!("无法建立隧道")))
 }
 
-/// 一条隧道：开流、握手、本地与远端双向透传（优雅半关闭 + 流量计数 + 全局指标）。
+/// 一条 TCP / HTTP 隧道：开流、握手、本地与远端双向透传（优雅半关闭 + 流量计数 + 全局指标）。
 /// conn 是这条连接自己的元数据；其 tx/rx 与映射级累计并行累加，供管理页展开明细。
+///
+/// `prefix` 是已从本地连接读出、需要先补发给远端的字节（HTTP 网关在窥探 Host 头后
+/// 用它把读走的请求头重放给后端）；普通 TCP 传空切片。
 async fn handle_tunnel(
     link: Link,
     req: proto::OpenRequest,
@@ -577,12 +597,20 @@ async fn handle_tunnel(
     stats: Arc<Stats>,
     conn: Arc<ConnMeta>,
     metrics: Arc<Metrics>,
+    prefix: Vec<u8>,
 ) -> Result<()> {
     let (mut send, mut recv) = open_with_retry(&link, &req).await?;
     metrics.tunnel_open();
     stats.record_success().await;
     let (mut l_read, mut l_write) = tokio::io::split(local);
     let up = async {
+        if !prefix.is_empty() {
+            send.write_all(&prefix).await?;
+            let n = prefix.len() as u64;
+            stats.tx.fetch_add(n, Ordering::Relaxed);
+            conn.tx.fetch_add(n, Ordering::Relaxed);
+            metrics.bytes_tx.fetch_add(n, Ordering::Relaxed);
+        }
         tunnel::copy_count(
             &mut l_read,
             &mut send,
@@ -721,12 +749,76 @@ mod integration_tests {
             inner: Arc::new(Mutex::new(Inner {
                 mappings: HashMap::new(),
             })),
+            reverse: Arc::new(RwLock::new(ReverseConfig::default())),
         }
     }
 
     async fn response_json(response: Response) -> Value {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn http_mapping(routes: Vec<config::HttpRoute>) -> config::Mapping {
+        config::Mapping {
+            local: "127.0.0.1:8080".into(),
+            host: "10.0.0.1".into(),
+            port: 80,
+            enabled: true,
+            name: String::new(),
+            mode: config::MappingMode::Http,
+            routes,
+        }
+    }
+
+    #[test]
+    fn parse_host_header_reads_the_host_line_case_insensitively() {
+        let req = b"GET / HTTP/1.1\r\nHOST: grafana.local:3000\r\nAccept: */*\r\n\r\n";
+        assert_eq!(
+            parse_host_header(req).as_deref(),
+            Some("grafana.local:3000")
+        );
+        // 没有 Host 头
+        assert_eq!(parse_host_header(b"GET / HTTP/1.1\r\n\r\n"), None);
+    }
+
+    #[test]
+    fn select_http_backend_matches_host_then_falls_back() {
+        let mapping = http_mapping(vec![
+            config::HttpRoute {
+                host_match: "grafana.local".into(),
+                target_host: "192.168.1.10".into(),
+                target_port: 3000,
+            },
+            config::HttpRoute {
+                host_match: String::new(), // 兜底
+                target_host: "192.168.1.99".into(),
+                target_port: 8080,
+            },
+        ]);
+        // 命中具名路由（Host 头带端口也应忽略端口匹配）
+        assert_eq!(
+            select_http_backend(&mapping, Some("grafana.local:3000")),
+            ("192.168.1.10".into(), 3000)
+        );
+        // 未命中 → 兜底路由
+        assert_eq!(
+            select_http_backend(&mapping, Some("unknown.local")),
+            ("192.168.1.99".into(), 8080)
+        );
+        // 无 Host → 兜底路由
+        assert_eq!(
+            select_http_backend(&mapping, None),
+            ("192.168.1.99".into(), 8080)
+        );
+    }
+
+    #[test]
+    fn select_http_backend_without_routes_uses_mapping_target() {
+        let mapping = http_mapping(vec![]);
+        assert_eq!(
+            select_http_backend(&mapping, Some("anything.local")),
+            ("10.0.0.1".into(), 80)
+        );
     }
 
     #[tokio::test]
@@ -1377,6 +1469,8 @@ mod integration_tests {
             port: 6379,
             enabled: true,
             name: String::new(),
+            mode: config::MappingMode::default(),
+            routes: vec![],
         };
         let old_handle = start_mapping_owned(&state, old_mapping.clone())
             .await
@@ -1457,6 +1551,8 @@ struct StatItem {
     active_conns: u64,
     /// 当前活跃连接明细（来源、起始时间、独立字节），供管理页展开查看。
     conns: Vec<ConnSnapshot>,
+    /// 传输/代理模式（tcp / udp / http），供管理页给映射打标签。
+    mode: &'static str,
     #[serde(flatten)]
     diagnostics: MappingDiagnosticSnapshot,
 }
@@ -1482,6 +1578,7 @@ async fn stats(State(st): State<AppState>) -> Json<Vec<StatItem>> {
             rx_bytes: stats.rx.load(Ordering::Relaxed),
             active_conns: stats.active_conns.load(Ordering::Relaxed),
             conns: stats.conn_snapshot(),
+            mode: mapping.mode.as_str(),
             diagnostics: stats.diagnostic_snapshot().await,
         });
     }
@@ -1504,6 +1601,12 @@ struct CreateBody {
     /// 可选的可读名称；省略时按空字符串处理。
     #[serde(default)]
     name: Option<String>,
+    /// 传输/代理模式（tcp / udp / http）；省略时创建按 tcp、编辑时沿用原值。
+    #[serde(default)]
+    mode: Option<config::MappingMode>,
+    /// HTTP 网关模式下的按 Host 路由表；仅 http 模式有意义。
+    #[serde(default)]
+    routes: Option<Vec<config::HttpRoute>>,
 }
 
 #[derive(Serialize)]
@@ -1530,6 +1633,8 @@ async fn preflight(
         port: body.port,
         enabled: true,
         name: body.name.unwrap_or_default().trim().to_string(),
+        mode: body.mode.unwrap_or_default(),
+        routes: body.routes.unwrap_or_default(),
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
@@ -1596,10 +1701,17 @@ async fn preflight(
             detail: "需要有效凭证后才能验证目标服务".into(),
         }
     } else {
+        // 预检按映射模式选对应隧道类型：udp 校验 UDP 目标可达，其余（含 http 网关）走 tcp。
+        let kind = match mapping.mode {
+            config::MappingMode::Udp => proto::TunnelKind::Udp,
+            _ => proto::TunnelKind::Tcp,
+        };
         let request = proto::OpenRequest {
             token: st.link.token().await,
             host: mapping.host.clone(),
             port: mapping.port,
+            kind,
+            register: false,
         };
         match tokio::time::timeout(Duration::from_secs(8), open_with_retry(&st.link, &request))
             .await
@@ -1633,6 +1745,8 @@ async fn create(
         port: body.port,
         enabled: body.enabled.unwrap_or(true),
         name: body.name.unwrap_or_default().trim().to_string(),
+        mode: body.mode.unwrap_or_default(),
+        routes: body.routes.unwrap_or_default(),
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
@@ -1706,6 +1820,7 @@ fn disabled_handle(mapping: config::Mapping) -> MappingHandle {
 
 /// 启动一条映射的本地监听；返回运行期把手（含取消令牌）。
 /// 停用的映射不绑定本地端口，只登记为 disabled 状态，随时可再启用。
+/// 按 mode 分派：tcp / http 走 TCP 监听（http 额外按 Host 头选后端），udp 走 UDP socket。
 async fn start_mapping_owned(
     st: &AppState,
     mapping: config::Mapping,
@@ -1713,6 +1828,85 @@ async fn start_mapping_owned(
     if !mapping.enabled {
         return Ok(disabled_handle(mapping));
     }
+    match mapping.mode {
+        config::MappingMode::Udp => start_udp_mapping(st, mapping).await,
+        config::MappingMode::Tcp | config::MappingMode::Http => {
+            start_tcp_mapping(st, mapping).await
+        }
+    }
+}
+
+/// 按请求的 Host 头选出该 HTTP 网关映射要拨的后端 (host, port)。
+/// 命中具名路由优先；否则用兜底路由（空 host_match）；再否则用映射自身的 host/port。
+fn select_http_backend(mapping: &config::Mapping, host_header: Option<&str>) -> (String, u16) {
+    // Host 头可能带端口（example.com:8080），比较时只取主机部分并忽略大小写。
+    let want = host_header.map(|h| {
+        let bare = h.rsplit_once(':').map(|(a, _)| a).unwrap_or(h);
+        bare.trim().to_ascii_lowercase()
+    });
+    if let Some(want) = &want {
+        for r in &mapping.routes {
+            let m = r.host_match.trim();
+            if !m.is_empty() && m.to_ascii_lowercase() == *want {
+                return (r.target_host.clone(), r.target_port);
+            }
+        }
+    }
+    if let Some(r) = mapping
+        .routes
+        .iter()
+        .find(|r| r.host_match.trim().is_empty())
+    {
+        return (r.target_host.clone(), r.target_port);
+    }
+    (mapping.host.clone(), mapping.port)
+}
+
+/// 从已读到的 HTTP 请求头字节里解析 Host 头（大小写不敏感）。找不到返回 None。
+fn parse_host_header(buf: &[u8]) -> Option<String> {
+    // 只在已读到的头部里找；找到 CRLFCRLF 前的 "Host:" 行即可。
+    let text = String::from_utf8_lossy(buf);
+    for line in text.split("\r\n") {
+        if line.is_empty() {
+            break; // 头部结束
+        }
+        if let Some((k, v)) = line.split_once(':')
+            && k.trim().eq_ignore_ascii_case("host")
+        {
+            return Some(v.trim().to_string());
+        }
+    }
+    None
+}
+
+/// 从本地连接窥探 HTTP 请求头，直到读到头结束（CRLFCRLF）或到达上限。
+/// 返回 (已读字节, Host 头)。用于 HTTP 网关按 Host 选后端，读走的字节随后重放给后端。
+async fn peek_http_head(local: &mut TcpStream) -> std::io::Result<(Vec<u8>, Option<String>)> {
+    use tokio::io::AsyncReadExt;
+    // 头部窥探上限：足够容纳常见请求头，超过则不再等待，按已读内容决策。
+    const MAX_HEAD: usize = 16 * 1024;
+    let mut buf = Vec::with_capacity(1024);
+    let mut chunk = [0u8; 1024];
+    loop {
+        let n = local.read(&mut chunk).await?;
+        if n == 0 {
+            break; // 连接在头部结束前关闭
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.windows(4).any(|w| w == b"\r\n\r\n") || buf.len() >= MAX_HEAD {
+            break;
+        }
+    }
+    let host = parse_host_header(&buf);
+    Ok((buf, host))
+}
+
+/// TCP / HTTP 网关映射：绑定本地 TCP 端口，每个连接复用到 B 的隧道。
+/// http 模式下先窥探 Host 头选后端并把读走的头重放给后端；tcp 模式 prefix 为空。
+async fn start_tcp_mapping(
+    st: &AppState,
+    mapping: config::Mapping,
+) -> Result<MappingHandle, (StatusCode, String)> {
     let listener = TcpListener::bind(&mapping.local).await.map_err(|e| {
         (
             StatusCode::BAD_REQUEST,
@@ -1770,15 +1964,51 @@ async fn start_mapping_owned(
                             id: conn_id,
                         };
                         // 每条隧道建立时实时读取当前令牌，凭证轮换后新连接立即生效。
-                        let mapping = mapping.read().await;
+                        let (mode, host, port, routes) = {
+                            let m = mapping.read().await;
+                            (m.mode, m.host.clone(), m.port, m.routes.clone())
+                        };
+                        // HTTP 网关：窥探 Host 头选后端，读走的头随后重放给后端。
+                        let mut tcp = tcp;
+                        let (target_host, target_port, prefix) = if mode
+                            == config::MappingMode::Http
+                        {
+                            match peek_http_head(&mut tcp).await {
+                                Ok((buf, host_header)) => {
+                                    let snapshot = config::Mapping {
+                                        local: String::new(),
+                                        host: host.clone(),
+                                        port,
+                                        enabled: true,
+                                        name: String::new(),
+                                        mode,
+                                        routes: routes.clone(),
+                                    };
+                                    let (h, p) =
+                                        select_http_backend(&snapshot, host_header.as_deref());
+                                    (h, p, buf)
+                                }
+                                Err(e) => {
+                                    Metrics::inc(&metrics.tunnels_failed);
+                                    stats
+                                        .record_failure(&anyhow::anyhow!("读取 HTTP 头失败: {e}"))
+                                        .await;
+                                    return;
+                                }
+                            }
+                        } else {
+                            (host, port, Vec::new())
+                        };
                         let req = proto::OpenRequest {
                             token: link.token().await,
-                            host: mapping.host.clone(),
-                            port: mapping.port,
+                            host: target_host,
+                            port: target_port,
+                            kind: proto::TunnelKind::Tcp,
+                            register: false,
                         };
                         tokio::select! {
                             _ = child.cancelled() => {}
-                            r = handle_tunnel(link.clone(), req, tcp, stats_for_tunnel, conn_meta, metrics.clone()) => {
+                            r = handle_tunnel(link.clone(), req, tcp, stats_for_tunnel, conn_meta, metrics.clone(), prefix) => {
                                 if let Err(e) = r {
                                     Metrics::inc(&metrics.tunnels_failed);
                                     stats.record_failure(&e).await;
@@ -1803,6 +2033,177 @@ async fn start_mapping_owned(
         stats,
         cancel,
     })
+}
+
+/// UDP 映射：绑定本地 UDP socket，按来源地址维护会话，每个来源复用一条到 B 的 UDP 隧道流。
+/// 会话空闲超时后回收；本地无连接语义，因此用来源地址做键。
+async fn start_udp_mapping(
+    st: &AppState,
+    mapping: config::Mapping,
+) -> Result<MappingHandle, (StatusCode, String)> {
+    let socket = tokio::net::UdpSocket::bind(&mapping.local)
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("绑定 UDP {} 失败: {e}", mapping.local),
+            )
+        })?;
+    let socket = Arc::new(socket);
+    let link = st.link.clone();
+    let metrics = st.metrics.clone();
+    let local = mapping.local.clone();
+    let max_conns = st.max_conns_per_mapping;
+    let runtime_mapping = Arc::new(RwLock::new(mapping));
+    let mapping_for_task = runtime_mapping.clone();
+    let stats = Stats::new();
+    let stats_clone = stats.clone();
+    let cancel = CancellationToken::new();
+    let cancel_task = cancel.clone();
+
+    let task = tokio::spawn(async move {
+        // 来源地址 → 该会话的上行发送端（把本地收到的数据报喂给会话任务）。
+        let sessions: Arc<Mutex<HashMap<SocketAddr, mpsc::Sender<Vec<u8>>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let mut buf = vec![0u8; proto::MAX_DATAGRAM_LEN as usize];
+        loop {
+            let recvd = tokio::select! {
+                _ = cancel_task.cancelled() => break,
+                r = socket.recv_from(&mut buf) => r,
+            };
+            let (n, peer) = match recvd {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::error!(error = %e, local = %local, "UDP 本地监听关闭");
+                    break;
+                }
+            };
+            let datagram = buf[..n].to_vec();
+            // 已有会话：直接投递。发送失败（会话已回收）则移除并新建。
+            let existing = {
+                let g = sessions.lock().await;
+                g.get(&peer).cloned()
+            };
+            if let Some(tx) = existing
+                && tx.send(datagram.clone()).await.is_ok()
+            {
+                continue;
+            }
+            // 新会话：并发上限校验（活跃会话数即活跃连接数）。
+            if max_conns > 0 && stats_clone.active_conns.load(Ordering::Relaxed) >= max_conns as u64
+            {
+                Metrics::inc(&metrics.over_limit);
+                continue;
+            }
+            let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
+            let _ = tx.send(datagram).await;
+            {
+                let mut g = sessions.lock().await;
+                g.insert(peer, tx);
+            }
+            let link = link.clone();
+            let socket = socket.clone();
+            let stats = stats_clone.clone();
+            let metrics = metrics.clone();
+            let mapping = mapping_for_task.clone();
+            let sessions = sessions.clone();
+            let child = cancel_task.child_token();
+            tokio::spawn(async move {
+                stats.active_conns.fetch_add(1, Ordering::Relaxed);
+                let (conn_id, conn_meta) = stats.register_conn(peer.to_string());
+                let _active = ActiveGuard {
+                    stats: stats.clone(),
+                    id: conn_id,
+                };
+                let (host, port) = {
+                    let m = mapping.read().await;
+                    (m.host.clone(), m.port)
+                };
+                let req = proto::OpenRequest {
+                    token: link.token().await,
+                    host,
+                    port,
+                    kind: proto::TunnelKind::Udp,
+                    register: false,
+                };
+                tokio::select! {
+                    _ = child.cancelled() => {}
+                    r = handle_udp_session(link.clone(), req, &socket, peer, rx, stats.clone(), conn_meta, metrics.clone()) => {
+                        if let Err(e) = r {
+                            Metrics::inc(&metrics.tunnels_failed);
+                            stats.record_failure(&e).await;
+                            tracing::warn!(error = %e, "UDP 隧道关闭");
+                        }
+                    }
+                }
+                // 会话结束：从表中移除，让后续同源数据报新建会话。
+                sessions.lock().await.remove(&peer);
+            });
+        }
+        stats_clone.mark_listener_stopped().await;
+    });
+
+    Ok(MappingHandle {
+        mapping: runtime_mapping,
+        task,
+        stats,
+        cancel,
+    })
+}
+
+/// 一条 UDP 会话：开到 B 的 UDP 隧道流，把本地来源的数据报上行、B 回来的数据报回发本地来源。
+/// `rx` 交付本地监听收到的、属于该来源的数据报；空闲超时后结束会话。
+#[allow(clippy::too_many_arguments)]
+async fn handle_udp_session(
+    link: Link,
+    req: proto::OpenRequest,
+    socket: &Arc<tokio::net::UdpSocket>,
+    peer: SocketAddr,
+    mut rx: mpsc::Receiver<Vec<u8>>,
+    stats: Arc<Stats>,
+    conn: Arc<ConnMeta>,
+    metrics: Arc<Metrics>,
+) -> Result<()> {
+    // UDP 会话空闲超时：两个方向都静默这么久则回收。
+    const IDLE: Duration = Duration::from_secs(60);
+    let (mut send, mut recv) = open_with_retry(&link, &req).await?;
+    metrics.tunnel_open();
+    stats.record_success().await;
+
+    // 上行：本地来源数据报 → QUIC 流（长度前缀）。
+    let up = async {
+        // 本地端关闭或空闲超时都结束上行；只有拿到数据报才继续。
+        while let Ok(Some(datagram)) = tokio::time::timeout(IDLE, rx.recv()).await {
+            proto::write_datagram(&mut send, &datagram).await?;
+            let n = datagram.len() as u64;
+            stats.tx.fetch_add(n, Ordering::Relaxed);
+            conn.tx.fetch_add(n, Ordering::Relaxed);
+            metrics.bytes_tx.fetch_add(n, Ordering::Relaxed);
+        }
+        send.shutdown().await.ok();
+        Ok::<_, anyhow::Error>(())
+    };
+    // 下行：QUIC 流数据报 → 回发本地来源。
+    let down = async {
+        let mut dbuf = Vec::with_capacity(2048);
+        loop {
+            match tokio::time::timeout(IDLE, proto::read_datagram(&mut recv, &mut dbuf)).await {
+                Ok(Ok(Some(len))) => {
+                    socket.send_to(&dbuf[..len], peer).await?;
+                    let n = len as u64;
+                    stats.rx.fetch_add(n, Ordering::Relaxed);
+                    conn.rx.fetch_add(n, Ordering::Relaxed);
+                    metrics.bytes_rx.fetch_add(n, Ordering::Relaxed);
+                }
+                Ok(Ok(None)) | Err(_) => break, // 流结束或空闲超时
+                Ok(Err(e)) => return Err(anyhow::Error::from(e)),
+            }
+        }
+        Ok::<_, anyhow::Error>(())
+    };
+    let result = tokio::try_join!(up, down);
+    metrics.tunnel_close();
+    result.map(|_| ())
 }
 
 async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
@@ -1837,9 +2238,9 @@ async fn update(
         .ok_or((StatusCode::NOT_FOUND, format!("{id} 不存在映射")))?;
     // 编辑表单不改变启用状态：省略 enabled 时沿用原值，启用/停用走专门的 toggle 接口。
     // name 同理：省略时沿用原名称，避免编辑目标时把名称清空。
-    let (was_enabled, was_name) = {
+    let (was_enabled, was_name, was_mode, was_routes) = {
         let m = existing.mapping.read().await;
-        (m.enabled, m.name.clone())
+        (m.enabled, m.name.clone(), m.mode, m.routes.clone())
     };
     let mapping = config::Mapping {
         local: body.local,
@@ -1847,6 +2248,8 @@ async fn update(
         port: body.port,
         enabled: body.enabled.unwrap_or(was_enabled),
         name: body.name.unwrap_or(was_name),
+        mode: body.mode.unwrap_or(was_mode),
+        routes: body.routes.unwrap_or(was_routes),
     };
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
@@ -2032,13 +2435,67 @@ fn app(state: AppState) -> Router {
         .route("/api/mappings/{id}/toggle", post(toggle))
         .route("/api/mappings/toggle-all", post(toggle_all))
         .route("/api/credential", get(get_credential).post(set_credential))
+        .route("/api/reverse", get(get_reverse).put(set_reverse))
         .route("/api/export", get(export_config))
         .route("/api/import", post(import_config))
         .with_state(state.clone())
         .layer(from_fn_with_state(state, require_auth))
 }
 
-/// 从当前运行期状态构建一份完整配置（凭证 + 设置 + 映射）。save_config 与导出接口共用。
+/// 反向映射策略的读写视图（GET/PUT /api/reverse）。
+#[derive(Serialize, Deserialize)]
+struct ReverseView {
+    /// 反向映射总开关。
+    enabled: bool,
+    /// 允许 A 端回拨的目标网段（CIDR）；空即 deny-all。
+    allow_networks: Vec<String>,
+    /// 允许 A 端回拨的目标端口；空即 deny-all。
+    allow_ports: Vec<u16>,
+}
+
+/// GET /api/reverse —— 读取当前反向映射策略（deny-all 语义）。
+async fn get_reverse(State(st): State<AppState>) -> Json<ReverseView> {
+    let r = st.reverse.read().await;
+    Json(ReverseView {
+        enabled: r.enabled,
+        allow_networks: r.allow_networks.clone(),
+        allow_ports: r.allow_ports.clone(),
+    })
+}
+
+/// PUT /api/reverse —— 更新反向映射策略并持久化。校验 CIDR 合法、端口非 0。
+/// 开关/白名单变更对后续新反向流即时生效（反向流建立时实时读取策略）。
+async fn set_reverse(
+    State(st): State<AppState>,
+    Json(body): Json<ReverseView>,
+) -> Result<Json<ReverseView>, (StatusCode, String)> {
+    for cidr in &body.allow_networks {
+        if cidr.parse::<ipnet::IpNet>().is_err() {
+            return Err((StatusCode::BAD_REQUEST, format!("无效 CIDR: {cidr}")));
+        }
+    }
+    if body.allow_ports.contains(&0) {
+        return Err((StatusCode::BAD_REQUEST, "端口不能为 0".into()));
+    }
+    {
+        let mut r = st.reverse.write().await;
+        r.enabled = body.enabled;
+        r.allow_networks = body.allow_networks.clone();
+        r.allow_ports = body.allow_ports.clone();
+    }
+    save_config(&st).await;
+    st.events.push(
+        "info",
+        "reverse",
+        if body.enabled {
+            "已更新反向映射策略（已启用）"
+        } else {
+            "已关闭反向映射"
+        },
+    );
+    Ok(Json(body))
+}
+
 async fn build_config(st: &AppState) -> config::AConfig {
     let mapping_handles: Vec<Arc<RwLock<config::Mapping>>> = st
         .inner
@@ -2060,6 +2517,7 @@ async fn build_config(st: &AppState) -> config::AConfig {
             c.published_targets.clone(),
         )
     };
+    let reverse = st.reverse.read().await.clone();
     config::AConfig {
         node_id,
         token,
@@ -2071,6 +2529,9 @@ async fn build_config(st: &AppState) -> config::AConfig {
         max_conns_per_mapping: st.max_conns_per_mapping,
         mappings,
         published_targets,
+        reverse_enabled: reverse.enabled,
+        reverse_allow_networks: reverse.allow_networks,
+        reverse_allow_ports: reverse.allow_ports,
     }
 }
 
@@ -2475,6 +2936,11 @@ async fn main() -> Result<()> {
         inner: Arc::new(Mutex::new(Inner {
             mappings: HashMap::new(),
         })),
+        reverse: Arc::new(RwLock::new(ReverseConfig {
+            enabled: cfg.reverse_enabled,
+            allow_networks: cfg.reverse_allow_networks.clone(),
+            allow_ports: cfg.reverse_allow_ports.clone(),
+        })),
     };
 
     // 恢复持久化的映射（受 max_mappings 上限约束）
@@ -2545,6 +3011,78 @@ async fn main() -> Result<()> {
                     failures = failures.saturating_add(1);
                     tracing::debug!(failures, error = %e, "看门狗重连暂未成功");
                 }
+            }
+        }
+    });
+
+    // 反向映射驱动：开启后在到 B 的同一条连接上发一条 register 流（让 B 起内网反向监听），
+    // 随后循环 accept_bi 接收 B 发起的反向流，每条按 A 端 deny-all 策略校验后回拨 A 一侧目标。
+    // 连接断开则重来；关闭反向时不注册（即便有残留流，策略也会一律拒绝）。
+    let reverse_link = link.clone();
+    let reverse_state = state.clone();
+    let reverse_metrics = metrics.clone();
+    tokio::spawn(async move {
+        // A 端回拨自己一侧目标的拨号超时，与正向 server 侧保持一致量级。
+        const REVERSE_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
+        loop {
+            tokio::time::sleep(Duration::from_secs(3)).await;
+            if !reverse_state.reverse.read().await.enabled {
+                continue;
+            }
+            if !reverse_link.configured().await {
+                continue;
+            }
+            let conn = match reverse_link.get().await {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            // 在既有连接上开一条 register 流：B 据此认证连接并启动该客户的反向监听。
+            let (mut send, mut recv) = match conn.open_bi().await {
+                Ok(s) => s,
+                Err(_) => continue,
+            };
+            let req = proto::OpenRequest {
+                token: reverse_link.token().await,
+                host: String::new(),
+                port: 0,
+                kind: proto::TunnelKind::Tcp,
+                register: true,
+            };
+            if proto::write_open(&mut send, &req).await.is_err() {
+                continue;
+            }
+            match proto::read_status(&mut recv).await {
+                Ok(Ok(())) => {
+                    reverse_state.events.push(
+                        "info",
+                        "reverse",
+                        "反向映射已注册，开始接受 server 发起的反向连接",
+                    );
+                    tracing::info!("反向注册成功，开始接受 B 的反向流");
+                }
+                Ok(Err(msg)) => {
+                    // B 未为该客户配置反向监听等：稍等再试，避免忙循环。
+                    tracing::debug!(reason = %msg, "B 拒绝反向注册");
+                    tokio::time::sleep(Duration::from_secs(20)).await;
+                    continue;
+                }
+                Err(_) => continue,
+            }
+            // 接受 B 发起的反向流，直到连接断开（accept_bi 出错则回到外层重连并重新注册）。
+            while let Ok((s, r)) = conn.accept_bi().await {
+                // 每条流实时读取当前策略，运行期开关/白名单变更即时生效。
+                let policy = reverse_state.reverse.read().await.policy();
+                let metrics = reverse_metrics.clone();
+                let events = reverse_state.events.clone();
+                tokio::spawn(async move {
+                    if let Err(e) =
+                        tunnel::serve_reverse_stream(s, r, &policy, REVERSE_DIAL_TIMEOUT, &metrics)
+                            .await
+                    {
+                        tracing::debug!(error = %e, "反向流结束");
+                        events.push("warn", "reverse", format!("反向连接结束: {e}"));
+                    }
+                });
             }
         }
     });
