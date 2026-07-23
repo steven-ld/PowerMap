@@ -19,8 +19,9 @@ jobs:
         with:
           # 从 tag 名生成 Release；正文自动取 CHANGELOG.md 对应版本段（若有）
           changelog: CHANGELOG.md
-          # Keep the release invisible until every binary and container image has passed smoke tests.
-          draft: true
+          # Pre-releases stay out of GitHub's `latest` endpoint while remaining downloadable by
+          # the smoke-test jobs. Publish it as stable only after every artifact is verified.
+          prerelease: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
   upload-assets:
@@ -175,4 +176,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release edit "$TAG" --draft=false
+        run: gh release edit "$TAG" --prerelease=false
