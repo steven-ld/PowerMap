@@ -19,6 +19,8 @@ jobs:
         with:
           # 从 tag 名生成 Release；正文自动取 CHANGELOG.md 对应版本段（若有）
           changelog: CHANGELOG.md
+          # Keep the release invisible until every binary and container image has passed smoke tests.
+          draft: true
           token: ${{ secrets.GITHUB_TOKEN }}
 
   upload-assets:
@@ -132,3 +134,45 @@ jobs:
           Expand-Archive -Path $archive -DestinationPath dist/unpacked
           & dist/unpacked/powermap.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+  publish-docker:
+    name: publish Docker image
+    needs: verify-release-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/powermap:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/powermap:latest
+      - name: Make the public image pullable without credentials
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PATCH /user/packages/container/powermap -f visibility=public
+
+  publish-release:
+    name: publish verified release
+    needs: publish-docker
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release edit "$TAG" --draft=false

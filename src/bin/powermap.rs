@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::{path::PathBuf, time::Duration};
 
 use anyhow::Result;
 use clap::Parser;
@@ -6,7 +6,7 @@ use iroh::SecretKey;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use powermap::{access, config, expose, proto, signal};
+use powermap::{access, config, expose, proto, signal, update};
 
 #[derive(Parser)]
 #[command(name = "powermap", version, about = "P2P private-network access")]
@@ -21,6 +21,14 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    let result = run().await;
+    if let Err(error) = result {
+        return update::rollback_failed_start(error);
+    }
+    Ok(())
+}
+
+async fn run() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -62,6 +70,17 @@ async fn main() -> Result<()> {
     if let Some(access_cfg) = loaded.config.access {
         tasks.spawn(access::run(access_cfg, loaded.path, cancel.clone()));
     }
+
+    // A freshly exec'd update retains its old binary until the new process has survived its
+    // startup gate. Most configuration and bind failures surface immediately in a worker task.
+    if let Ok(Some(result)) = tokio::time::timeout(Duration::from_secs(2), tasks.join_next()).await
+    {
+        let result = result?;
+        cancel.cancel();
+        while tasks.join_next().await.is_some() {}
+        return result;
+    }
+    update::confirm_startup()?;
 
     let result = tasks
         .join_next()

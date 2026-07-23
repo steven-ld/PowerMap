@@ -9,6 +9,7 @@ license = "MIT OR Apache-2.0"
 iroh = "1"
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
+flate2 = "1"
 clap = { version = "4", features = ["derive"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -20,6 +21,10 @@ axum = { version = "0.8", features = ["json"] }
 # 避免 aws-lc-rs 的 C/cmake 构建（更慢、在受限环境易失败）。
 axum-server = { version = "0.7", default-features = false, features = ["tls-rustls-no-provider"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging", "tls12"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3"
 tokio-util = { version = "0.7", features = ["rt"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
@@ -34,5 +39,4 @@ lto = true
 codegen-units = 1
 
 [dev-dependencies]
-tempfile = "3"
 tower = { version = "0.5", features = ["util"] }

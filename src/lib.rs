@@ -6,3 +6,4 @@ pub mod metrics;
 pub mod proto;
 pub mod signal;
 pub mod tunnel;
+pub mod update;

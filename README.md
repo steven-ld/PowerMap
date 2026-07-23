@@ -96,6 +96,10 @@ cargo build --release
 
 构建产物为 `target/release/powermap`。
 
+### 管理页更新
+
+在管理页“节点”的“软件更新”卡片中检查并安装最新稳定版。原生 macOS/Linux 会下载对应平台的 Release、校验 SHA-256、保留旧二进制备份并优雅重启，已有配置和映射会自动恢复。二进制所在目录必须可写；Docker 会提供宿主机的 `docker compose pull && docker compose up -d` 命令，Windows 会提供 PowerShell 安装命令。
+
 ### 2. 选择“暴露内网服务”场景
 
 ```bash
@@ -178,20 +182,14 @@ flowchart LR
 如需 expose-only，先在挂载目录中创建只含 `[expose]` 的 `powermap.toml`；未提供
 配置时，首次启动会生成具备 expose 和 access 能力的默认节点。
 
-```bash
-docker build -t powermap .
-
-docker run -d --name powermap --network host \
-  -v "$PWD/data:/data" \
-  -e RUST_LOG=info \
-  powermap powermap --config /data/powermap.toml
-```
-
 或使用 Compose：
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+发布镜像位于 `ghcr.io/steven-ld/powermap`。升级时在 Compose 项目目录运行
+`POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d`；管理页会为检测到的 Docker 环境生成对应命令。
 
 access 建议原生运行：映射的本地端口位于 access 所在网络命名空间，放入 Docker 会额外增加逐端口发布的管理成本。
 

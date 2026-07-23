@@ -96,6 +96,10 @@ cargo build --release
 
 The build produces `target/release/powermap`.
 
+### Update from the console
+
+Use the **Software update** card on the **Node** page to check and install the latest stable release. Native macOS/Linux installs download the matching release, verify its SHA-256 checksum, keep a backup, and restart gracefully; configuration and mappings are restored automatically. The binary directory must be writable. Docker receives a host-side `docker compose pull && docker compose up -d` command, while Windows receives a PowerShell installation command.
+
 ### 2. Choose “expose this network” on the intranet machine
 
 ```bash
@@ -176,20 +180,13 @@ The UI binds to loopback only by default and shows connection state, transport p
 
 A container is a good fit for an intranet appliance. `--network host` generally improves NAT-traversal success. To run expose-only, create a mounted `powermap.toml` containing only `[expose]`; without a config, the first start creates a default node with both expose and access capabilities.
 
-```bash
-docker build -t powermap .
-
-docker run -d --name powermap --network host \
-  -v "$PWD/data:/data" \
-  -e RUST_LOG=info \
-  powermap powermap --config /data/powermap.toml
-```
-
 Or use Compose:
 
 ```bash
-docker compose up -d --build
+docker compose up -d
 ```
+
+Published images live at `ghcr.io/steven-ld/powermap`. To upgrade, run `POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d` from the Compose project directory; the console generates the matching command when it detects Docker.
 
 Run access natively where possible. Its mapped ports belong to its network namespace; Docker would add per-port publishing work.
 

@@ -32,10 +32,11 @@ PowerMap 编辑 hosts 时会持有 `/etc/.hosts.powermap.lock`，在读取、修
 升级时，安装脚本会覆盖二进制但保留配置、身份、映射和凭证。对 systemd 服务使用：
 
 ```bash
-POWERMAP_RESTART_SERVICE=1 sh install.sh
+curl -fsSL https://raw.githubusercontent.com/steven-ld/PowerMap/main/scripts/install.sh \
+  | sudo env INSTALL_DIR=/usr/local/bin POWERMAP_RESTART_SERVICE=1 sh
 ```
 
-该命令在下载并校验 Release 后自动重启已启用的 `powermap.service`。
+该命令在下载并校验 Release 后覆盖 systemd 实际执行的 `/usr/local/bin/powermap`，再自动重启已启用的 `powermap.service`。管理页会给出固定到目标 Release tag 的同类命令。
 
 ## macOS 与 Windows
 

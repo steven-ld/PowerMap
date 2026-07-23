@@ -90,11 +90,25 @@ try {
     }
 
     New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    $task = $null
+    if ($RestartTask) {
+        $task = Get-ScheduledTask -TaskName 'PowerMap' -ErrorAction SilentlyContinue
+        if ($null -ne $task) {
+            Stop-ScheduledTask -TaskName 'PowerMap' -ErrorAction Stop
+            $deadline = [DateTime]::UtcNow.AddSeconds(30)
+            do {
+                Start-Sleep -Milliseconds 500
+                $task = Get-ScheduledTask -TaskName 'PowerMap' -ErrorAction Stop
+            } while ($task.State -eq 'Running' -and [DateTime]::UtcNow -lt $deadline)
+            if ($task.State -eq 'Running') {
+                throw 'PowerMap scheduled task did not stop within 30 seconds; binary was not replaced.'
+            }
+        }
+    }
     Copy-Item -LiteralPath $binary.FullName -Destination (Join-Path $InstallDir 'powermap.exe') -Force
 
     Write-Host "Installed powermap.exe to $InstallDir"
     if ($RestartTask) {
-        $task = Get-ScheduledTask -TaskName 'PowerMap' -ErrorAction SilentlyContinue
         if ($null -ne $task) {
             Start-ScheduledTask -TaskName 'PowerMap'
             Write-Host 'Restarted PowerMap scheduled task.'

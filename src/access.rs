@@ -43,7 +43,7 @@ use crate::metrics::Metrics;
 use crate::{
     config,
     domain_hosts::{HostsError, HostsStore},
-    proto, tunnel,
+    proto, tunnel, update,
 };
 
 /// 运行期可变的接入凭证：连接目标（node_id → PublicKey）与访问令牌。
@@ -623,6 +623,7 @@ struct AppState {
     metrics: Arc<Metrics>,
     events: Arc<EventLog>,
     inner: Arc<Mutex<Inner>>,
+    updater: update::UpdateCoordinator,
     /// 反向映射策略（deny-all）：是否接受 B 端发起的反向隧道，及允许 A 拨号的目标。
     /// 用 RwLock 承载，便于后续通过管理页在运行期开关；save/export 从此读回持久化。
     reverse: Arc<RwLock<ReverseConfig>>,
@@ -837,12 +838,18 @@ mod integration_tests {
     use serde_json::Value;
     use tower::ServiceExt;
 
+    static TEST_STATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
     async fn test_state(web_token: &str) -> AppState {
         let endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
         let suffix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos();
+        let suffix = format!(
+            "{suffix}-{}",
+            TEST_STATE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+        );
         AppState {
             link: Link {
                 endpoint,
@@ -884,6 +891,7 @@ mod integration_tests {
             inner: Arc::new(Mutex::new(Inner {
                 mappings: HashMap::new(),
             })),
+            updater: update::UpdateCoordinator::new(CancellationToken::new()),
             reverse: Arc::new(RwLock::new(ReverseConfig::default())),
         }
     }
@@ -3835,11 +3843,43 @@ fn app(state: AppState) -> Router {
             post(toggle_domain_mapping),
         )
         .route("/api/node", get(get_node))
+        .route("/api/update", get(check_update).post(install_update))
         .route("/api/credential", get(get_credential).post(set_credential))
         .route("/api/reverse", get(get_reverse).put(set_reverse))
         .route("/api/export", get(export_config))
         .route("/api/import", post(import_config))
         .with_state(state)
+}
+
+/// GET /api/update —— 查询 GitHub 最新稳定版；只读取元数据，不下载或修改本机文件。
+async fn check_update() -> Result<Json<update::UpdateStatus>, (StatusCode, String)> {
+    let release = update::fetch_latest_release()
+        .await
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    let status = update::update_status(env!("CARGO_PKG_VERSION"), &release)
+        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
+    Ok(Json(status))
+}
+
+/// POST /api/update —— 下载、校验并排队安装最新版，随后优雅关闭 HTTP 并 exec 新二进制。
+async fn install_update(
+    State(st): State<AppState>,
+) -> Result<(StatusCode, Json<update::QueuedUpdate>), (StatusCode, String)> {
+    let queued = st
+        .updater
+        .queue_latest()
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error.to_string()))?;
+    st.events.push(
+        "info",
+        "update",
+        format!(
+            "PowerMap v{} 已下载并校验，正在重启安装",
+            queued.latest_version
+        ),
+    );
+    st.updater.request_restart();
+    Ok((StatusCode::ACCEPTED, Json(queued)))
 }
 
 /// GET /api/reverse —— 读取当前反向映射策略（deny-all 语义）。
@@ -4313,6 +4353,7 @@ pub async fn run(
         inner: Arc::new(Mutex::new(Inner {
             mappings: HashMap::new(),
         })),
+        updater: update::UpdateCoordinator::new(cancel.clone()),
         reverse: Arc::new(RwLock::new(ReverseConfig {
             enabled: cfg.reverse_enabled,
             allow_networks: cfg.reverse_allow_networks.clone(),
@@ -4535,6 +4576,9 @@ pub async fn run(
             .serve(app.into_make_service())
             .await?;
     }
+    // A queued update only reaches this point after the HTTP listener has drained. On Unix this
+    // replaces the current process image; on a regular shutdown it simply returns false.
+    let _ = state.updater.restart_if_queued().await?;
     tracing::info!("已关闭");
     Ok(())
 }

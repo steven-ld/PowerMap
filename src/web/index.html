@@ -1130,6 +1130,19 @@
           </div>
         </form>
       </div>
+
+      <div class="card" aria-labelledby="updateTitle">
+        <div class="card-header">
+          <span id="updateTitle" class="card-title">软件更新</span>
+          <button id="checkUpdateBtn" class="btn btn-outline btn-sm" type="button">检查更新</button>
+        </div>
+        <p id="updateSummary" class="hint">打开此页面后检查最新稳定版本。</p>
+        <div id="updateDetails" class="card-actions hidden">
+          <a id="updateReleaseLink" class="footer-link" target="_blank" rel="noopener noreferrer">查看发布说明</a>
+          <button id="installUpdateBtn" class="btn btn-primary btn-sm hidden" type="button">下载并重启</button>
+          <button id="copyUpdateCommandBtn" class="btn btn-primary btn-sm hidden" type="button">复制升级命令</button>
+        </div>
+      </div>
     </div>
 
     <!-- Tab: 事件 -->
@@ -1379,6 +1392,9 @@ function selectTab(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
   if (name === 'domains') refreshDomains();
+  if (name === 'connection') setTimeout(() => {
+    if (!checkedUpdate) checkUpdate({ silent: true });
+  }, 0);
 }
 document.getElementById('tabBar').addEventListener('click', (e) => {
   const b = e.target.closest('.tab');
@@ -1860,6 +1876,69 @@ async function refreshCred() {
     return c;
   } catch (e) { if (String(e) === 'Error: unauthorized') return null; }
 }
+let checkedUpdate = false;
+let updateCommand = '';
+async function checkUpdate({ silent = false } = {}) {
+  const button = document.getElementById('checkUpdateBtn');
+  const summary = document.getElementById('updateSummary');
+  const details = document.getElementById('updateDetails');
+  const link = document.getElementById('updateReleaseLink');
+  const install = document.getElementById('installUpdateBtn');
+  const copyCommand = document.getElementById('copyUpdateCommandBtn');
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  button.textContent = '检查中…';
+  try {
+    const r = await api('/api/update');
+    if (!r.ok) throw new Error((await r.text()) || '检查失败');
+    const update = await r.json();
+    checkedUpdate = true;
+    const guidance = update.install || { kind: 'in_app', label: '下载并重启', command: null };
+    summary.textContent = update.update_available
+      ? `发现 v${update.latest_version}，当前运行 v${update.current_version}。`
+      : `当前已是最新版本 v${update.current_version}。`;
+    if (update.update_available && guidance.kind === 'docker') summary.textContent += ' 请在宿主机执行升级。';
+    if (update.update_available && guidance.kind === 'windows') summary.textContent += ' 请在 PowerShell 中执行升级。';
+    if (update.update_available && guidance.kind === 'systemd') summary.textContent += ' 请在服务宿主机执行升级。';
+    if (update.update_available && guidance.kind === 'launchd') summary.textContent += ' 请在此 Mac 的终端执行升级。';
+    link.href = update.release_url;
+    updateCommand = guidance.command || '';
+    install.classList.toggle('hidden', !update.update_available || guidance.kind !== 'in_app');
+    copyCommand.classList.toggle('hidden', !update.update_available || guidance.kind === 'in_app' || !updateCommand);
+    copyCommand.textContent = guidance.label || '复制升级命令';
+    details.classList.remove('hidden');
+    if (update.update_available && !silent) toast(`发现 PowerMap v${update.latest_version} 更新`, 'info', 6000);
+  } catch (error) {
+    summary.textContent = `无法检查更新：${String(error.message || error)}`;
+  } finally {
+    button.disabled = false;
+    button.textContent = '检查更新';
+  }
+}
+document.getElementById('checkUpdateBtn').addEventListener('click', () => checkUpdate());
+document.getElementById('installUpdateBtn').addEventListener('click', async () => {
+  const button = document.getElementById('installUpdateBtn');
+  const summary = document.getElementById('updateSummary');
+  if (!confirm('将下载已验证的最新版本并重启 PowerMap。现有映射会自动恢复。是否继续？')) return;
+  button.disabled = true;
+  button.textContent = '下载并校验中…';
+  try {
+    const r = await api('/api/update', { method: 'POST' });
+    if (!r.ok) throw new Error((await r.text()) || '升级失败');
+    const result = await r.json();
+    summary.textContent = `v${result.latest_version} 已下载并校验，正在重启服务…`;
+    button.textContent = '正在重启…';
+  } catch (error) {
+    summary.textContent = `无法安装更新：${String(error.message || error)}`;
+    button.disabled = false;
+    button.textContent = '下载并重启';
+  }
+});
+document.getElementById('copyUpdateCommandBtn').addEventListener('click', async () => {
+  if (!updateCommand) return;
+  const ok = await copyText(updateCommand);
+  toast(ok ? '升级命令已复制' : '复制失败，请从发布说明中手动升级', ok ? 'success' : 'error');
+});
 function renderConnectedPeers(connected, ips) {
   const list = document.getElementById('mPeerList');
   const unique = [...new Set(Array.isArray(ips) ? ips.filter(Boolean) : [])];
