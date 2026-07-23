@@ -183,4 +183,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.ref_name }}
-        run: gh release edit "$TAG" --prerelease=false
+        run: gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false
