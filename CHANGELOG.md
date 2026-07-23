@@ -4,6 +4,28 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-07-23
+
+### Added
+
+- 控制台新增“关于”页：集中展示稳定版更新、发布说明、运行方式和连接诊断；右上角在检测到新版本时给出提示。
+- 映射健康摘要：概览页汇总健康、异常、已停止和未启用映射；状态恶化时给出一次性页内提醒。
+- 一键脱敏诊断报告：可下载版本、连接路径、延迟、映射统计和近期事件，自动移除令牌、Bearer 凭证及本机路径。
+- 新建映射新增常用服务模板和回环本地端口建议；端口检查只在 `127.0.0.1` 的有限候选范围内进行。
+- `GET /api/runtime`、`/api/diagnostics`、`/api/mapping-health` 和 `/api/diagnostic-report` 提供运行、连接和映射健康的只读状态。
+
+### Changed
+
+- 节点页只处理身份与连接；软件更新入口移动到“关于”页。实时流量与刷新控制从侧栏迁移到概览主页。
+- 配置导出默认脱敏；含凭证的完整导出需在控制台明确确认。
+- 更新元数据在服务端缓存 30 秒，前端轮询不会每 2 秒请求 GitHub。
+- Release 工作流显式安装 Rust 工具链；Docker 镜像从已验证的 Release 归档取得二进制，支持从 Fork 的仓库名下载资产。
+
+### Compatibility
+
+- 现有统一配置、旧单租户 token、节点身份、凭证、端口映射和域名映射均无需迁移。
+- 默认导出的脱敏配置不包含接入 token；需要导入后立即恢复远端连接时，请选择“完整导出”并妥善保管文件。
+
 ## [0.6.0] - 2026-07-23
 
 ### Added
@@ -99,7 +121,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/steven-ld/PowerMap/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/steven-ld/PowerMap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/steven-ld/PowerMap/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/steven-ld/PowerMap/compare/v0.3.0...v0.4.0

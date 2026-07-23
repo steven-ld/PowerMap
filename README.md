@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-[官网](https://powermap.ga666666.com) · **简体中文** · [English](README.en.md) · [下载](https://github.com/steven-ld/PowerMap/releases) · [v0.6.0 发版说明](docs/releases/v0.6.0.md) · [贡献](CONTRIBUTING.md)
+[官网](https://powermap.ga666666.com) · **简体中文** · [English](README.en.md) · [下载](https://github.com/steven-ld/PowerMap/releases) · [v0.7.0 发版说明](docs/releases/v0.7.0.md) · [贡献](CONTRIBUTING.md)
 
 </div>
 
@@ -48,7 +48,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。若最新 Release 尚未上传当前平台的资产，脚本会显示对应资产和发布页；可稍后重试，或使用 `sh install.sh v0.6.0` 固定版本。也可设置 `POWERMAP_VERSION`，或继续使用下方的手动下载和源码构建方式。
+安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。若最新 Release 尚未上传当前平台的资产，脚本会显示对应资产和发布页；可稍后重试，或使用 `sh install.sh v0.7.0` 固定版本。也可设置 `POWERMAP_VERSION`，或继续使用下方的手动下载和源码构建方式。
 
 ## 适用边界
 
@@ -74,7 +74,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 从 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台的预编译包。以 macOS Apple Silicon 为例：
 
 ```bash
-VERSION=v0.6.0
+VERSION=v0.7.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin；Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 

@@ -1,9 +1,15 @@
 pub mod access;
 pub mod config;
+pub mod diagnostic_report;
+pub mod diagnostics;
 pub mod domain_hosts;
 pub mod expose;
+pub mod local_services;
+pub mod mapping_health;
 pub mod metrics;
+pub mod port_suggestions;
 pub mod proto;
+pub mod runtime;
 pub mod signal;
 pub mod tunnel;
 pub mod update;

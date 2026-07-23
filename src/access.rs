@@ -41,9 +41,10 @@ use tokio_util::sync::CancellationToken;
 
 use crate::metrics::Metrics;
 use crate::{
-    config,
+    config, diagnostic_report,
+    diagnostics::{Observation as DiagnosticObservation, Snapshot as DiagnosticSnapshot},
     domain_hosts::{HostsError, HostsStore},
-    proto, tunnel, update,
+    local_services, mapping_health, port_suggestions, proto, runtime, tunnel, update,
 };
 
 /// 运行期可变的接入凭证：连接目标（node_id → PublicKey）与访问令牌。
@@ -826,8 +827,200 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
     })
 }
 
+/// GET /api/diagnostics --- current peer transport and conservative NAT guidance.
+async fn diagnostics(State(st): State<AppState>) -> Json<DiagnosticSnapshot> {
+    let configured = st.link.configured().await;
+    let connected = st.link.is_alive().await;
+    let path_info = if connected {
+        st.link.transport_path().await
+    } else {
+        None
+    };
+    let peer_ips = if connected {
+        st.link.connected_ips().await
+    } else {
+        Vec::new()
+    };
+
+    Json(DiagnosticSnapshot::from_observation(
+        DiagnosticObservation {
+            configured,
+            connected,
+            path: path_info.as_ref().map(|path| path.path),
+            rtt_ms: path_info.as_ref().and_then(|path| path.rtt_ms),
+            relay: path_info.and_then(|path| path.relay),
+            peer_ips,
+        },
+    ))
+}
+
 async fn health() -> impl IntoResponse {
     StatusCode::OK
+}
+
+/// GET /api/runtime --- read-only local process and service-manager metadata.
+async fn runtime_info(State(st): State<AppState>) -> Json<runtime::RuntimeInfo> {
+    Json(runtime::snapshot(&st.config_path))
+}
+
+/// GET /api/onboarding --- stable first-use state, derived only from local config.
+async fn onboarding(State(st): State<AppState>) -> Json<OnboardingStatus> {
+    let credential_configured = st.link.configured().await;
+    let mappings = st.inner.lock().await.mappings.len();
+    let domain_mappings = st.domains.lock().await.mappings.len();
+    Json(OnboardingStatus {
+        credential_configured,
+        mappings,
+        domain_mappings,
+        complete: credential_configured && (mappings > 0 || domain_mappings > 0),
+    })
+}
+
+#[derive(Serialize)]
+struct OnboardingStatus {
+    credential_configured: bool,
+    mappings: usize,
+    domain_mappings: usize,
+    complete: bool,
+}
+
+/// GET /api/local-services --- fixed local-loopback service candidates only.
+async fn local_services() -> Json<Vec<crate::local_services::LocalService>> {
+    Json(local_services::discover().await)
+}
+
+/// GET /api/mapping-health --- derives a bounded health summary from existing runtime state.
+/// It does not create tunnels or probe remote services.
+async fn mapping_health(State(st): State<AppState>) -> Json<mapping_health::Summary> {
+    let handles: Vec<(Arc<RwLock<config::Mapping>>, Arc<Stats>)> = st
+        .inner
+        .lock()
+        .await
+        .mappings
+        .values()
+        .map(|handle| (handle.mapping.clone(), handle.stats.clone()))
+        .collect();
+    let mut inputs = Vec::with_capacity(handles.len());
+    for (mapping, stats) in handles {
+        let mapping = mapping.read().await;
+        let diagnostic = stats.diagnostic_snapshot().await;
+        inputs.push(mapping_health::MappingInput {
+            enabled: mapping.enabled,
+            listener_active: diagnostic.listener_active,
+            last_tunnel_failed: diagnostic.state == "degraded",
+        });
+    }
+    Json(mapping_health::summarize(inputs))
+}
+
+/// GET /api/diagnostic-report --- a downloadable, credential-free support snapshot.
+async fn diagnostic_report(State(st): State<AppState>) -> Json<diagnostic_report::Report> {
+    let path = st.link.transport_path().await;
+    let connected = st.link.is_alive().await;
+    let mappings: Vec<Arc<RwLock<config::Mapping>>> = st
+        .inner
+        .lock()
+        .await
+        .mappings
+        .values()
+        .map(|handle| handle.mapping.clone())
+        .collect();
+    let mut enabled = 0;
+    for mapping in &mappings {
+        if mapping.read().await.enabled {
+            enabled += 1;
+        }
+    }
+    let events = st
+        .events
+        .snapshot()
+        .into_iter()
+        .take(20)
+        .map(|event| format!("{}: {}", event.kind, event.message))
+        .collect();
+    Json(diagnostic_report::build(diagnostic_report::ReportInput {
+        version: env!("CARGO_PKG_VERSION").into(),
+        transport: diagnostic_report::TransportSummary {
+            kind: path
+                .as_ref()
+                .map_or("disconnected", |path| path.path)
+                .into(),
+            connected,
+            relay: path.as_ref().and_then(|path| path.relay.clone()),
+            rtt_ms: path.and_then(|path| path.rtt_ms),
+        },
+        mappings: diagnostic_report::MappingCounts {
+            total: mappings.len(),
+            enabled,
+            disabled: mappings.len() - enabled,
+        },
+        recent_events: events,
+        generated_at_unix_ms: now_unix_millis(),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PortSuggestionQuery {
+    preferred: Option<u16>,
+}
+
+/// GET /api/mappings/port-suggestions --- bounded loopback bind checks for local listeners.
+async fn port_suggestions(
+    Query(query): Query<PortSuggestionQuery>,
+) -> Json<Vec<port_suggestions::Suggestion>> {
+    let preferred = query.preferred.filter(|port| *port != 0).unwrap_or(8080);
+    let upper = preferred.saturating_add(63);
+    let occupied: Vec<u16> = (preferred..=upper)
+        .filter(|port| std::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, *port)).is_err())
+        .collect();
+    let suggestions = port_suggestions::suggest_loopback(preferred, &occupied)
+        .into_iter()
+        .filter(|suggestion| suggestion.port <= upper)
+        .collect();
+    Json(suggestions)
+}
+
+#[derive(Serialize)]
+struct MappingTemplate {
+    id: &'static str,
+    label: &'static str,
+    port: u16,
+}
+
+/// GET /api/mapping-templates --- static form-fill suggestions, no policy implication.
+async fn mapping_templates() -> Json<Vec<MappingTemplate>> {
+    Json(vec![
+        MappingTemplate {
+            id: "ssh",
+            label: "SSH",
+            port: 22,
+        },
+        MappingTemplate {
+            id: "http",
+            label: "HTTP",
+            port: 80,
+        },
+        MappingTemplate {
+            id: "https",
+            label: "HTTPS",
+            port: 443,
+        },
+        MappingTemplate {
+            id: "mysql",
+            label: "MySQL",
+            port: 3306,
+        },
+        MappingTemplate {
+            id: "postgres",
+            label: "PostgreSQL",
+            port: 5432,
+        },
+        MappingTemplate {
+            id: "redis",
+            label: "Redis",
+            port: 6379,
+        },
+    ])
 }
 
 #[cfg(test)]
@@ -2092,6 +2285,192 @@ mod integration_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert!(body["connected_ips"].as_array().is_some());
+    }
+
+    #[tokio::test]
+    async fn diagnostics_api_reports_unconfigured_disconnected_node() {
+        let app = app(test_state("").await);
+        let response = app
+            .oneshot(
+                Request::get("/api/diagnostics")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["transport"], "disconnected");
+        assert_eq!(body["configuration"]["credential_configured"], false);
+        assert!(body["connected_peer_ips"].as_array().unwrap().is_empty());
+        assert_eq!(
+            body["recommendation"],
+            "Configure the server credential, then retry the connection."
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_api_exposes_local_process_metadata() {
+        let state = test_state("").await;
+        let expected_config_path = state.config_path.to_string_lossy().into_owned();
+        let app = app(state);
+
+        let response = app
+            .oneshot(Request::get("/api/runtime").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["pid"], std::process::id());
+        assert_eq!(body["config_path"], expected_config_path);
+        assert!(body["platform"]["os"].as_str().is_some());
+        assert!(body["supervisor"]["kind"].as_str().is_some());
+        assert!(body["privilege"]["level"].as_str().is_some());
+    }
+
+    #[tokio::test]
+    async fn onboarding_api_reports_stable_first_use_state() {
+        let app = app(test_state("").await);
+        let response = app
+            .oneshot(Request::get("/api/onboarding").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(body["credential_configured"], false);
+        assert_eq!(body["mappings"], 0);
+        assert_eq!(body["complete"], false);
+    }
+
+    #[tokio::test]
+    async fn templates_and_local_service_routes_are_read_only() {
+        let app = app(test_state("").await);
+        let templates = app
+            .clone()
+            .oneshot(
+                Request::get("/api/mapping-templates")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(templates.status(), StatusCode::OK);
+        let templates = response_json(templates).await;
+        assert!(
+            templates
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|item| item["id"] == "ssh")
+        );
+
+        let services = app
+            .oneshot(
+                Request::get("/api/local-services")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(services.status(), StatusCode::OK);
+        let services = response_json(services).await;
+        assert!(
+            services
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|item| { matches!(item["address"].as_str(), Some("127.0.0.1" | "::1")) })
+        );
+    }
+
+    #[tokio::test]
+    async fn health_report_and_port_suggestion_apis_are_bounded_and_redacted() {
+        let state = test_state("").await;
+        state.events.push(
+            "info",
+            "credential",
+            "updated token=never-expose-this-value",
+        );
+        let app = app(state);
+
+        let health = app
+            .clone()
+            .oneshot(
+                Request::get("/api/mapping-health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(health.status(), StatusCode::OK);
+        assert_eq!(response_json(health).await["total"], 0);
+
+        let report = app
+            .clone()
+            .oneshot(
+                Request::get("/api/diagnostic-report")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(report.status(), StatusCode::OK);
+        let report = response_json(report).await;
+        assert!(
+            report["recent_events"][0]
+                .as_str()
+                .unwrap()
+                .contains("<redacted>")
+        );
+        assert!(!report.to_string().contains("never-expose-this-value"));
+
+        let suggestions = app
+            .oneshot(
+                Request::get("/api/mappings/port-suggestions?preferred=38080")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(suggestions.status(), StatusCode::OK);
+        let suggestions = response_json(suggestions).await;
+        let suggestions = suggestions.as_array().unwrap();
+        assert!(suggestions.len() <= 5);
+        assert!(suggestions.iter().all(|item| item["host"] == "127.0.0.1"));
+    }
+
+    #[tokio::test]
+    async fn export_is_redacted_unless_credentials_are_explicitly_requested() {
+        let state = test_state("").await;
+        let target = state.link.endpoint.id();
+        state
+            .link
+            .set_creds(target.to_string(), "private-token".into(), target, vec![])
+            .await;
+        let app = app(state);
+
+        let redacted = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/export").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(redacted["token"], "");
+
+        let full = response_json(
+            app.oneshot(
+                Request::get("/api/export?include_credentials=true")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(full["token"], "private-token");
     }
 
     #[tokio::test]
@@ -3822,7 +4201,15 @@ fn app(state: AppState) -> Router {
         .route("/", get(index))
         .route("/metrics", get(metrics_handler))
         .route("/api/health", get(health))
+        .route("/api/runtime", get(runtime_info))
         .route("/api/status", get(status))
+        .route("/api/diagnostics", get(diagnostics))
+        .route("/api/onboarding", get(onboarding))
+        .route("/api/local-services", get(local_services))
+        .route("/api/mapping-templates", get(mapping_templates))
+        .route("/api/mapping-health", get(mapping_health))
+        .route("/api/diagnostic-report", get(diagnostic_report))
+        .route("/api/mappings/port-suggestions", get(port_suggestions))
         .route("/api/stats", get(stats))
         .route("/api/events", get(events))
         .route("/api/mappings/preflight", post(preflight))
@@ -4067,9 +4454,20 @@ async fn set_credential(
     }))
 }
 
-/// GET /api/export —— 下载完整配置（凭证 + 设置 + 映射）JSON。
-async fn export_config(State(st): State<AppState>) -> Response {
+/// GET /api/export —— 默认下载脱敏配置。`?include_credentials=true` 仅在用户主动确认后使用。
+#[derive(Deserialize)]
+struct ExportQuery {
+    #[serde(default)]
+    include_credentials: bool,
+}
+
+async fn export_config(State(st): State<AppState>, Query(query): Query<ExportQuery>) -> Response {
     let cfg = build_config(&st).await;
+    let cfg = if query.include_credentials {
+        cfg
+    } else {
+        cfg.redacted_for_export()
+    };
     match serde_json::to_string_pretty(&cfg) {
         Ok(body) => (
             [

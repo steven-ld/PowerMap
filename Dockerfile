@@ -5,6 +5,7 @@ FROM debian:bookworm-slim
 
 ARG VERSION=latest
 ARG TARGETARCH
+ARG REPOSITORY=steven-ld/PowerMap
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl tar && \
     rm -rf /var/lib/apt/lists/*
@@ -17,8 +18,8 @@ RUN set -eux; \
     esac; \
     archive="powermap-${target}.tar.gz"; \
     checksum="powermap-${target}.sha256"; \
-    if [ "$VERSION" = latest ]; then base="https://github.com/steven-ld/PowerMap/releases/latest/download"; \
-    else base="https://github.com/steven-ld/PowerMap/releases/download/$VERSION"; fi; \
+    if [ "$VERSION" = latest ]; then base="https://github.com/$REPOSITORY/releases/latest/download"; \
+    else base="https://github.com/$REPOSITORY/releases/download/$VERSION"; fi; \
     cd /tmp; \
     curl --fail --location --retry 3 --output "$archive" "$base/$archive"; \
     curl --fail --location --retry 3 --output "$checksum" "$base/$checksum"; \

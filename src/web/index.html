@@ -461,6 +461,21 @@
   .stat-spark { width: 3.75rem; height: 2.25rem; flex: none; opacity: 0.9; }
   /* 运行指标条：活跃隧道 / 累计成功 / 失败 / 重连 / 限流 */
   .ops-strip { display: flex; flex-wrap: wrap; gap: 0.5rem 1.5rem; margin: -0.25rem 0 1.5rem; padding: 0.75rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+  .dashboard-monitor { display: flex; align-items: stretch; gap: 1.25rem; margin-bottom: 1.5rem; padding: 1rem 1.125rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+  .dashboard-monitor-grid { display: grid; flex: 1; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 1rem; }
+  .dashboard-monitor .sidebar-metric { padding-right: 1rem; border-right: 1px solid var(--border); }
+  .dashboard-monitor .sidebar-metric:last-child { padding-right: 0; border-right: 0; }
+  .dashboard-monitor .sidebar-metric span { font-size: .72rem; }
+  .dashboard-monitor .sidebar-metric strong { font-size: .9rem; }
+  .dashboard-refresh { display: flex; align-items: center; gap: .5rem; padding-left: 1.125rem; border-left: 1px solid var(--border); }
+  .mapping-health { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin: -0.25rem 0 1.5rem; padding: .8rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+  .mapping-health-counts { display: inline-flex; flex-wrap: wrap; gap: .75rem; color: var(--muted-foreground); font: 600 .74rem/1 var(--font-mono); }
+  .mapping-health-counts b { color: var(--foreground); }
+  .mapping-health-note { margin: 0; color: var(--muted-foreground); font-size: .8rem; line-height: 1.4; }
+  .port-suggestions { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .8rem; padding: .75rem .85rem; border: 1px dashed var(--border); border-radius: .65rem; background: var(--muted); }
+  .port-suggestions-label { color: var(--muted-foreground); font: 600 .72rem/1 var(--font-mono); }
+  @media (max-width: 900px) { .dashboard-monitor { display: grid; gap: 1rem; } .dashboard-monitor-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dashboard-refresh { padding: 1rem 0 0; border-top: 1px solid var(--border); border-left: 0; } .mapping-health { align-items: flex-start; flex-direction: column; } }
+  @media (max-width: 560px) { .dashboard-monitor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-monitor .sidebar-metric:nth-child(2) { border-right: 0; } .dashboard-monitor .sidebar-metric { padding-right: 0; border-right: 0; } .dashboard-refresh { display: grid; grid-template-columns: 1fr auto; } }
   .ops-item { display: inline-flex; align-items: baseline; gap: 0.4rem; font: 500 0.8rem/1.3 var(--font-sans); color: var(--muted-foreground); }
   .ops-item b { font: 700 0.95rem/1 var(--font-mono); color: var(--foreground); font-feature-settings: "tnum"; }
   .ops-item.warn b { color: var(--destructive); }
@@ -911,28 +926,6 @@
         <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件</span></button>
         <button type="button" class="tab" data-tab="about" id="tab-about" role="tab" aria-selected="false" aria-controls="tabAbout" tabindex="-1"><span>关于</span></button>
       </div></nav>
-      <div class="sidebar-static">实时指标</div>
-      <section class="sidebar-monitor" aria-label="实时指标">
-        <div class="sidebar-traffic">
-          <div class="sidebar-metric tx"><span>实时上行</span><strong id="sideRateTx">0/s</strong></div>
-          <div class="sidebar-metric rx"><span>实时下行</span><strong id="sideRateRx">0/s</strong></div>
-        </div>
-        <div class="sidebar-traffic">
-          <div class="sidebar-metric"><span>累计流量</span><strong id="sideTotal">0</strong></div>
-          <div class="sidebar-metric"><span>本地映射</span><strong id="sideMappings">0</strong></div>
-        </div>
-        <div class="sidebar-metric"><span>活跃隧道</span><strong id="sideActive">0</strong></div>
-      </section>
-      <div class="sidebar-static">刷新</div>
-      <section class="sidebar-refresh" aria-label="刷新控制">
-        <select id="refreshInterval" class="refresh-select" aria-label="刷新间隔">
-          <option value="2000">每 2 秒</option>
-          <option value="5000">每 5 秒</option>
-          <option value="10000">每 10 秒</option>
-          <option value="0">手动</option>
-        </select>
-        <button id="refreshPause" class="refresh-toggle" type="button" aria-pressed="false" title="暂停/恢复自动刷新">暂停</button>
-      </section>
       <div class="sidebar-bottom"><span class="conn"><span id="statusDot" class="status-dot"></span><span id="statusText">查询中</span><span id="pathChip" class="path-chip" style="display:none"></span></span></div>
     </aside>
     <main class="workarea" id="mainContent" tabindex="-1"><div class="container">
@@ -978,6 +971,28 @@
       <span class="ops-item" id="opsReconnectItem">重连 <b id="opsReconnects">0</b></span>
       <span class="ops-item" id="opsLimitItem">并发限流 <b id="opsOverLimit">0</b></span>
     </div>
+    <section class="dashboard-monitor" aria-label="实时监控与刷新控制">
+      <div class="dashboard-monitor-grid">
+        <div class="sidebar-metric tx"><span>实时上行</span><strong id="sideRateTx">0/s</strong></div>
+        <div class="sidebar-metric rx"><span>实时下行</span><strong id="sideRateRx">0/s</strong></div>
+        <div class="sidebar-metric"><span>累计流量</span><strong id="sideTotal">0</strong></div>
+        <div class="sidebar-metric"><span>本地映射</span><strong id="sideMappings">0</strong></div>
+        <div class="sidebar-metric"><span>活跃隧道</span><strong id="sideActive">0</strong></div>
+      </div>
+      <div class="dashboard-refresh">
+        <select id="refreshInterval" class="refresh-select" aria-label="刷新间隔">
+          <option value="2000">每 2 秒</option>
+          <option value="5000">每 5 秒</option>
+          <option value="10000">每 10 秒</option>
+          <option value="0">手动</option>
+        </select>
+        <button id="refreshPause" class="refresh-toggle" type="button" aria-pressed="false" title="暂停/恢复自动刷新">暂停</button>
+      </div>
+    </section>
+    <section class="mapping-health" aria-label="映射健康">
+      <div class="mapping-health-counts"><span>健康 <b id="healthHealthy">0</b></span><span>异常 <b id="healthDegraded">0</b></span><span>已停止 <b id="healthStopped">0</b></span><span>未启用 <b id="healthUnknown">0</b></span></div>
+      <p id="healthNote" class="mapping-health-note">正在汇总映射运行状态。</p>
+    </section>
     </div>
 
     <!-- Tab: 端口映射 -->
@@ -998,6 +1013,10 @@
           本地地址默认 <kbd>127.0.0.1</kbd>，也可填 <kbd>127.0.0.2</kbd> 这类 127/8 虚拟 IP。
           目标主机填 server 端所在内网里能访问到的 IP / 主机名。
         </p>
+        <section id="templateCatalog" class="target-catalog" aria-labelledby="templateCatalogTitle">
+          <div class="target-catalog-head"><div><div id="templateCatalogTitle" class="target-catalog-title">常用目标模板</div><p class="target-catalog-copy">只填入目标端口；仍需填写对端网络中的目标主机并完成验证。</p></div></div>
+          <div id="templateOptions" class="target-options" aria-live="polite"></div>
+        </section>
         <section id="targetCatalog" class="target-catalog hidden" aria-labelledby="targetCatalogTitle" aria-live="polite">
           <div class="target-catalog-head"><div><div id="targetCatalogTitle" class="target-catalog-title">对端可用服务</div><p class="target-catalog-copy">已由 server 端实际拨号验证。选择后自动填入目标。</p></div><div class="target-catalog-actions"><span id="targetCatalogState" class="target-catalog-state">等待连接</span><button id="refreshTargets" class="btn-quiet" type="button">刷新</button></div></div>
           <div id="targetOptions" class="target-options"></div>
@@ -1021,6 +1040,7 @@
             <div class="field"><label class="lbl" id="portLbl" for="mf-port">目标端口</label><input id="mf-port" name="port" class="mono" type="number" placeholder="6379" required /></div>
             <div class="mapping-actions"><button id="cancelEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="preflightBtn" class="btn btn-outline" type="button">测试目标</button><button id="submitMappingBtn" type="submit" class="btn btn-primary">添加映射</button></div>
           </div>
+          <div id="portSuggestions" class="port-suggestions hidden" aria-live="polite"><span class="port-suggestions-label">可用端口</span><span id="portSuggestionOptions"></span></div>
           <div id="httpRoutes" class="http-routes hidden">
             <div class="http-routes-head"><span class="lbl">Host 路由（按请求 Host 头分流到不同后端；上面的目标作为兜底）</span><button id="addRouteBtn" class="btn-quiet" type="button">+ 添加路由</button></div>
             <div id="routeRows" class="route-rows"></div>
@@ -1073,9 +1093,10 @@
           <div class="card-actions">
             <button id="exportBtn" class="btn btn-outline btn-sm" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-              导出配置
+              脱敏导出
             </button>
-            <button id="copyConfigBtn" class="btn btn-outline btn-sm" type="button">复制配置</button>
+            <button id="copyConfigBtn" class="btn btn-outline btn-sm" type="button">复制脱敏配置</button>
+            <button id="exportFullBtn" class="btn btn-outline btn-sm" type="button">完整导出</button>
             <button id="importBtn" class="btn btn-outline btn-sm" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               导入配置
@@ -1135,18 +1156,6 @@
         </form>
       </div>
 
-      <div class="card" aria-labelledby="updateTitle">
-        <div class="card-header">
-          <span id="updateTitle" class="card-title">软件更新</span>
-          <button id="checkUpdateBtn" class="btn btn-outline btn-sm" type="button">检查更新</button>
-        </div>
-        <p id="updateSummary" class="hint">打开此页面后检查最新稳定版本。</p>
-        <div id="updateDetails" class="card-actions hidden">
-          <a id="updateReleaseLink" class="footer-link" target="_blank" rel="noopener noreferrer">查看发布说明</a>
-          <button id="installUpdateBtn" class="btn btn-primary btn-sm hidden" type="button">下载并重启</button>
-          <button id="copyUpdateCommandBtn" class="btn btn-primary btn-sm hidden" type="button">复制升级命令</button>
-        </div>
-      </div>
     </div>
 
     <div id="tabAbout" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-about" tabindex="0">
@@ -1154,10 +1163,27 @@
         <div class="card-header"><span class="card-title">PowerMap</span><span id="aboutCurrent" class="badge">加载中</span></div>
         <p class="hint">内网服务访问与映射控制台。</p>
       </div>
+      <div class="card" aria-labelledby="updateTitle">
+        <div class="card-header">
+          <span id="updateTitle" class="card-title">软件更新</span>
+          <button id="checkUpdateBtn" class="btn btn-outline btn-sm" type="button">检查更新</button>
+        </div>
+        <p id="updateSummary" class="hint">打开“关于”页面后检查最新稳定版本。</p>
+        <div id="updateDetails" class="card-actions hidden">
+          <a id="updateReleaseLink" class="footer-link" target="_blank" rel="noopener noreferrer">查看发布说明</a>
+          <button id="installUpdateBtn" class="btn btn-primary btn-sm hidden" type="button">下载并重启</button>
+          <button id="copyUpdateCommandBtn" class="btn btn-primary btn-sm hidden" type="button">复制升级命令</button>
+        </div>
+      </div>
       <div class="card">
         <div class="card-header"><span class="card-title">版本与发布</span><a id="aboutReleaseLink" class="footer-link hidden" target="_blank" rel="noopener noreferrer">查看发布说明</a></div>
         <p id="aboutRelease" class="hint">正在检查最新稳定版本。</p>
         <pre id="aboutNotes" class="codebox hidden"></pre>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">运行与诊断</span><button id="downloadDiagnosticReport" class="btn btn-outline btn-sm" type="button">下载诊断报告</button></div>
+        <p id="aboutRuntime" class="hint">正在读取运行状态。</p>
+        <p id="aboutDiagnostic" class="hint">正在读取网络诊断。</p>
       </div>
       <div class="card">
         <div class="card-header"><span class="card-title">功能</span></div>
@@ -1413,7 +1439,7 @@ function selectTab(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
   if (name === 'domains') refreshDomains();
-  if (name === 'connection' || name === 'about') setTimeout(() => {
+  if (name === 'about') setTimeout(() => {
     if (!checkedUpdate) checkUpdate({ silent: true });
   }, 0);
 }
@@ -1478,7 +1504,63 @@ function openEditorForCreate() {
   applyEditorMode();
   editor.classList.remove('hidden');
   editor.classList.add('open');
+  refreshMappingTemplates();
+  refreshPortSuggestions();
   editor.querySelector('[name=localPort]').focus();
+}
+async function refreshPortSuggestions() {
+  const form = document.getElementById('f');
+  const preferred = Number(form.elements.localPort.value || form.elements.port.value || 8080);
+  const panel = document.getElementById('portSuggestions');
+  const options = document.getElementById('portSuggestionOptions');
+  try {
+    const response = await api('/api/mappings/port-suggestions?preferred=' + encodeURIComponent(preferred));
+    if (!response.ok) throw new Error('unavailable');
+    const suggestions = await response.json();
+    options.replaceChildren();
+    for (const suggestion of suggestions) {
+      const button = document.createElement('button');
+      button.className = 'btn-quiet';
+      button.type = 'button';
+      button.textContent = suggestion.port;
+      button.addEventListener('click', () => {
+        form.elements.localAddr.value = suggestion.host;
+        form.elements.localPort.value = suggestion.port;
+        latestPreflight = { key: '', ready: false };
+        document.getElementById('preflightResult').classList.add('hidden');
+      });
+      options.append(button);
+    }
+    panel.classList.toggle('hidden', !suggestions.length);
+  } catch { panel.classList.add('hidden'); }
+}
+async function refreshMappingTemplates() {
+  const container = document.getElementById('templateOptions');
+  if (container.dataset.loaded === '1') return;
+  try {
+    const response = await api('/api/mapping-templates');
+    if (!response.ok) throw new Error('templates unavailable');
+    const templates = await response.json();
+    container.replaceChildren();
+    for (const template of templates) {
+      const button = document.createElement('button');
+      button.className = 'target-option';
+      button.type = 'button';
+      button.textContent = `${template.label} · ${template.port}`;
+      button.addEventListener('click', () => {
+        const form = document.getElementById('f');
+        form.elements.port.value = template.port;
+        if (!form.elements.localPort.value) form.elements.localPort.value = template.port;
+        latestPreflight = { key: '', ready: false };
+        document.getElementById('preflightResult').classList.add('hidden');
+        form.elements.host.focus();
+      });
+      container.append(button);
+    }
+    container.dataset.loaded = '1';
+  } catch {
+    container.textContent = '模板暂不可用，可直接填写目标端口。';
+  }
 }
 function openEditorForEdit(local, host, port, name, mode, routes) {
   const editor = document.getElementById('mappingEditor');
@@ -1951,6 +2033,34 @@ async function checkUpdate({ silent = false } = {}) {
 }
 document.getElementById('checkUpdateBtn').addEventListener('click', () => checkUpdate());
 document.getElementById('updateNotice').addEventListener('click', () => selectTab('about'));
+async function refreshAboutRuntime() {
+  try {
+    const [runtime, diagnostic] = await Promise.all([
+      api('/api/runtime').then(r => r.json()),
+      api('/api/diagnostics').then(r => r.json()),
+    ]);
+    document.getElementById('aboutRuntime').textContent = `PID ${runtime.pid} · ${runtime.supervisor?.kind || 'manual'} · ${runtime.privilege?.level || 'user'}`;
+    document.getElementById('aboutDiagnostic').textContent = diagnostic.recommendation || '当前网络状态正常。';
+  } catch { /* 旧版本服务不支持扩展诊断时保持默认文本。 */ }
+}
+document.getElementById('downloadDiagnosticReport').addEventListener('click', async () => {
+  const button = document.getElementById('downloadDiagnosticReport');
+  button.disabled = true;
+  try {
+    const response = await api('/api/diagnostic-report');
+    if (!response.ok) throw new Error((await response.text()) || '生成失败');
+    const report = await response.json();
+    const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url; link.download = 'powermap-diagnostic-report.json';
+    document.body.append(link); link.click(); link.remove();
+    URL.revokeObjectURL(url);
+    toast('脱敏诊断报告已下载');
+  } catch (error) {
+    toast(`无法生成诊断报告：${String(error.message || error)}`, 'err');
+  } finally { button.disabled = false; }
+});
 document.getElementById('installUpdateBtn').addEventListener('click', async () => {
   const button = document.getElementById('installUpdateBtn');
   const summary = document.getElementById('updateSummary');
@@ -2080,20 +2190,36 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
   const blob = await r.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
-  a.href = url; a.download = 'powermap.config.json';
+  a.href = url; a.download = 'powermap.config.redacted.json';
   document.body.appendChild(a); a.click(); a.remove();
   URL.revokeObjectURL(url);
-  ioMsg('配置已导出');
+  ioMsg('脱敏配置已导出');
 });
 document.getElementById('copyConfigBtn').addEventListener('click', async () => {
   const r = await api('/api/export');
   if (!r.ok) { toast((await r.text()) || '读取配置失败', 'err'); return; }
   const ok = await copyText(await r.text());
   if (ok) {
-    ioMsg('配置已复制到剪贴板');
+    ioMsg('脱敏配置已复制到剪贴板');
   } else {
     toast('复制失败，请使用导出配置', 'err');
   }
+});
+document.getElementById('exportFullBtn').addEventListener('click', async () => {
+  const ok = await confirmModal({
+    title: '导出含凭证的配置', danger: true, confirmText: '完整导出',
+    body: '该文件包含节点令牌，可用于连接远端服务。只应保存在受信任的加密位置，勿发送到聊天、工单或公开仓库。',
+  });
+  if (!ok) return;
+  const r = await api('/api/export?include_credentials=true');
+  if (!r.ok) { toast((await r.text()) || '导出失败', 'err'); return; }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'powermap.config.json';
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+  ioMsg('完整配置已导出，请妥善保管');
 });
 document.getElementById('importBtn').addEventListener('click', () => {
   document.getElementById('importFile').click();
@@ -2231,6 +2357,25 @@ function renderSidebarMetrics({ mappings, totalTx, totalRx, rateTx, rateRx }) {
   document.getElementById('sideMappings').textContent = mappings;
 }
 
+let lastHealthAlert = null;
+async function refreshMappingHealth() {
+  try {
+    const response = await api('/api/mapping-health');
+    if (!response.ok) return;
+    const health = await response.json();
+    document.getElementById('healthHealthy').textContent = health.healthy || 0;
+    document.getElementById('healthDegraded').textContent = health.degraded || 0;
+    document.getElementById('healthStopped').textContent = health.stopped || 0;
+    document.getElementById('healthUnknown').textContent = health.unknown || 0;
+    document.getElementById('healthNote').textContent = health.recommendations?.[0] || (health.total ? '所有已启用映射的本地监听状态正常。' : '创建映射后将在这里汇总健康状态。');
+    const alert = `${health.degraded || 0}:${health.stopped || 0}`;
+    if (lastHealthAlert !== null && alert !== lastHealthAlert && (health.degraded || health.stopped)) {
+      toast(`映射健康状态变化：${health.degraded || 0} 条异常，${health.stopped || 0} 条已停止`, 'err', 6000);
+    }
+    lastHealthAlert = alert;
+  } catch { /* Old servers do not expose the optional summary. */ }
+}
+
 async function refresh() {
   let list, st;
   try {
@@ -2366,6 +2511,7 @@ async function refresh() {
     drawSpark();
   }
   renderSidebarMetrics({ mappings: list.length, totalTx, totalRx, rateTx, rateRx });
+  refreshMappingHealth();
   rateState.rows = nextRows;
   rateState.totalTx = totalTx; rateState.totalRx = totalRx; rateState.ts = now;
 }
@@ -2547,12 +2693,17 @@ document.getElementById('preflightBtn').addEventListener('click', () => {
   if (form.reportValidity()) runPreflight(collectMapping(form), true);
 });
 function setOnboardingStep(id, done) { document.getElementById(id).classList.toggle('is-done', done); }
-function updateOnboarding(list) {
+async function updateOnboarding(list) {
   const mappingDone = list.length > 0;
   setOnboardingStep('onboardingCredential', curCred.configured);
   setOnboardingStep('onboardingPreflight', latestPreflight.ready);
   setOnboardingStep('onboardingMapping', mappingDone);
-  document.getElementById('onboarding').classList.add('hidden');
+  try {
+    const response = await api('/api/onboarding');
+    if (!response.ok) return;
+    const state = await response.json();
+    document.getElementById('onboarding').classList.toggle('hidden', !!state.complete);
+  } catch { /* Older service: avoid presenting a stale onboarding card. */ }
 }
 document.querySelectorAll('[data-onboarding]').forEach(button => button.addEventListener('click', () => {
   const target = button.dataset.onboarding;
@@ -2983,6 +3134,7 @@ function poll() {
   refreshDomains();
   refreshOwnNode();
   checkUpdate({ silent: true });
+  if (location.hash.slice(1) === 'about') refreshAboutRuntime();
   if (location.hash.slice(1) === 'events') refreshEvents();
 }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }

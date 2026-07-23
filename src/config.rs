@@ -315,6 +315,14 @@ impl Default for AConfig {
 }
 
 impl AConfig {
+    /// Produce an access-side backup that retains mapping rules but removes credentials.
+    pub fn redacted_for_export(&self) -> Self {
+        let mut exported = self.clone();
+        exported.token.clear();
+        exported.web_token.clear();
+        exported
+    }
+
     /// 检查启动前必须明确处理的配置。空凭证仍可用于首次启动，由 Web 管理页完成接入。
     pub fn validate(&self) -> std::result::Result<(), String> {
         self.web_bind
@@ -606,6 +614,21 @@ pub enum Scenario {
 }
 
 impl Config {
+    /// Produce a shareable backup without credentials that grant network access.
+    pub fn redacted_for_export(&self) -> Self {
+        let mut exported = self.clone();
+        if let Some(access) = &mut exported.access {
+            *access = access.redacted_for_export();
+        }
+        if let Some(expose) = &mut exported.expose {
+            expose.token.clear();
+            for client in &mut expose.clients {
+                client.token.clear();
+            }
+        }
+        exported
+    }
+
     pub fn validate(&self) -> std::result::Result<(), String> {
         if self.expose.is_none() && self.access.is_none() {
             return Err("配置至少需要 expose 或 access 角色".into());
@@ -1404,6 +1427,56 @@ token = "shared-token"
         let both = Config::for_scenario(Scenario::Both);
         assert!(both.expose.is_some());
         assert!(both.access.is_some());
+    }
+
+    #[test]
+    fn redacted_export_preserves_config_structure_without_credentials() {
+        let config = Config {
+            access: Some(AConfig {
+                node_id: "node-id".into(),
+                token: "access-token".into(),
+                mappings: vec![Mapping {
+                    local: "127.0.0.1:8080".into(),
+                    host: "10.0.0.5".into(),
+                    port: 8080,
+                    enabled: true,
+                    name: "application".into(),
+                    mode: MappingMode::Tcp,
+                    routes: Vec::new(),
+                }],
+                ..Default::default()
+            }),
+            expose: Some(BConfig {
+                token: "legacy-expose-token".into(),
+                clients: vec![ClientCred {
+                    id: "tenant-a".into(),
+                    token: "client-token".into(),
+                    allow_networks: vec!["10.0.0.0/8".into()],
+                    allow_ports: vec![443],
+                    published_targets: Vec::new(),
+                    reverse: Vec::new(),
+                    max_streams: 4,
+                    revoked: false,
+                }],
+                ..Default::default()
+            }),
+        };
+
+        let exported = config.redacted_for_export();
+
+        assert_eq!(exported.access.as_ref().unwrap().token, "");
+        assert_eq!(exported.expose.as_ref().unwrap().token, "");
+        assert_eq!(exported.expose.as_ref().unwrap().clients[0].token, "");
+        assert_eq!(exported.access.as_ref().unwrap().node_id, "node-id");
+        assert_eq!(
+            exported.access.as_ref().unwrap().mappings,
+            config.access.as_ref().unwrap().mappings
+        );
+        assert_eq!(exported.expose.as_ref().unwrap().clients[0].id, "tenant-a");
+        assert_eq!(
+            exported.expose.as_ref().unwrap().clients[0].allow_ports,
+            vec![443]
+        );
     }
 
     #[test]

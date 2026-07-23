@@ -50,6 +50,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           bin: powermap
@@ -162,7 +163,9 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          build-args: VERSION=${{ github.ref_name }}
+          build-args: |
+            VERSION=${{ github.ref_name }}
+            REPOSITORY=${{ github.repository }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/powermap:${{ github.ref_name }}
             ghcr.io/${{ github.repository_owner }}/powermap:latest
