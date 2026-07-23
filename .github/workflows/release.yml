@@ -145,7 +145,7 @@ jobs:
 
   publish-docker:
     name: publish Docker image
-    needs: verify-release-assets
+    needs: publish-release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -178,7 +178,7 @@ jobs:
 
   publish-release:
     name: publish verified release
-    needs: publish-docker
+    needs: verify-release-assets
     runs-on: ubuntu-latest
     permissions:
       contents: write
