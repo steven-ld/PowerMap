@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-23
+
 ### Added
 
 - 节点页新增稳定版检查与一键更新：从 GitHub Release 下载当前平台包、解析校验文件并验证 SHA-256 后，安全解包、原子替换并优雅重启。原生 macOS/Linux 可在进程内完成；Docker 与 Windows 会给出可复制的宿主机升级命令。
@@ -97,7 +99,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/steven-ld/PowerMap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/steven-ld/PowerMap/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/steven-ld/PowerMap/compare/v0.3.0...v0.4.0
 [0.2.0]: https://github.com/steven-ld/PowerMap/compare/v0.1.0...v0.2.0
