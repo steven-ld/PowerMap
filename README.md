@@ -98,7 +98,7 @@ cargo build --release
 
 ### 管理页更新
 
-在管理页“节点”的“软件更新”卡片中检查并安装最新稳定版。原生 macOS/Linux 会下载对应平台的 Release、校验 SHA-256、保留旧二进制备份并优雅重启，已有配置和映射会自动恢复。二进制所在目录必须可写；Docker 会提供宿主机的 `docker compose pull && docker compose up -d` 命令，Windows 会提供 PowerShell 安装命令。
+在管理页“关于”的“软件更新”卡片中检查并安装最新稳定版。原生 macOS/Linux 会下载对应平台的 Release、校验 SHA-256、保留旧二进制备份并优雅重启，已有配置和映射会自动恢复。二进制所在目录必须可写；Docker 会提供宿主机的 `docker compose pull && docker compose up -d` 命令，Windows 会提供 PowerShell 安装命令。
 
 ### 2. 选择“暴露内网服务”场景
 
@@ -178,18 +178,29 @@ flowchart LR
 
 ### Docker：运行统一节点
 
-容器适合部署在内网设备或盒子中。`--network host` 通常能提高 NAT 打洞成功率。
-如需 expose-only，先在挂载目录中创建只含 `[expose]` 的 `powermap.toml`；未提供
-配置时，首次启动会生成具备 expose 和 access 能力的默认节点。
+容器适合部署在内网设备或盒子中。发布镜像位于 [GitHub Container Registry](https://github.com/steven-ld/PowerMap/pkgs/container/powermap)，支持 `linux/amd64` 与 `linux/arm64`。`--network host` 通常能提高 NAT 打洞成功率；如需 expose-only，先在挂载目录中创建只含 `[expose]` 的 `powermap.toml`。
 
-或使用 Compose：
+建议固定版本启动，配置和节点身份持久化到当前目录的 `data/`：
 
 ```bash
-docker compose up -d
+mkdir -p data
+docker pull ghcr.io/steven-ld/powermap:v0.7.0
+docker run -d --name powermap --restart unless-stopped \
+  --network host \
+  -v "$(pwd)/data:/data" \
+  -e RUST_LOG=info \
+  ghcr.io/steven-ld/powermap:v0.7.0 \
+  powermap --config /data/powermap.toml
 ```
 
-发布镜像位于 `ghcr.io/steven-ld/powermap`。升级时在 Compose 项目目录运行
-`POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d`；管理页会为检测到的 Docker 环境生成对应命令。
+也可使用 Compose：
+
+```bash
+POWERMAP_TAG=v0.7.0 docker compose up -d
+```
+
+升级时在 Compose 项目目录运行
+`POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d`；管理页会为检测到的 Docker 环境生成对应命令。未提供配置时，首次启动会生成具备 expose 和 access 能力的默认节点。
 
 access 建议原生运行：映射的本地端口位于 access 所在网络命名空间，放入 Docker 会额外增加逐端口发布的管理成本。
 

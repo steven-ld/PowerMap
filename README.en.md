@@ -98,7 +98,7 @@ The build produces `target/release/powermap`.
 
 ### Update from the console
 
-Use the **Software update** card on the **Node** page to check and install the latest stable release. Native macOS/Linux installs download the matching release, verify its SHA-256 checksum, keep a backup, and restart gracefully; configuration and mappings are restored automatically. The binary directory must be writable. Docker receives a host-side `docker compose pull && docker compose up -d` command, while Windows receives a PowerShell installation command.
+Use the **Software update** card on the **About** page to check and install the latest stable release. Native macOS/Linux installs download the matching release, verify its SHA-256 checksum, keep a backup, and restart gracefully; configuration and mappings are restored automatically. The binary directory must be writable. Docker receives a host-side `docker compose pull && docker compose up -d` command, while Windows receives a PowerShell installation command.
 
 ### 2. Choose “expose this network” on the intranet machine
 
@@ -178,15 +178,28 @@ The UI binds to loopback only by default and shows connection state, transport p
 
 ### Docker: run a unified node
 
-A container is a good fit for an intranet appliance. `--network host` generally improves NAT-traversal success. To run expose-only, create a mounted `powermap.toml` containing only `[expose]`; without a config, the first start creates a default node with both expose and access capabilities.
+A container is a good fit for an intranet appliance. Published multi-architecture images are available from [GitHub Container Registry](https://github.com/steven-ld/PowerMap/pkgs/container/powermap) for `linux/amd64` and `linux/arm64`. `--network host` generally improves NAT-traversal success. To run expose-only, create a mounted `powermap.toml` containing only `[expose]`.
+
+Prefer a pinned image version and persist configuration plus node identity in a local `data/` directory:
+
+```bash
+mkdir -p data
+docker pull ghcr.io/steven-ld/powermap:v0.7.0
+docker run -d --name powermap --restart unless-stopped \
+  --network host \
+  -v "$(pwd)/data:/data" \
+  -e RUST_LOG=info \
+  ghcr.io/steven-ld/powermap:v0.7.0 \
+  powermap --config /data/powermap.toml
+```
 
 Or use Compose:
 
 ```bash
-docker compose up -d
+POWERMAP_TAG=v0.7.0 docker compose up -d
 ```
 
-Published images live at `ghcr.io/steven-ld/powermap`. To upgrade, run `POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d` from the Compose project directory; the console generates the matching command when it detects Docker.
+To upgrade, run `POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d` from the Compose project directory; the console generates the matching command when it detects Docker. Without a config, first start creates a default node with both expose and access capabilities.
 
 Run access natively where possible. Its mapped ports belong to its network namespace; Docker would add per-port publishing work.
 
