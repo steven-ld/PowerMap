@@ -663,6 +663,7 @@
   }
   .footer-link:hover { color: var(--foreground); }
   .footer-link svg { width: 0.875rem; height: 0.875rem; flex: none; }
+  .codebox { max-height: 18rem; margin: .75rem 0 0; padding: .8rem; overflow: auto; white-space: pre-wrap; color: var(--foreground); background: var(--muted); border: 1px solid var(--border); border-radius: .5rem; font: .75rem/1.65 var(--font-mono); }
   .footer-meta a { color: var(--muted-foreground); text-decoration: none; }
   .footer-meta a:hover { color: var(--foreground); }
   .footer-desc { max-width: 31rem; margin: 0.375rem 0 0; color: var(--muted-foreground); font-size: 0.8125rem; line-height: 1.55; }
@@ -696,6 +697,8 @@
   .console-actions a:hover { color: var(--primary); }
   .header-version { display: inline-flex; gap: .4rem; }
   .header-version strong { color: var(--foreground); font-weight: 500; }
+  .update-notice { display: none; align-items: center; gap: .4rem; height: 2.25rem; padding: 0 .65rem; border: 1px solid var(--primary); border-radius: .5rem; background: var(--primary); color: var(--primary-foreground); font: 700 .72rem/1 var(--font-sans); cursor: pointer; }
+  .update-notice.visible { display: inline-flex; }
   .sidebar-static { gap: 0; }
   .theme-toggle { min-height: 2.25rem; padding: 0 .7rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--foreground); font: 700 .72rem/1 var(--font-sans); cursor: pointer; }
   .theme-toggle:hover { background: var(--muted); }
@@ -897,7 +900,7 @@
 <a href="#mainContent" class="skip-link">跳到主内容</a>
 
 <div id="mainPage">
-  <header class="app-header"><div class="app-header-inner"><a class="console-brand" href="#dashboard">PowerMap <small>内网穿透控制台</small></a><div class="console-actions"><a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">官网</a><span class="header-version">当前版本 <strong id="headerVer">加载中</strong></span><button id="themeToggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">外观</button></div></div></header>
+  <header class="app-header"><div class="app-header-inner"><a class="console-brand" href="#dashboard">PowerMap <small>内网穿透控制台</small></a><div class="console-actions"><a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">官网</a><button id="updateNotice" class="update-notice" type="button">发现新版本</button><span class="header-version">当前版本 <strong id="headerVer">加载中</strong></span><button id="themeToggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">外观</button></div></div></header>
   <div class="app-shell">
     <aside class="app-sidebar">
       <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar" role="tablist" aria-label="页面">
@@ -906,6 +909,7 @@
         <button type="button" class="tab" data-tab="domains" id="tab-domains" role="tab" aria-selected="false" aria-controls="tabDomains" tabindex="-1"><span>域名映射</span></button>
         <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>节点</span></button>
         <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件</span></button>
+        <button type="button" class="tab" data-tab="about" id="tab-about" role="tab" aria-selected="false" aria-controls="tabAbout" tabindex="-1"><span>关于</span></button>
       </div></nav>
       <div class="sidebar-static">实时指标</div>
       <section class="sidebar-monitor" aria-label="实时指标">
@@ -1145,6 +1149,22 @@
       </div>
     </div>
 
+    <div id="tabAbout" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-about" tabindex="0">
+      <div class="card">
+        <div class="card-header"><span class="card-title">PowerMap</span><span id="aboutCurrent" class="badge">加载中</span></div>
+        <p class="hint">内网服务访问与映射控制台。</p>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">版本与发布</span><a id="aboutReleaseLink" class="footer-link hidden" target="_blank" rel="noopener noreferrer">查看发布说明</a></div>
+        <p id="aboutRelease" class="hint">正在检查最新稳定版本。</p>
+        <pre id="aboutNotes" class="codebox hidden"></pre>
+      </div>
+      <div class="card">
+        <div class="card-header"><span class="card-title">功能</span></div>
+        <div class="hint">端口映射与 HTTP/UDP 模式 · 域名映射与 TLS SNI 分发 · 节点凭证与多设备接入 · 反向映射策略 · 连接与流量监控 · 安全更新与受管部署</div>
+      </div>
+    </div>
+
     <!-- Tab: 事件 -->
     <div id="tabEvents" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-events" tabindex="0">
       <div class="card">
@@ -1361,13 +1381,14 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 
 // ── 标签页切换 ──
 const TAB_KEY = 'powermap_tab';
-const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', connection: 'tabConnection', events: 'tabEvents' };
+const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', connection: 'tabConnection', events: 'tabEvents', about: 'tabAbout' };
 const TAB_META = {
   dashboard: { title: '概览', subtitle: '查看节点连接、映射隧道和实时流量。' },
   mappings: { title: '端口映射', subtitle: '将本地端口安全地映射至内网服务。' },
   domains: { title: '域名映射', subtitle: '将域名解析到本机回环入口，并安全转发到远端服务。' },
   connection: { title: '节点', subtitle: '分享本机身份，或连接到其他节点。' },
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
+  about: { title: '关于', subtitle: '查看当前版本、发布说明与 PowerMap 功能。' },
 };
 function selectTab(name) {
   if (!tabViews[name]) name = 'dashboard';
@@ -1392,7 +1413,7 @@ function selectTab(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
   if (name === 'domains') refreshDomains();
-  if (name === 'connection') setTimeout(() => {
+  if (name === 'connection' || name === 'about') setTimeout(() => {
     if (!checkedUpdate) checkUpdate({ silent: true });
   }, 0);
 }
@@ -1878,6 +1899,7 @@ async function refreshCred() {
 }
 let checkedUpdate = false;
 let updateCommand = '';
+let updateProbeInFlight = false;
 async function checkUpdate({ silent = false } = {}) {
   const button = document.getElementById('checkUpdateBtn');
   const summary = document.getElementById('updateSummary');
@@ -1885,9 +1907,9 @@ async function checkUpdate({ silent = false } = {}) {
   const link = document.getElementById('updateReleaseLink');
   const install = document.getElementById('installUpdateBtn');
   const copyCommand = document.getElementById('copyUpdateCommandBtn');
-  if (!button || button.disabled) return;
-  button.disabled = true;
-  button.textContent = '检查中…';
+  if (!button || updateProbeInFlight) return;
+  updateProbeInFlight = true;
+  if (!silent) { button.disabled = true; button.textContent = '检查中…'; }
   try {
     const r = await api('/api/update');
     if (!r.ok) throw new Error((await r.text()) || '检查失败');
@@ -1907,15 +1929,28 @@ async function checkUpdate({ silent = false } = {}) {
     copyCommand.classList.toggle('hidden', !update.update_available || guidance.kind === 'in_app' || !updateCommand);
     copyCommand.textContent = guidance.label || '复制升级命令';
     details.classList.remove('hidden');
+    const notice = document.getElementById('updateNotice');
+    notice.classList.toggle('visible', update.update_available);
+    notice.textContent = update.update_available ? `发现 v${update.latest_version}` : '发现新版本';
+    document.getElementById('aboutCurrent').textContent = `当前 v${update.current_version}`;
+    document.getElementById('aboutRelease').textContent = update.update_available
+      ? `可升级至 v${update.latest_version}` : `当前已是最新稳定版 v${update.current_version}`;
+    const aboutLink = document.getElementById('aboutReleaseLink');
+    aboutLink.href = update.release_url;
+    aboutLink.classList.remove('hidden');
+    const notes = document.getElementById('aboutNotes');
+    notes.textContent = update.notes || '该版本未提供额外发布说明。';
+    notes.classList.remove('hidden');
     if (update.update_available && !silent) toast(`发现 PowerMap v${update.latest_version} 更新`, 'info', 6000);
   } catch (error) {
     summary.textContent = `无法检查更新：${String(error.message || error)}`;
   } finally {
-    button.disabled = false;
-    button.textContent = '检查更新';
+    updateProbeInFlight = false;
+    if (!silent) { button.disabled = false; button.textContent = '检查更新'; }
   }
 }
 document.getElementById('checkUpdateBtn').addEventListener('click', () => checkUpdate());
+document.getElementById('updateNotice').addEventListener('click', () => selectTab('about'));
 document.getElementById('installUpdateBtn').addEventListener('click', async () => {
   const button = document.getElementById('installUpdateBtn');
   const summary = document.getElementById('updateSummary');
@@ -2947,6 +2982,7 @@ function poll() {
   refresh();
   refreshDomains();
   refreshOwnNode();
+  checkUpdate({ silent: true });
   if (location.hash.slice(1) === 'events') refreshEvents();
 }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }

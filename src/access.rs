@@ -3853,10 +3853,8 @@ fn app(state: AppState) -> Router {
 
 /// GET /api/update —— 查询 GitHub 最新稳定版；只读取元数据，不下载或修改本机文件。
 async fn check_update() -> Result<Json<update::UpdateStatus>, (StatusCode, String)> {
-    let release = update::fetch_latest_release()
+    let status = update::cached_update_status(env!("CARGO_PKG_VERSION"))
         .await
-        .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
-    let status = update::update_status(env!("CARGO_PKG_VERSION"), &release)
         .map_err(|error| (StatusCode::BAD_GATEWAY, error.to_string()))?;
     Ok(Json(status))
 }

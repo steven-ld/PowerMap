@@ -2,6 +2,8 @@ use std::{
     cmp::Ordering,
     path::{Path, PathBuf},
     sync::Arc,
+    sync::OnceLock,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -71,6 +73,8 @@ pub struct InstallGuidance {
 pub const RELEASES_API: &str = "https://api.github.com/repos/steven-ld/PowerMap/releases/latest";
 const STARTUP_BACKUP_ENV: &str = "POWERMAP_UPDATE_BACKUP";
 const MAX_RELEASE_BYTES: usize = 100 * 1024 * 1024;
+const UPDATE_CACHE_TTL: Duration = Duration::from_secs(30);
+static UPDATE_CACHE: OnceLock<Mutex<Option<(Instant, UpdateStatus)>>> = OnceLock::new();
 
 /// Coordinates one pending update with the graceful HTTP shutdown that precedes `exec`.
 #[derive(Clone)]
@@ -280,6 +284,23 @@ pub async fn fetch_latest_release() -> Result<GithubRelease> {
         bail!("最新 Release 不是稳定正式版")
     }
     Ok(release)
+}
+
+/// Cache the public release metadata so a console that refreshes every two seconds does not
+/// consume GitHub's unauthenticated API quota on every status poll.
+pub async fn cached_update_status(current_version: &str) -> Result<UpdateStatus> {
+    let cache = UPDATE_CACHE.get_or_init(|| Mutex::new(None));
+    let mut cached = cache.lock().await;
+    if let Some((checked_at, status)) = cached.as_ref()
+        && checked_at.elapsed() < UPDATE_CACHE_TTL
+        && status.current_version == current_version
+    {
+        return Ok(status.clone());
+    }
+    let release = fetch_latest_release().await?;
+    let status = update_status(current_version, &release)?;
+    *cached = Some((Instant::now(), status.clone()));
+    Ok(status)
 }
 
 pub fn update_status(current_version: &str, release: &GithubRelease) -> Result<UpdateStatus> {
