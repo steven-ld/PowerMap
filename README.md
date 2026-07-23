@@ -17,10 +17,20 @@
 
 PowerMap 是基于 [iroh](https://iroh.computer) 和 QUIC 的点对点内网访问工具。它让两台机器优先直连，必要时通过加密中继回退，把内网服务映射为家中电脑上的本地端口。
 
-```text
-redis-cli ──> 127.0.0.1:6379 ──> PowerMap ──> 192.168.1.101:6379
-             家中电脑             加密 P2P 隧道       内网服务
-```
+<table>
+  <tr>
+    <td align="center"><code>redis-cli</code></td>
+    <td>→</td>
+    <td align="center"><code>127.0.0.1:6379</code></td>
+    <td>→</td>
+    <td align="center"><strong>PowerMap</strong></td>
+    <td>→</td>
+    <td align="center"><code>192.168.1.101:6379</code></td>
+  </tr>
+  <tr>
+    <td></td><td></td><td align="center">家中电脑</td><td></td><td align="center">加密 P2P 隧道</td><td></td><td align="center">内网服务</td>
+  </tr>
+</table>
 
 ## 导航
 

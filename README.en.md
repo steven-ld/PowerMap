@@ -17,10 +17,20 @@
 
 PowerMap is a peer-to-peer private-network access tool built on [iroh](https://iroh.computer) and QUIC. It tries to connect two machines directly, falls back to encrypted relay transport when needed, and maps an intranet service to a local port on your home computer.
 
-```text
-redis-cli ──> 127.0.0.1:6379 ──> PowerMap ──> 192.168.1.101:6379
-             home machine           encrypted P2P tunnel  intranet service
-```
+<table>
+  <tr>
+    <td align="center"><code>redis-cli</code></td>
+    <td>→</td>
+    <td align="center"><code>127.0.0.1:6379</code></td>
+    <td>→</td>
+    <td align="center"><strong>PowerMap</strong></td>
+    <td>→</td>
+    <td align="center"><code>192.168.1.101:6379</code></td>
+  </tr>
+  <tr>
+    <td></td><td></td><td align="center">Home machine</td><td></td><td align="center">Encrypted P2P tunnel</td><td></td><td align="center">Intranet service</td>
+  </tr>
+</table>
 
 ## Navigate
 
