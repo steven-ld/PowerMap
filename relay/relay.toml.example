@@ -1,0 +1,30 @@
+# Iroh Relay production configuration for a single PowerMap deployment.
+# Copy this file to relay.toml, set a real DNS name and secret, then start the Compose service.
+
+enable_relay = true
+enable_quic_addr_discovery = true
+enable_metrics = true
+http_bind_addr = "[::]:80"
+metrics_bind_addr = "0.0.0.0:9090"
+
+# Limit the in-memory cache instead of reserving the upstream default sized for one million peers.
+key_cache_capacity = 16384
+
+[tls]
+https_bind_addr = "[::]:443"
+quic_bind_addr = "[::]:7842"
+hostname = "relay.example.com"
+cert_mode = "LetsEncrypt"
+cert_dir = "/var/lib/iroh-relay"
+contact = "ops@example.com"
+prod_tls = true
+
+[limits.client.rx]
+# 100 MiB/s per connected endpoint. Tune this to the deployment's available egress.
+bytes_per_second = 104857600
+max_burst_bytes = 16777216
+
+[access]
+# Generate a long random value. Every PowerMap endpoint using this relay must send it as
+# the relay bearer token; do not reuse the PowerMap expose/access token here.
+shared_token = ["REPLACE_WITH_A_LONG_RANDOM_RELAY_SECRET"]

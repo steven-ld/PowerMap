@@ -260,6 +260,7 @@ async fn run_reverse_listener(
 /// `cancel` 触发。首次运行（既无顶层 token 也无 clients）会生成默认 token 并回写配置。
 pub async fn run(
     cfg: config::BConfig,
+    relay: config::RelaySettings,
     config_path: PathBuf,
     online_timeout: u64,
     cancel: CancellationToken,
@@ -318,10 +319,12 @@ pub async fn run(
         tunnel::Audit::to_file(&cfg.audit_log)
     };
     let dial_timeout = Duration::from_secs(cfg.dial_timeout_secs.max(1));
+    let relay_mode = relay.relay_mode().map_err(anyhow::Error::msg)?;
 
     let endpoint = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(vec![proto::ALPN.to_vec()])
+        .relay_mode(relay_mode)
         .transport_config(tunnel::transport_config())
         .bind()
         .await
@@ -349,6 +352,7 @@ pub async fn run(
             node_id: node_id.clone(),
             token: default_token.clone(),
             published_targets: cfg.published_targets.clone(),
+            relay: None,
         };
         let cred_path = config_path.with_file_name("powermap.credential.json");
         std::fs::write(&cred_path, serde_json::to_string_pretty(&cred)?)?;

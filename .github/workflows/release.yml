@@ -143,6 +143,84 @@ jobs:
           & dist/unpacked/powermap.exe --help
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+  upload-relay-assets:
+    name: package relay ${{ matrix.target }}
+    needs: create-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            target: x86_64-unknown-linux-gnu
+          - platform: linux/arm64
+            target: aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - name: Build relay binary from the pinned upstream source
+        run: |
+          docker buildx build \
+            --platform "${{ matrix.platform }}" \
+            --target artifact \
+            --output type=local,dest=dist \
+            --file relay/Dockerfile \
+            .
+      - name: Archive and upload relay binary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir package
+          install -m 0755 dist/iroh-relay package/iroh-relay
+          cp LICENSE-MIT LICENSE-APACHE relay/README.md relay/relay.toml.example package/
+          tar -czf "powermap-relay-${TARGET}.tar.gz" -C package .
+          sha256sum "powermap-relay-${TARGET}.tar.gz" > "powermap-relay-${TARGET}.sha256"
+          gh release upload "$TAG" \
+            "powermap-relay-${TARGET}.tar.gz" \
+            "powermap-relay-${TARGET}.sha256" \
+            --clobber
+
+  verify-relay-assets:
+    name: smoke test relay ${{ matrix.target }} archive
+    needs: upload-relay-assets
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            executable: true
+          - target: aarch64-unknown-linux-gnu
+            executable: false
+    steps:
+      - name: Download and validate relay archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir dist unpacked
+          gh release download "$TAG" \
+            --repo "$GH_REPO" \
+            --pattern "powermap-relay-${TARGET}.tar.gz" \
+            --pattern "powermap-relay-${TARGET}.sha256" \
+            --dir dist
+          cd dist
+          sha256sum -c "powermap-relay-${TARGET}.sha256"
+          tar -xzf "powermap-relay-${TARGET}.tar.gz" -C ../unpacked
+          test -x ../unpacked/iroh-relay
+      - name: Execute relay help on the native architecture
+        if: matrix.executable
+        run: ./unpacked/iroh-relay --help
+
   publish-docker:
     name: publish Docker image
     needs: publish-release
@@ -176,9 +254,40 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: gh api --method PATCH /user/packages/container/powermap -f visibility=public
 
+  publish-relay-docker:
+    name: publish relay Docker image
+    needs: publish-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: relay/Dockerfile
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/powermap-relay:${{ github.ref_name }}
+            ghcr.io/${{ github.repository_owner }}/powermap-relay:latest
+      - name: Make the public image pullable without credentials
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method PATCH /user/packages/container/powermap-relay -f visibility=public
+
   publish-release:
     name: publish verified release
-    needs: verify-release-assets
+    needs: [verify-release-assets, verify-relay-assets]
     runs-on: ubuntu-latest
     permissions:
       contents: write

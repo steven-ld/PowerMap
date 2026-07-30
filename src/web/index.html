@@ -223,7 +223,7 @@
   .card, .table-wrap { border-radius: .9rem; box-shadow: 0 12px 26px rgba(36, 35, 29, .045) !important; }
   .card { padding: 1.5rem; }
   .card-header { padding-bottom: 1.125rem; margin-bottom: 1.125rem; }
-  .card-title { font: 700 1.05rem/1 var(--font-display); letter-spacing: -.025em; }
+  .card-title { margin: 0; font: 700 1.05rem/1 var(--font-display); letter-spacing: -.025em; }
   .hint { max-width: 51rem; font-size: .875rem; line-height: 1.65; }
   .hint kbd { padding: 3px 6px; border-radius: .35rem; }
   .field { gap: .5rem; }
@@ -284,7 +284,29 @@
   .node-tabs { display: inline-flex; gap: .25rem; padding: .25rem; margin-bottom: 1rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--muted); }
   .node-tab { min-height: 2.25rem; padding: 0 .75rem; border: 0; border-radius: .3rem; background: transparent; color: var(--muted-foreground); font: 700 .78rem/1 var(--font-sans); cursor: pointer; }
   .node-tab[aria-selected="true"] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .node-tab:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
   .node-panel.hidden { display: none; }
+  .share-relay-option { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .7rem; align-items: start; margin-top: .9rem; padding-top: .9rem; border-top: 1px solid var(--border); color: var(--foreground); cursor: pointer; }
+  .share-relay-option input { width: 1rem; height: 1rem; min-height: 0; margin: .15rem 0 0; padding: 0; accent-color: var(--primary); cursor: pointer; }
+  .share-relay-option strong { display: block; font: 700 .82rem/1.35 var(--font-sans); }
+  .share-relay-option small { display: block; margin-top: .2rem; color: var(--muted-foreground); font: .76rem/1.5 var(--font-sans); }
+  .share-relay-option:has(input:focus-visible) { outline: 2px solid var(--ring); outline-offset: .35rem; border-radius: .25rem; }
+  .relay-card .card-header { align-items: flex-start; }
+  .relay-header-copy { max-width: 42rem; margin: .35rem 0 0; color: var(--muted-foreground); font-size: .8rem; line-height: 1.5; }
+  .relay-mode-status { flex: 0 0 auto; padding: .34rem .55rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--muted); color: var(--muted-foreground); font: 700 .7rem/1 var(--font-mono); white-space: nowrap; }
+  .relay-mode-status.custom { border-color: color-mix(in srgb, var(--primary) 35%, var(--border)); background: color-mix(in srgb, var(--primary) 8%, var(--card)); color: var(--primary); }
+  .relay-form { display: grid; gap: 1rem; }
+  .relay-section { padding: 1rem; border: 1px solid var(--border); border-radius: .625rem; background: var(--background); }
+  .relay-section-head { display: flex; align-items: baseline; justify-content: space-between; gap: .75rem; margin-bottom: .8rem; }
+  .relay-section-title { color: var(--foreground); font: 700 .82rem/1.2 var(--font-sans); }
+  .relay-url-count { color: var(--muted-foreground); font: 600 .7rem/1 var(--font-mono); white-space: nowrap; }
+  .relay-field-hint { margin: .45rem 0 0; color: var(--muted-foreground); font-size: .76rem; line-height: 1.5; }
+  .relay-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: end; }
+  .relay-controls .btn { min-width: 9.5rem; }
+  .relay-runtime-note { display: flex; gap: .55rem; margin: 0; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: .78rem; line-height: 1.55; }
+  .relay-runtime-note strong { flex: 0 0 auto; color: var(--foreground); font-size: .75rem; }
+  .form-error { margin: -.25rem 0 0; color: var(--destructive); font-size: .78rem; line-height: 1.45; }
+  .relay-form [aria-invalid="true"] { border-color: var(--destructive); }
   .badge { padding: .25rem .55rem; border-radius: .45rem; }
   .table-wrap { overflow-x: auto; }
   thead th { padding: .9rem 1.1rem; background: var(--muted); }
@@ -323,6 +345,10 @@
     .onboarding-step p { min-height: 0; }
     .card-actions { width: 100%; }
     .card-actions .btn { flex: 1 1 0; padding: 0 .65rem; }
+    .relay-mode-status { margin-top: -.25rem; }
+    .relay-controls { grid-template-columns: 1fr; }
+    .relay-controls .btn { width: 100%; }
+    .relay-runtime-note { align-items: flex-start; flex-direction: column; gap: .25rem; }
   }
 
   /* ── PowerMap console shell ── */
@@ -1089,7 +1115,7 @@
     <div id="tabConnection" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-connection" tabindex="0">
       <div class="card">
         <div class="card-header">
-          <span class="card-title">节点</span>
+          <h2 class="card-title">节点</h2>
           <div class="card-actions">
             <button id="exportBtn" class="btn btn-outline btn-sm" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1101,7 +1127,7 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
               导入配置
             </button>
-            <input id="importFile" type="file" accept="application/json,.json" style="display:none" />
+            <input id="importFile" type="file" accept="application/json,.json" aria-label="选择要导入的配置文件" style="display:none" />
           </div>
         </div>
         <div class="node-tabs" role="tablist" aria-label="节点类型">
@@ -1133,8 +1159,32 @@
           <div class="node-table-head"><span id="ownNodeTitle" class="node-table-title">本机节点</span><button id="copyOwnCredential" class="btn btn-outline btn-sm" type="button" style="display:none">复制分享凭证</button></div>
           <p class="node-table-copy">把本机凭证交给对方，对方即可在自己的“远端节点”中接入。</p>
           <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
+          <label class="share-relay-option" for="shareRelayConfig">
+            <input id="shareRelayConfig" name="share_relay_config" type="checkbox" />
+            <span><strong>同时分享中继配置</strong><small>复制的 JSON 将包含中继地址和 Relay token；接收方导入后会应用这些设置。未勾选时，对方保留自己的中继配置。</small></span>
+          </label>
         </section>
         <span id="ioMsg"></span>
+      </div>
+
+      <div class="card relay-card">
+        <div class="card-header">
+          <div><h2 class="card-title">中继策略</h2><p class="relay-header-copy">为新建连接指定自建 iroh relay 集合；未配置时自动使用 iroh 默认免费中继。</p></div>
+          <span id="relayModeStatus" class="relay-mode-status" role="status" aria-live="polite">正在读取</span>
+        </div>
+        <form id="relayForm" class="relay-form">
+          <section class="relay-section" aria-labelledby="relayUrlsLabel">
+            <div class="relay-section-head"><label id="relayUrlsLabel" class="relay-section-title" for="relayUrls">中继地址</label><span id="relayUrlCount" class="relay-url-count">0 / 8 个地址</span></div>
+            <textarea id="relayUrls" name="relay_urls" class="mono" rows="4" placeholder="https://relay-1.example.com&#10;https://relay-2.example.com" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="relayUrlsHint relayFormError"></textarea>
+            <p id="relayUrlsHint" class="relay-field-hint">每行一个 HTTPS 地址，按集合故障切换，最多 8 个。留空即可回退到默认中继。</p>
+          </section>
+          <div class="relay-controls">
+            <div class="field"><label class="lbl" for="relayToken">Relay token（可选）</label><input id="relayToken" name="relay_token" class="mono" type="password" placeholder="部署时配置的 token" spellcheck="false" autocomplete="off" aria-describedby="relayTokenHint relayFormError" /><p id="relayTokenHint" class="relay-field-hint">仅在 relay 部署启用准入校验时填写。</p></div>
+            <button id="saveRelayBtn" type="submit" class="btn btn-primary">保存中继策略</button>
+          </div>
+          <p id="relayFormError" class="form-error hidden" role="alert"></p>
+        </form>
+        <p class="relay-runtime-note"><strong>生效范围</strong><span id="relayRuntimeNote">本机作为 access 时，新建连接会使用此策略；已建立连接继续使用原路径。同机运行 expose 时，保存后重启 PowerMap 才会生效。</span></p>
       </div>
 
       <div class="card hidden">
@@ -1954,6 +2004,93 @@ async function copyText(t) {
 // ── 连接设置：凭证状态 / 复制 / 接入 ──
 let curCred = { node_id: '', token: '', configured: false, token_hidden: false, published_targets: [] };
 let ownCredential = null;
+let localRelay = { urls: [], auth_token: '' };
+function relayUrlsFromInput(value) {
+  return String(value || '').split(/\r?\n/).map(url => url.trim()).filter(Boolean);
+}
+function setRelayFormError(message = '') {
+  const error = document.getElementById('relayFormError');
+  const urls = document.getElementById('relayUrls');
+  const token = document.getElementById('relayToken');
+  error.textContent = message;
+  error.classList.toggle('hidden', !message);
+  urls.toggleAttribute('aria-invalid', !!message);
+  token.toggleAttribute('aria-invalid', !!message);
+}
+function renderRelaySummary(urls, { draft = false } = {}) {
+  const count = urls.length;
+  const mode = document.getElementById('relayModeStatus');
+  document.getElementById('relayUrlCount').textContent = `${count} / 8 个地址`;
+  document.getElementById('relayRuntimeNote').textContent = count
+    ? '本机作为 access 时，新建连接会从此集合中选择可用中继；已建立连接继续使用原路径。同机运行 expose 时，保存后重启 PowerMap 才会生效。'
+    : '未配置自建地址时，本机作为 access 的新建连接会回退使用 iroh 默认免费中继。同机运行 expose 时，保存后重启 PowerMap 才会生效。';
+  mode.textContent = draft ? (count ? `待保存 · 自建 ${count} 个` : '待保存 · 默认中继') : (count ? `自建中继 · ${count} 个` : '默认中继');
+  mode.classList.toggle('custom', count > 0);
+}
+function renderRelayUnavailable() {
+  const mode = document.getElementById('relayModeStatus');
+  mode.textContent = '读取失败';
+  mode.classList.remove('custom');
+  document.getElementById('relayRuntimeNote').textContent = '未能读取当前中继配置。请检查管理页连接后重试，保存不会使用未知的本机配置。';
+}
+function renderRelay(relay) {
+  localRelay = relay && typeof relay === 'object' ? relay : { urls: [], auth_token: '' };
+  const urls = Array.isArray(localRelay.urls) ? localRelay.urls : [];
+  document.getElementById('relayUrls').value = urls.join('\n');
+  document.getElementById('relayToken').value = typeof localRelay.auth_token === 'string' ? localRelay.auth_token : '';
+  setRelayFormError();
+  renderRelaySummary(urls);
+}
+document.getElementById('relayUrls').addEventListener('input', () => {
+  renderRelaySummary(relayUrlsFromInput(document.getElementById('relayUrls').value), { draft: true });
+  setRelayFormError();
+});
+document.getElementById('relayToken').addEventListener('input', () => setRelayFormError());
+async function refreshRelay() {
+  try {
+    const response = await api('/api/relay');
+    if (!response.ok) throw new Error((await response.text()) || '读取中继配置失败');
+    const relay = await response.json();
+    renderRelay(relay);
+    return relay;
+  } catch (error) {
+    renderRelayUnavailable();
+    if (String(error) !== 'Error: unauthorized') toast(String(error.message || error), 'err');
+    return null;
+  }
+}
+document.getElementById('relayForm').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = document.getElementById('saveRelayBtn');
+  const relay = {
+    urls: relayUrlsFromInput(document.getElementById('relayUrls').value),
+    auth_token: document.getElementById('relayToken').value,
+  };
+  const defaultLabel = '保存中继策略';
+  button.disabled = true;
+  button.textContent = '保存中…';
+  button.setAttribute('aria-busy', 'true');
+  setRelayFormError();
+  try {
+    const response = await api('/api/relay', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(relay),
+    });
+    if (!response.ok) throw new Error((await response.text()) || '保存中继配置失败');
+    renderRelay(relay);
+    toast(relay.urls.length ? '自建中继配置已保存' : '已恢复使用 iroh 默认免费中继');
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') {
+      const message = String(error.message || error);
+      setRelayFormError(message);
+      (/(auth_token|token)/i.test(message) ? document.getElementById('relayToken') : document.getElementById('relayUrls')).focus();
+      toast(message, 'err');
+    }
+  } finally {
+    button.disabled = false;
+    button.textContent = defaultLabel;
+    button.removeAttribute('aria-busy');
+  }
+});
 async function refreshOwnNode() {
   try {
     const node = await (await api('/api/node')).json();
@@ -2110,14 +2247,29 @@ document.getElementById('copyToken').addEventListener('click', async () => {
   ioMsg(ok ? 'token 已复制' : '复制失败，请手动选取');
 });
 document.getElementById('copyOwnCredential').addEventListener('click', async () => {
-  const ok = ownCredential && await copyText(JSON.stringify(ownCredential, null, 2));
-  ioMsg(ok ? '本机分享凭证已复制' : '复制失败，请稍后重试');
+  const button = document.getElementById('copyOwnCredential');
+  if (!ownCredential) { ioMsg('复制失败，请稍后重试'); return; }
+  button.disabled = true;
+  try {
+    const credential = Object.assign({}, ownCredential);
+    delete credential.relay;
+    if (document.getElementById('shareRelayConfig').checked) {
+      const response = await api('/api/relay');
+      if (!response.ok) throw new Error((await response.text()) || '读取本机中继配置失败');
+      credential.relay = await response.json();
+    }
+    const ok = await copyText(JSON.stringify(credential, null, 2));
+    ioMsg(ok ? '本机分享凭证已复制' : '复制失败，请稍后重试');
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') toast(String(error.message || error), 'err');
+  } finally { button.disabled = false; }
 });
 document.getElementById('credForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   let node_id = document.getElementById('credNodeIn').value.trim();
   let tok = document.getElementById('credTokenIn').value.trim();
   let published_targets = [];
+  let relay;
   const raw = document.getElementById('credJson').value.trim();
   if (raw) {
     try {
@@ -2125,6 +2277,7 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
       node_id = (j.node_id || '').trim();
       tok = (j.token || '').trim();
       published_targets = Array.isArray(j.published_targets) ? j.published_targets : [];
+      if (Object.prototype.hasOwnProperty.call(j, 'relay')) relay = j.relay;
     } catch { toast('凭证 JSON 解析失败，请检查格式', 'err'); return; }
   }
   if (!node_id || !tok) { toast('请提供 node_id 与 token（粘贴 JSON 或分栏填写）', 'err'); return; }
@@ -2137,9 +2290,11 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
     });
     if (!ok) return;
   }
+  const credential = { node_id, token: tok, published_targets };
+  if (relay !== undefined) credential.relay = relay;
   const r = await api('/api/credential', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ node_id, token: tok, published_targets }),
+    body: JSON.stringify(credential),
   });
   if (!r.ok) { toast((await r.text()) || '接入失败', 'err'); return; }
   document.getElementById('credJson').value = '';
@@ -3116,6 +3271,7 @@ function showShortcutHelp() {
 
 refreshCred().then(refreshTargetCatalog);
 refreshOwnNode();
+refreshRelay();
 refresh();
 refreshDomains();
 refreshStatus();

@@ -31,7 +31,7 @@ use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
 use iroh::endpoint::{Connection, presets};
-use iroh::{Endpoint, PublicKey};
+use iroh::{Endpoint, PublicKey, RelayUrl};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
@@ -64,10 +64,25 @@ struct Creds {
 struct Link {
     endpoint: Endpoint,
     creds: Arc<RwLock<Creds>>,
+    relay: Arc<Mutex<RelayRuntime>>,
     conn: Arc<Mutex<Option<Connection>>>,
     /// 当前连接建立时刻（unix 毫秒，0 = 未连接）。每次成功新建连接时刷新，
     /// invalidate 时清零，供管理页展示"已连接时长"。
     connected_since: Arc<AtomicU64>,
+}
+
+/// Endpoint 当前生效的 relay 设置及 URL 集合。URL 集合用于热更新时移除旧配置，
+/// 让“空配置回退 N0”和“自建 relay 集合”都能准确替换。
+struct RelayRuntime {
+    settings: config::RelaySettings,
+    urls: Vec<RelayUrl>,
+}
+
+impl RelayRuntime {
+    fn new(settings: config::RelaySettings) -> Result<Self, String> {
+        let urls = settings.relay_mode()?.relay_map().urls::<Vec<_>>();
+        Ok(Self { settings, urls })
+    }
 }
 
 impl Link {
@@ -127,6 +142,37 @@ impl Link {
             c.published_targets = published_targets;
         }
         self.invalidate().await;
+    }
+
+    async fn relay_settings(&self) -> config::RelaySettings {
+        self.relay.lock().await.settings.clone()
+    }
+
+    /// Replace the relay map in place. iroh notifies its network actor for each insertion/removal;
+    /// cached tunnels are left alone while the next one connects using the replacement map.
+    async fn set_relay(&self, settings: config::RelaySettings) -> Result<(), String> {
+        let mode = settings.relay_mode()?;
+        let map = mode.relay_map();
+        let urls = map.urls::<Vec<_>>();
+        let configs = map.relays::<Vec<_>>();
+        let mut runtime = self.relay.lock().await;
+
+        for url in &runtime.urls {
+            if !urls.contains(url) {
+                self.endpoint.remove_relay(url).await;
+            }
+        }
+        for config in configs {
+            self.endpoint.insert_relay(config.url.clone(), config).await;
+        }
+        runtime.settings = settings;
+        runtime.urls = urls;
+        drop(runtime);
+
+        // Do not close cloned in-flight connections. Removing the cached connection makes
+        // subsequent streams establish through the newly selected relay map.
+        self.invalidate().await;
+        Ok(())
     }
 
     /// 实时存活判断：检查当前缓存的连接是否仍未被关闭。
@@ -624,6 +670,10 @@ struct AppState {
     metrics: Arc<Metrics>,
     events: Arc<EventLog>,
     inner: Arc<Mutex<Inner>>,
+    /// Serializes read-modify-write snapshots of the unified configuration file.
+    config_save: Arc<Mutex<()>>,
+    /// Keeps relay replacement and its persistence/rollback as one operation.
+    relay_update: Arc<Mutex<()>>,
     updater: update::UpdateCoordinator,
     /// 反向映射策略（deny-all）：是否接受 B 端发起的反向隧道，及允许 A 拨号的目标。
     /// 用 RwLock 承载，便于后续通过管理页在运行期开关；save/export 从此读回持久化。
@@ -1047,6 +1097,9 @@ mod integration_tests {
             link: Link {
                 endpoint,
                 creds: Arc::new(RwLock::new(Creds::default())),
+                relay: Arc::new(Mutex::new(
+                    RelayRuntime::new(config::RelaySettings::default()).unwrap(),
+                )),
                 conn: Arc::new(Mutex::new(None)),
                 connected_since: Arc::new(AtomicU64::new(0)),
             },
@@ -1084,6 +1137,8 @@ mod integration_tests {
             inner: Arc::new(Mutex::new(Inner {
                 mappings: HashMap::new(),
             })),
+            config_save: Arc::new(Mutex::new(())),
+            relay_update: Arc::new(Mutex::new(())),
             updater: update::UpdateCoordinator::new(CancellationToken::new()),
             reverse: Arc::new(RwLock::new(ReverseConfig::default())),
         }
@@ -2449,6 +2504,13 @@ mod integration_tests {
             .link
             .set_creds(target.to_string(), "private-token".into(), target, vec![])
             .await;
+        {
+            let mut relay = state.link.relay.lock().await;
+            relay.settings = config::RelaySettings {
+                urls: vec!["https://export-relay.example.com".into()],
+                auth_token: "relay-secret".into(),
+            };
+        }
         let app = app(state);
 
         let redacted = response_json(
@@ -2459,6 +2521,11 @@ mod integration_tests {
         )
         .await;
         assert_eq!(redacted["token"], "");
+        assert_eq!(
+            redacted["relay"]["urls"],
+            serde_json::json!(["https://export-relay.example.com"])
+        );
+        assert_eq!(redacted["relay"]["auth_token"], "");
 
         let full = response_json(
             app.oneshot(
@@ -2471,6 +2538,85 @@ mod integration_tests {
         )
         .await;
         assert_eq!(full["token"], "private-token");
+        assert_eq!(full["relay"]["auth_token"], "relay-secret");
+    }
+
+    #[tokio::test]
+    async fn import_applies_relay_when_the_transfer_payload_includes_it() {
+        let app = app(test_state("").await);
+        let payload = r#"{
+            "node_id": "",
+            "token": "",
+            "relay": {
+                "urls": ["https://imported-relay.example.com"],
+                "auth_token": "imported-relay-token"
+            }
+        }"#;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let relay = app
+            .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(relay.status(), StatusCode::OK);
+        let relay = response_json(relay).await;
+        assert_eq!(
+            relay["urls"],
+            serde_json::json!(["https://imported-relay.example.com"])
+        );
+        assert_eq!(relay["auth_token"], "imported-relay-token");
+    }
+
+    #[tokio::test]
+    async fn old_import_payload_without_relay_preserves_the_local_relay_configuration() {
+        let state = test_state("").await;
+        state
+            .link
+            .set_relay(config::RelaySettings {
+                urls: vec!["https://local-relay.example.com".into()],
+                auth_token: "local-relay-token".into(),
+            })
+            .await
+            .unwrap();
+        let app = app(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"node_id":"","token":""}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let relay = app
+            .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let relay = response_json(relay).await;
+        assert_eq!(
+            relay["urls"],
+            serde_json::json!(["https://local-relay.example.com"])
+        );
+        assert_eq!(relay["auth_token"], "local-relay-token");
     }
 
     #[tokio::test]
@@ -2501,6 +2647,130 @@ mod integration_tests {
         let body = response_json(response).await;
         assert_eq!(body["published_targets"][0]["host"], "192.168.1.101");
         assert_eq!(body["published_targets"][0]["port"], 6379);
+    }
+
+    #[tokio::test]
+    async fn shared_credential_applies_the_optional_relay_configuration() {
+        let state = test_state("").await;
+        let node_id = state.link.endpoint.id().to_string();
+        let app = app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/credential")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"node_id":"{node_id}","token":"access-token","relay":{{"urls":["https://relay-a.example.com","https://relay-b.example.com"],"auth_token":"relay-token"}}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(
+            body["relay"]["urls"],
+            serde_json::json!(["https://relay-a.example.com", "https://relay-b.example.com"])
+        );
+        assert_eq!(body["relay"]["auth_token"], "relay-token");
+    }
+
+    #[tokio::test]
+    async fn shared_credential_without_relay_preserves_local_relay_configuration() {
+        let state = test_state("").await;
+        let node_id = state.link.endpoint.id().to_string();
+        {
+            let mut relay = state.link.relay.lock().await;
+            relay.settings = config::RelaySettings {
+                urls: vec!["https://local-relay.example.com".into()],
+                auth_token: "local-relay-token".into(),
+            };
+        }
+        let app = app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/credential")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"node_id":"{node_id}","token":"access-token"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = response_json(response).await;
+        assert_eq!(
+            body["relay"]["urls"],
+            serde_json::json!(["https://local-relay.example.com"])
+        );
+        assert_eq!(body["relay"]["auth_token"], "local-relay-token");
+    }
+
+    #[tokio::test]
+    async fn relay_api_updates_the_runtime_configuration() {
+        let app = app(test_state("").await);
+        let relay = r#"{"urls":["https://relay.example.com"],"auth_token":"relay-token"}"#;
+
+        let updated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/relay")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(relay))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+        assert_eq!(response_json(updated).await["auth_token"], "relay-token");
+
+        let current = app
+            .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(current.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(current).await["urls"],
+            serde_json::json!(["https://relay.example.com"])
+        );
+    }
+
+    #[tokio::test]
+    async fn relay_api_reverts_the_runtime_change_when_persistence_fails() {
+        let mut state = test_state("").await;
+        state.config_path = PathBuf::from("/dev/null/powermap-relay.toml");
+        let app = app(state);
+        let relay = r#"{"urls":["https://relay.example.com"],"auth_token":"relay-token"}"#;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/relay")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(relay))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let current = app
+            .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response_json(current).await["urls"], serde_json::json!([]));
     }
 
     #[tokio::test]
@@ -4232,6 +4502,7 @@ fn app(state: AppState) -> Router {
         .route("/api/node", get(get_node))
         .route("/api/update", get(check_update).post(install_update))
         .route("/api/credential", get(get_credential).post(set_credential))
+        .route("/api/relay", get(get_relay).put(set_relay))
         .route("/api/reverse", get(get_reverse).put(set_reverse))
         .route("/api/export", get(export_config))
         .route("/api/import", post(import_config))
@@ -4350,10 +4621,22 @@ async fn build_config(st: &AppState) -> config::AConfig {
     }
 }
 
+async fn persist_config(st: &AppState) -> Result<(), String> {
+    let _save = st.config_save.lock().await;
+    let access = build_config(st).await;
+    let relay = st.link.relay_settings().await;
+    let mut cfg = config::load_config(&st.config_path, None)
+        .map_err(|error| format!("读取配置失败: {error}"))?
+        .config;
+    cfg.access = Some(access);
+    cfg.relay = relay;
+    cfg.validate()?;
+    config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
+}
+
 async fn save_config(st: &AppState) {
-    let cfg = build_config(st).await;
-    if let Err(e) = config::save_access(&st.config_path, &cfg) {
-        tracing::error!(error = %e, "保存配置失败");
+    if let Err(error) = persist_config(st).await {
+        tracing::error!(error = %error, "保存配置失败");
     }
 }
 
@@ -4374,6 +4657,7 @@ struct CredentialView {
     token: String,
     token_hidden: bool,
     published_targets: Vec<config::PublishedTarget>,
+    relay: config::RelaySettings,
 }
 
 /// 当前节点的可分享凭证。expose 启动完成前没有凭证时返回 configured=false，
@@ -4414,13 +4698,45 @@ async fn get_node(State(st): State<AppState>) -> Json<NodeView> {
 /// GET /api/credential —— 供网页查看/复制当前凭证。
 async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
     let c = st.link.creds.read().await;
+    let relay = st.link.relay_settings().await;
     Json(CredentialView {
         configured: c.target.is_some(),
         node_id: c.node_id.clone(),
         token: c.token.clone(),
         token_hidden: false,
         published_targets: c.published_targets.clone(),
+        relay,
     })
+}
+
+/// GET /api/relay --- the active relay configuration used for new connections.
+async fn get_relay(State(st): State<AppState>) -> Json<config::RelaySettings> {
+    Json(st.link.relay_settings().await)
+}
+
+/// PUT /api/relay --- validate, persist, and apply a replacement RelayMap without restarting.
+async fn set_relay(
+    State(st): State<AppState>,
+    Json(relay): Json<config::RelaySettings>,
+) -> Result<Json<config::RelaySettings>, (StatusCode, String)> {
+    let _update = st.relay_update.lock().await;
+    let previous = st.link.relay_settings().await;
+    st.link
+        .set_relay(relay.clone())
+        .await
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    if let Err(error) = persist_config(&st).await {
+        if let Err(rollback_error) = st.link.set_relay(previous).await {
+            tracing::error!(error = %rollback_error, "relay 配置持久化失败后无法回滚运行时设置");
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存 relay 配置失败: {error}"),
+        ));
+    }
+    st.events
+        .push("info", "relay", "已更新 relay 配置，后续连接将使用新节点");
+    Ok(Json(relay))
 }
 
 /// POST /api/credential —— 粘贴 server 端凭证接入；校验后即时切换连接目标并重连。
@@ -4432,6 +4748,12 @@ async fn set_credential(
         return Err((StatusCode::BAD_REQUEST, "node_id 与 token 不能为空".into()));
     }
     let target = parse_target(&cred.node_id).map_err(|m| (StatusCode::BAD_REQUEST, m))?;
+    if let Some(relay) = cred.relay.clone() {
+        st.link
+            .set_relay(relay)
+            .await
+            .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    }
     st.link
         .set_creds(
             cred.node_id.trim().to_string(),
@@ -4445,12 +4767,14 @@ async fn set_credential(
         .push("info", "credential", "已更新接入凭证，正在用新凭证重连");
     tracing::info!("凭证已更新，将以新凭证重连");
     let c = st.link.creds.read().await;
+    let relay = st.link.relay_settings().await;
     Ok(Json(CredentialView {
         configured: true,
         node_id: c.node_id.clone(),
         token: c.token.clone(),
         token_hidden: false,
         published_targets: c.published_targets.clone(),
+        relay,
     }))
 }
 
@@ -4461,14 +4785,32 @@ struct ExportQuery {
     include_credentials: bool,
 }
 
+/// Backup/import payload: preserve the historical AConfig top-level shape and add an optional
+/// relay field so older backups remain accepted without changing their representation.
+#[derive(Serialize, Deserialize)]
+struct TransferPayload {
+    #[serde(flatten)]
+    access: config::AConfig,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relay: Option<config::RelaySettings>,
+}
+
 async fn export_config(State(st): State<AppState>, Query(query): Query<ExportQuery>) -> Response {
-    let cfg = build_config(&st).await;
-    let cfg = if query.include_credentials {
-        cfg
+    let access = build_config(&st).await;
+    let access = if query.include_credentials {
+        access
     } else {
-        cfg.redacted_for_export()
+        access.redacted_for_export()
     };
-    match serde_json::to_string_pretty(&cfg) {
+    let mut relay = st.link.relay_settings().await;
+    if !query.include_credentials {
+        relay.auth_token.clear();
+    };
+    let payload = TransferPayload {
+        access,
+        relay: Some(relay),
+    };
+    match serde_json::to_string_pretty(&payload) {
         Ok(body) => (
             [
                 ("content-type", "application/json"),
@@ -4512,8 +4854,12 @@ struct ImportQuery {
 async fn import_config(
     State(st): State<AppState>,
     Query(query): Query<ImportQuery>,
-    Json(incoming): Json<config::AConfig>,
+    Json(payload): Json<TransferPayload>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
+    let TransferPayload {
+        access: incoming,
+        relay,
+    } = payload;
     let merge = query.mode == ImportMode::Merge;
     // 1) 先校验凭证（若带了 node_id）
     let new_target = if incoming.node_id.trim().is_empty() {
@@ -4526,6 +4872,11 @@ async fn import_config(
             StatusCode::BAD_REQUEST,
             "node_id 与 token 必须同时提供或同时留空".into(),
         ));
+    }
+    if let Some(relay) = relay.as_ref() {
+        relay
+            .validate()
+            .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     }
     // 2) 校验所有映射合法
     let mut locals = HashSet::new();
@@ -4617,7 +4968,13 @@ async fn import_config(
         stop_mapping(handle).await;
     }
 
-    // 4) 更新凭证（放在映射之后，确保新映射已就绪再触发重连）
+    // 4) 更新 relay/凭证（放在映射之后，确保新映射已就绪再触发重连）
+    if let Some(relay) = relay {
+        st.link
+            .set_relay(relay)
+            .await
+            .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    }
     if let Some(target) = new_target {
         st.link
             .set_creds(
@@ -4665,6 +5022,7 @@ async fn stop_mapping(handle: MappingHandle) {
 /// 恢复映射、起看门狗与反向驱动，并提供 Web 管理页，直到 `cancel` 触发再优雅关停。
 pub async fn run(
     cfg: config::AConfig,
+    relay: config::RelaySettings,
     config_path: PathBuf,
     cancel: CancellationToken,
 ) -> Result<()> {
@@ -4707,7 +5065,10 @@ pub async fn run(
 
     let metrics = Metrics::new();
     let events = EventLog::new(200);
+    let relay_runtime = RelayRuntime::new(relay.clone()).map_err(anyhow::Error::msg)?;
+    let relay_mode = relay.relay_mode().map_err(anyhow::Error::msg)?;
     let endpoint = Endpoint::builder(presets::N0)
+        .relay_mode(relay_mode)
         .transport_config(tunnel::transport_config())
         .bind()
         .await
@@ -4720,6 +5081,7 @@ pub async fn run(
             target,
             published_targets: cfg.published_targets.clone(),
         })),
+        relay: Arc::new(Mutex::new(relay_runtime)),
         conn: Arc::new(Mutex::new(None)),
         connected_since: Arc::new(AtomicU64::new(0)),
     };
@@ -4749,6 +5111,8 @@ pub async fn run(
         inner: Arc::new(Mutex::new(Inner {
             mappings: HashMap::new(),
         })),
+        config_save: Arc::new(Mutex::new(())),
+        relay_update: Arc::new(Mutex::new(())),
         updater: update::UpdateCoordinator::new(cancel.clone()),
         reverse: Arc::new(RwLock::new(ReverseConfig {
             enabled: cfg.reverse_enabled,

@@ -596,10 +596,91 @@ impl BConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
+    /// Endpoint 使用的中继配置。留空时兼容使用 iroh 的 N0 默认中继。
+    #[serde(default)]
+    pub relay: RelaySettings,
     #[serde(default)]
     pub expose: Option<BConfig>,
     #[serde(default)]
     pub access: Option<AConfig>,
+}
+
+/// 自建 iroh relay 的连接设置。
+///
+/// `urls` 为空时不改变旧版行为，Endpoint 会回退到 iroh 的 N0 默认中继。
+/// 配置 URL 后，所有 URL 组成一个自定义 RelayMap，由 iroh 选择可用节点。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct RelaySettings {
+    /// 自建 relay 的 HTTPS 基地址；多个地址共同构成故障切换集合。
+    #[serde(default)]
+    pub urls: Vec<String>,
+    /// relay 准入用的 Bearer token；导出配置时必须脱敏。
+    #[serde(default)]
+    pub auth_token: String,
+}
+
+impl RelaySettings {
+    const MAX_URLS: usize = 8;
+
+    /// 校验自建 relay 设置。空 URL 列表有意合法，用于兼容 N0 默认中继。
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        let _ = self.parsed_urls()?;
+        if self.urls.is_empty() && !self.auth_token.is_empty() {
+            return Err("relay 未配置 urls 时不能设置 auth_token".into());
+        }
+        if self.auth_token.chars().any(char::is_whitespace) {
+            return Err("relay auth_token 不能包含空白字符".into());
+        }
+        Ok(())
+    }
+
+    /// 构造 Endpoint 所需的 relay 模式。空 URL 列表保持既有 N0 默认 relay 行为。
+    pub fn relay_mode(&self) -> std::result::Result<iroh::RelayMode, String> {
+        self.validate()?;
+        let urls = self.parsed_urls()?;
+        if urls.is_empty() {
+            return Ok(iroh::endpoint::default_relay_mode());
+        }
+
+        let mut map = iroh::RelayMap::from_iter(urls);
+        if !self.auth_token.is_empty() {
+            map = map.with_auth_token(self.auth_token.clone());
+        }
+        Ok(iroh::RelayMode::Custom(map))
+    }
+
+    fn parsed_urls(&self) -> std::result::Result<Vec<iroh::RelayUrl>, String> {
+        if self.urls.len() > Self::MAX_URLS {
+            return Err(format!("relay urls 最多可配置 {} 项", Self::MAX_URLS));
+        }
+
+        let mut seen = HashSet::new();
+        let mut urls = Vec::with_capacity(self.urls.len());
+        for raw in &self.urls {
+            let value = raw.trim();
+            if value.is_empty() {
+                return Err("relay url 不能为空".into());
+            }
+            let url = value
+                .parse::<iroh::RelayUrl>()
+                .map_err(|_| format!("relay url 无效: {value}"))?;
+            if url.scheme() != "https" || url.host_str().is_none() {
+                return Err(format!("relay url 必须是 HTTPS 主机地址: {value}"));
+            }
+            if !seen.insert(url.as_str().to_owned()) {
+                return Err(format!("relay urls 包含重复地址: {value}"));
+            }
+            urls.push(url);
+        }
+        Ok(urls)
+    }
+
+    fn redacted(&self) -> Self {
+        Self {
+            urls: self.urls.clone(),
+            auth_token: String::new(),
+        }
+    }
 }
 
 /// 首次设置时用户选择的使用场景。
@@ -617,6 +698,7 @@ impl Config {
     /// Produce a shareable backup without credentials that grant network access.
     pub fn redacted_for_export(&self) -> Self {
         let mut exported = self.clone();
+        exported.relay = exported.relay.redacted();
         if let Some(access) = &mut exported.access {
             *access = access.redacted_for_export();
         }
@@ -633,6 +715,7 @@ impl Config {
         if self.expose.is_none() && self.access.is_none() {
             return Err("配置至少需要 expose 或 access 角色".into());
         }
+        self.relay.validate()?;
         if let Some(expose) = &self.expose {
             expose.validate()?;
         }
@@ -650,14 +733,17 @@ impl Config {
     pub fn for_scenario(scenario: Scenario) -> Self {
         match scenario {
             Scenario::Access => Self {
+                relay: RelaySettings::default(),
                 expose: None,
                 access: Some(AConfig::default()),
             },
             Scenario::Expose => Self {
+                relay: RelaySettings::default(),
                 expose: Some(BConfig::default()),
                 access: None,
             },
             Scenario::Both => Self {
+                relay: RelaySettings::default(),
                 expose: Some(BConfig::default()),
                 access: Some(AConfig::default()),
             },
@@ -758,6 +844,7 @@ fn migrate_legacy_files(
     legacy: &[(PathBuf, LegacyRole)],
 ) -> Result<LoadedConfig> {
     let mut config = Config {
+        relay: RelaySettings::default(),
         expose: None,
         access: None,
     };
@@ -1432,6 +1519,10 @@ token = "shared-token"
     #[test]
     fn redacted_export_preserves_config_structure_without_credentials() {
         let config = Config {
+            relay: RelaySettings {
+                urls: vec!["https://relay.example.test".into()],
+                auth_token: "relay-access-token".into(),
+            },
             access: Some(AConfig {
                 node_id: "node-id".into(),
                 token: "access-token".into(),
@@ -1467,6 +1558,8 @@ token = "shared-token"
         assert_eq!(exported.access.as_ref().unwrap().token, "");
         assert_eq!(exported.expose.as_ref().unwrap().token, "");
         assert_eq!(exported.expose.as_ref().unwrap().clients[0].token, "");
+        assert_eq!(exported.relay.urls, config.relay.urls);
+        assert_eq!(exported.relay.auth_token, "");
         assert_eq!(exported.access.as_ref().unwrap().node_id, "node-id");
         assert_eq!(
             exported.access.as_ref().unwrap().mappings,
@@ -1477,6 +1570,61 @@ token = "shared-token"
             exported.expose.as_ref().unwrap().clients[0].allow_ports,
             vec![443]
         );
+    }
+
+    #[test]
+    fn relay_settings_fall_back_to_n0_when_no_url_is_configured() {
+        let mode = RelaySettings::default().relay_mode().unwrap();
+
+        assert!(matches!(
+            mode,
+            iroh::RelayMode::Default | iroh::RelayMode::Staging
+        ));
+    }
+
+    #[test]
+    fn relay_settings_build_a_custom_multi_relay_mode_and_redact_its_token() {
+        let relay = RelaySettings {
+            urls: vec![
+                "https://relay-1.example.test".into(),
+                "https://relay-2.example.test".into(),
+            ],
+            auth_token: "relay-access-token".into(),
+        };
+        let mut config = Config::for_scenario(Scenario::Expose);
+        config.relay = relay.clone();
+
+        config.validate().unwrap();
+        let mode = relay.relay_mode().unwrap();
+        let urls = mode.relay_map().urls::<Vec<_>>();
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0].as_str(), "https://relay-1.example.test/");
+        assert_eq!(urls[1].as_str(), "https://relay-2.example.test/");
+
+        let redacted = config.redacted_for_export();
+        assert_eq!(redacted.relay.urls, relay.urls);
+        assert!(redacted.relay.auth_token.is_empty());
+    }
+
+    #[test]
+    fn relay_settings_reject_invalid_urls_and_orphaned_auth_tokens() {
+        let invalid_url = RelaySettings {
+            urls: vec!["not a relay url".into()],
+            auth_token: String::new(),
+        };
+        assert!(invalid_url.validate().is_err());
+
+        let insecure_url = RelaySettings {
+            urls: vec!["http://relay.example.test".into()],
+            auth_token: String::new(),
+        };
+        assert!(insecure_url.validate().is_err());
+
+        let orphaned_token = RelaySettings {
+            urls: Vec::new(),
+            auth_token: "relay-access-token".into(),
+        };
+        assert!(orphaned_token.validate().is_err());
     }
 
     #[test]

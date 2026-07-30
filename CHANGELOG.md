@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-07-31
+
+### Added
+
+- 新增独立的 `powermap-relay` 交付物：Release 提供 Linux AMD64/ARM64 的
+  `iroh-relay` 校验归档，并发布匹配的多架构 Docker 镜像。仓库 `relay/` 目录包含
+  TLS、QUIC 地址发现、指标、健康检查、访问令牌和非 root Compose 部署模板。
+- 节点页新增自建中继配置：支持多个 HTTPS 地址与独立 relay token；地址留空时继续使用
+  iroh 默认中继。access 端可在运行时切换中继集合，expose 端在下次重启时读取相同配置。
+- 本机节点凭证可显式选择附带中继地址和 token；接收方导入该 JSON 时才覆盖本地中继设置，
+  旧凭证继续保留接收方原有设置。
+
 ## [0.7.0] - 2026-07-23
 
 ### Added
@@ -121,7 +133,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/steven-ld/PowerMap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/steven-ld/PowerMap/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/steven-ld/PowerMap/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/steven-ld/PowerMap/compare/v0.4.0...v0.5.0

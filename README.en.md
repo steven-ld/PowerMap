@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [v0.7.0 Release Notes](docs/releases/v0.7.0.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [v0.8.0 Release Notes](docs/releases/v0.8.0.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -58,7 +58,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.4.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
+The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.8.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
 
 ## Where It Fits
 
@@ -84,7 +84,7 @@ The installers download the Release SHA-256 file and validate the archive before
 Download a prebuilt archive for your platform from [Releases](https://github.com/steven-ld/PowerMap/releases). For macOS Apple Silicon:
 
 ```bash
-VERSION=v0.4.0
+VERSION=v0.8.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin; Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 
@@ -194,24 +194,45 @@ Prefer a pinned image version and persist configuration plus node identity in a 
 
 ```bash
 mkdir -p data
-docker pull ghcr.io/steven-ld/powermap:v0.7.0
+docker pull ghcr.io/steven-ld/powermap:v0.8.0
 docker run -d --name powermap --restart unless-stopped \
   --network host \
   -v "$(pwd)/data:/data" \
   -e RUST_LOG=info \
-  ghcr.io/steven-ld/powermap:v0.7.0 \
+  ghcr.io/steven-ld/powermap:v0.8.0 \
   powermap --config /data/powermap.toml
 ```
 
 Or use Compose:
 
 ```bash
-POWERMAP_TAG=v0.7.0 docker compose up -d
+POWERMAP_TAG=v0.8.0 docker compose up -d
 ```
 
 To upgrade, run `POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d` from the Compose project directory; the console generates the matching command when it detects Docker. Without a config, first start creates a default node with both expose and access capabilities.
 
 Run access natively where possible. Its mapped ports belong to its network namespace; Docker would add per-port publishing work.
+
+### Self-hosted relay
+
+For deployments that need their own fallback relay, [relay/](relay/README.md) contains a separate
+Docker image, Compose template, TLS setup, and metrics configuration. Linux AMD64/ARM64 binaries
+and the `ghcr.io/<owner>/powermap-relay` image are published separately with every Release.
+
+Use the **Relay service** area on the Nodes page to enter one or more HTTPS URLs and an optional
+relay token. The URLs form a failover set. The same setting can be supplied in `powermap.toml`:
+
+```toml
+[relay]
+urls = ["https://relay-a.example.com", "https://relay-b.example.com"]
+auth_token = "relay-bearer-token"
+```
+
+An empty setting continues to use the iroh default relays. The relay token controls admission to
+the relay and is independent of the `node_id + token` access credential. A Local node credential
+includes relay URLs and the token only when **Share relay configuration** is explicitly selected;
+treat that JSON as secret. The access role applies changes to subsequent connections immediately.
+When the same process also runs expose, restart PowerMap for its endpoint to use the new setting.
 
 ### Managed services and secure remote administration
 

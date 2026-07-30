@@ -1,0 +1,22 @@
+services:
+  powermap-relay:
+    image: ghcr.io/steven-ld/powermap-relay:${POWERMAP_RELAY_TAG:-latest}
+    container_name: powermap-relay
+    restart: unless-stopped
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp
+    ports:
+      - "80:80/tcp"
+      - "443:443/tcp"
+      - "7842:7842/udp"
+      - "127.0.0.1:9090:9090/tcp"
+    volumes:
+      - ${POWERMAP_RELAY_CONFIG:-./relay.toml}:/etc/iroh-relay/relay.toml:ro
+      - ${POWERMAP_RELAY_STATE_DIR:-./state}:/var/lib/iroh-relay

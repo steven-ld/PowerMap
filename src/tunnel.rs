@@ -55,6 +55,9 @@ pub struct Credential {
     /// B 端管理员显式发布的候选目标。旧凭证省略此字段时保持兼容。
     #[serde(default)]
     pub published_targets: Vec<config::PublishedTarget>,
+    /// B 端随凭证分发的可选 relay 设置。旧凭证省略此字段时，A 端保留本地设置。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay: Option<config::RelaySettings>,
 }
 
 /// 常量时间比较令牌，避免计时侧信道泄露正确令牌的前缀。

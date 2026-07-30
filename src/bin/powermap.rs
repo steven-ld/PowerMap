@@ -50,6 +50,7 @@ async fn run() -> Result<()> {
     }
     loaded.config.validate().map_err(anyhow::Error::msg)?;
     config::save(&loaded.path, &loaded.config)?;
+    let relay = loaded.config.relay.clone();
 
     let cancel = CancellationToken::new();
     let signal_cancel = cancel.clone();
@@ -62,13 +63,14 @@ async fn run() -> Result<()> {
     if let Some(expose_cfg) = loaded.config.expose {
         tasks.spawn(expose::run(
             expose_cfg,
+            relay.clone(),
             loaded.path.clone(),
             args.online_timeout,
             cancel.clone(),
         ));
     }
     if let Some(access_cfg) = loaded.config.access {
-        tasks.spawn(access::run(access_cfg, loaded.path, cancel.clone()));
+        tasks.spawn(access::run(access_cfg, relay, loaded.path, cancel.clone()));
     }
 
     // A freshly exec'd update retains its old binary until the new process has survived its

@@ -73,6 +73,7 @@ jobs:
         run: |
           sh -n scripts/install.sh
           docker compose config >/dev/null
+          docker compose -f relay/docker-compose.yml config >/dev/null
           sudo touch /usr/local/bin/powermap
           sudo chmod 0755 /usr/local/bin/powermap
           sudo useradd --system --no-create-home powermap

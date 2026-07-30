@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-[官网](https://powermap.ga666666.com) · **简体中文** · [English](README.en.md) · [下载](https://github.com/steven-ld/PowerMap/releases) · [v0.7.0 发版说明](docs/releases/v0.7.0.md) · [贡献](CONTRIBUTING.md)
+[官网](https://powermap.ga666666.com) · **简体中文** · [English](README.en.md) · [下载](https://github.com/steven-ld/PowerMap/releases) · [v0.8.0 发版说明](docs/releases/v0.8.0.md) · [贡献](CONTRIBUTING.md)
 
 </div>
 
@@ -58,7 +58,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。若最新 Release 尚未上传当前平台的资产，脚本会显示对应资产和发布页；可稍后重试，或使用 `sh install.sh v0.7.0` 固定版本。也可设置 `POWERMAP_VERSION`，或继续使用下方的手动下载和源码构建方式。
+安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。若最新 Release 尚未上传当前平台的资产，脚本会显示对应资产和发布页；可稍后重试，或使用 `sh install.sh v0.8.0` 固定版本。也可设置 `POWERMAP_VERSION`，或继续使用下方的手动下载和源码构建方式。
 
 ## 适用边界
 
@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 从 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台的预编译包。以 macOS Apple Silicon 为例：
 
 ```bash
-VERSION=v0.7.0
+VERSION=v0.8.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin；Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 
@@ -194,25 +194,45 @@ flowchart LR
 
 ```bash
 mkdir -p data
-docker pull ghcr.io/steven-ld/powermap:v0.7.0
+docker pull ghcr.io/steven-ld/powermap:v0.8.0
 docker run -d --name powermap --restart unless-stopped \
   --network host \
   -v "$(pwd)/data:/data" \
   -e RUST_LOG=info \
-  ghcr.io/steven-ld/powermap:v0.7.0 \
+  ghcr.io/steven-ld/powermap:v0.8.0 \
   powermap --config /data/powermap.toml
 ```
 
 也可使用 Compose：
 
 ```bash
-POWERMAP_TAG=v0.7.0 docker compose up -d
+POWERMAP_TAG=v0.8.0 docker compose up -d
 ```
 
 升级时在 Compose 项目目录运行
 `POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d`；管理页会为检测到的 Docker 环境生成对应命令。未提供配置时，首次启动会生成具备 expose 和 access 能力的默认节点。
 
 access 建议原生运行：映射的本地端口位于 access 所在网络命名空间，放入 Docker 会额外增加逐端口发布的管理成本。
+
+### 自建中继
+
+需要由客户环境自行提供中继时，仓库中的 [relay/](relay/README.md) 提供独立 Docker
+镜像、Compose 模板、TLS 与指标配置。它会作为 Linux AMD64/ARM64 二进制和
+`ghcr.io/<owner>/powermap-relay` 镜像随 Release 单独发布。
+
+在“节点”页的“中继服务”区域填写一行或多行 HTTPS 地址和可选的 relay token；多个地址
+会组成故障切换集合。也可直接在 `powermap.toml` 中配置：
+
+```toml
+[relay]
+urls = ["https://relay-a.example.com", "https://relay-b.example.com"]
+auth_token = "relay-bearer-token"
+```
+
+留空时继续使用 iroh 默认中继。relay token 只用于中继准入，和 `node_id + token` 访问凭证
+彼此独立。分享本机节点时，只有显式勾选“分享中继配置”才会把地址和 relay token 写进
+分享 JSON；不要把该 JSON 发给不受信任的人。保存后的设置立即用于 access 端后续连接；
+同机也运行 expose 时，重启 PowerMap 后 expose 才会采用新设置。
 
 ### 受管服务与安全远程管理
 
