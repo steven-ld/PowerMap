@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="PowerMap v0.7.0 - 安全、可观测的 P2P 内网服务访问工具。">
+  <title>PowerMap - 内网服务，像本地一样简单</title>
+  <style>
+    :root { --ink:#182230; --muted:#637083; --paper:#f6f8fb; --card:#fff; --line:#e2e8f0; --blue:#3370ff; --blue-soft:#eaf0ff; --green:#16a575; --green-soft:#e6f8f0; --yellow:#ffbd3d; --radius:12px; }
+    * { box-sizing:border-box } html { scroll-behavior:smooth; scroll-padding-top:18px } body { margin:0; background:var(--paper); color:var(--ink); font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; } a { color:inherit; text-decoration:none } a:focus-visible,button:focus-visible { outline:3px solid #8eadff; outline-offset:3px } .wrap { width:min(1160px,calc(100% - 40px)); margin:auto; } .skip { position:absolute; left:-999px } .skip:focus { left:16px; top:12px; z-index:9; padding:10px; background:#fff; border-radius:8px; }
+    .nav { height:76px; display:flex; align-items:center; justify-content:space-between; } .brand { display:flex; align-items:center; gap:0; font-size:26px; font-weight:820; letter-spacing:0; } .brand-map { color:var(--blue) } .brand small { margin-left:14px; padding-left:14px; border-left:1px solid var(--line); color:var(--muted); font-size:12px; font-weight:500; letter-spacing:0; } .nav-links { display:flex; align-items:center; gap:24px; color:#4a5668; font-size:14px; font-weight:600; } .nav-links a:hover { color:var(--blue) } .nav-cta,.button { display:inline-flex; align-items:center; justify-content:center; min-height:44px; padding:0 17px; border:1px solid var(--blue); border-radius:8px; background:var(--blue); color:#fff; font-size:14px; font-weight:700; transition:background .18s ease,transform .18s ease; } .nav-cta:hover,.button:hover { background:#245ce5; transform:translateY(-1px) } .button.secondary { background:#fff; border-color:var(--line); color:var(--ink) } .button.secondary:hover { border-color:#b9c7df; background:#f9fbff; }
+    .hero { padding:72px 0 0; text-align:center; overflow:hidden; } .eyebrow { display:inline-flex; align-items:center; gap:8px; padding:7px 10px; border:1px solid #d9e4ff; border-radius:999px; background:#fff; color:#4567ac; font:600 12px/1 ui-monospace,SFMono-Regular,Menlo,monospace; } .eyebrow i { width:7px; height:7px; border-radius:50%; background:var(--green); } h1 { max-width:980px; margin:20px auto 22px; font-size:clamp(52px,6.4vw,86px); line-height:1.16; letter-spacing:.012em; font-weight:820; } h1 strong { color:var(--blue); font-weight:inherit; } .hero p { max-width:640px; margin:auto; color:var(--muted); font-size:19px; line-height:1.65; } .hero-actions { display:flex; justify-content:center; flex-wrap:wrap; gap:10px; margin:30px 0 54px; } .button small { margin-left:7px; opacity:.76; font:500 11px ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .console { overflow:hidden; margin:0 auto; border:1px solid #dce4ef; border-radius:14px 14px 0 0; background:#fff; box-shadow:0 24px 54px rgba(36,61,99,.15); text-align:left; } .console-top { height:50px; display:flex; align-items:center; gap:6px; padding:0 18px; border-bottom:1px solid var(--line); } .dot { width:9px; height:9px; border-radius:50%; background:#f2aa99; } .dot:nth-child(2){background:#f6cd7a}.dot:nth-child(3){background:#8dd8b8}.console-address { margin-left:10px; padding:6px 10px; border-radius:6px; background:#f3f6fa; color:#7a8798; font:11px ui-monospace,SFMono-Regular,Menlo,monospace; } .console-body { display:grid; grid-template-columns:184px 1fr; min-height:400px; } .sidebar { padding:18px 12px; border-right:1px solid var(--line); background:#fbfcfe; } .side-caption { padding:0 10px 8px; color:#9aa7b8; font:10px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; } .side-link { display:flex; align-items:center; height:38px; padding:0 10px; margin:3px 0; border-radius:7px; color:#5f6d7e; font-size:13px; font-weight:650; } .side-link.active { background:var(--blue-soft); color:#2862df; } .console-main { padding:28px 30px; } .console-head { display:flex; align-items:start; justify-content:space-between; gap:20px; } .console-head h2 { margin:0; font-size:24px; letter-spacing:0; } .console-head p { margin:6px 0 0; color:var(--muted); font-size:13px; } .new-map { min-height:34px; padding:0 11px; border:0; border-radius:7px; background:var(--blue); color:#fff; font-size:12px; font-weight:700; } .metrics { display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:24px 0; } .metric { padding:13px; border:1px solid var(--line); border-radius:9px; } .metric span { display:block; color:#8794a5; font-size:11px; } .metric b { display:block; margin-top:5px; font-size:21px; } .metric b.ok { color:var(--green) } .health { display:flex; align-items:center; gap:10px; padding:11px 13px; margin-bottom:12px; border:1px solid #d8ede4; border-radius:8px; background:#fbfffd; color:#587066; font-size:12px; } .health b { color:var(--green) } .mapping { overflow:hidden; border:1px solid var(--line); border-radius:9px; } .mapping-row { display:grid; grid-template-columns:1.25fr 1fr .72fr .55fr; gap:10px; align-items:center; padding:12px 14px; border-bottom:1px solid var(--line); font-size:12px; } .mapping-row:last-child { border-bottom:0 } .mapping-row.header { background:#fafbfd; color:#97a2b1; font:10px ui-monospace,SFMono-Regular,Menlo,monospace; } .mapping-row b { font-size:12px; } .status { color:var(--green); font-weight:700; } .status:before { content:""; display:inline-block; width:6px; height:6px; margin-right:5px; border-radius:50%; background:var(--green); }
+    .section { padding:96px 0; scroll-margin-top:18px } .intro { display:grid; grid-template-columns:.8fr 1.2fr; gap:80px; padding:84px 0 46px; } .label { color:var(--blue); font:600 12px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.08em; text-transform:uppercase; } h2 { letter-spacing:0; text-wrap:balance } .intro h2,.section-title { margin:16px 0 0; font-size:clamp(38px,5vw,62px); line-height:1.04; letter-spacing:0; } .intro p { margin:0; color:#556274; font-size:20px; line-height:1.65; } .features { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:78px; scroll-margin-top:18px; } .feature { min-height:228px; padding:26px; border:1px solid var(--line); border-radius:var(--radius); background:#fff; } .feature.blue { border-color:var(--blue); background:var(--blue); color:#fff; } .feature.green { border-color:#c9ebde; background:var(--green-soft); } .feature .num { color:#8290a2; font:11px ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:0 } .feature.blue .num { color:#dbe6ff } .feature h3 { margin:54px 0 9px; font-size:25px; line-height:1.18; letter-spacing:0; } .feature p { margin:0; color:#627083; font-size:15px; line-height:1.55; } .feature.blue p { color:#e1e9ff; }
+    .deployment { padding:96px 0; background:var(--ink); color:#fff; } .deployment-grid { display:grid; grid-template-columns:1fr .94fr; gap:52px; align-items:center; } .deployment .label { color:#bff35b } .deployment h2 { margin:16px 0; font-size:clamp(38px,5vw,60px); line-height:1.04; letter-spacing:0; } .deployment p { max-width:510px; margin:0; color:#c3cad5; font-size:17px; line-height:1.65; } .terminal { overflow:auto; padding:20px; border:1px solid #354252; border-radius:10px; background:#111924; color:#dbe7f7; font:13px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace; } .terminal em { color:#bff35b; font-style:normal; } .terminal .muted { color:#8392a6; } .deployment .button { margin-top:24px; background:#bff35b; border-color:#bff35b; color:#192230; } .deployment .button:hover { background:#d0fa82; }
+    .security { display:grid; grid-template-columns:.8fr 1.2fr; gap:70px; align-items:start; } .security p { color:var(--muted); font-size:18px; line-height:1.65; } .checks { border-top:1px solid var(--line); } .check { display:grid; grid-template-columns:34px 1fr; gap:13px; padding:20px 0; border-bottom:1px solid var(--line); } .check i { width:24px; height:24px; display:grid; place-items:center; border-radius:7px; background:var(--blue-soft); color:var(--blue); font-size:13px; font-style:normal; font-weight:800; } .check h3 { margin:0 0 5px; font-size:17px; } .check p { margin:0; font-size:14px; }
+    .final { padding:82px 0; background:#bff35b; } .final-inner { display:flex; align-items:end; justify-content:space-between; gap:30px; } .final h2 { max-width:720px; margin:0; font-size:clamp(42px,6vw,78px); line-height:.98; letter-spacing:0; } .final .button { flex:none; background:var(--ink); border-color:var(--ink); } .footer { display:flex; justify-content:space-between; gap:20px; padding:28px 0; color:#758092; font-size:13px; } .footer a:hover { color:var(--blue); }
+    @media (max-width:760px) { .wrap{width:min(100% - 32px,1160px)} .nav{height:64px}.brand{font-size:22px}.brand small,.nav-links>a:not(.nav-cta){display:none}.nav-cta{min-height:38px;padding:0 12px}.hero{padding-top:38px}h1{font-size:54px}.hero p{font-size:17px}.hero-actions{margin-bottom:38px}.console-body{grid-template-columns:1fr}.sidebar{display:none}.console-main{padding:22px 15px}.console-head h2{font-size:21px}.metrics{grid-template-columns:1fr 1fr}.metric:last-child{display:none}.mapping-row{grid-template-columns:1.2fr 1fr .7fr}.mapping-row>*:nth-child(3){display:none}.intro,.security,.deployment-grid{grid-template-columns:1fr;gap:30px}.section{padding:74px 0}.intro{padding:64px 0 32px}.intro p{font-size:18px}.features{grid-template-columns:1fr;margin-bottom:54px}.feature{min-height:184px}.feature h3{margin-top:36px}.deployment{padding:74px 0}.final{padding:66px 0}.final-inner{align-items:start;flex-direction:column}.final .button{width:100%}.footer{flex-direction:column}.console-address{display:none} }
+    @media (max-width:480px) { body{overflow-x:hidden}.wrap{width:min(100% - 28px,1160px)} .nav{height:62px;padding-top:env(safe-area-inset-top)} .brand{gap:8px;font-size:18px}.mark{width:28px;height:28px;border-radius:7px}.nav-cta{min-height:36px;padding:0 10px;font-size:12px}.hero{padding-top:30px}.eyebrow{max-width:100%;font-size:10px;white-space:nowrap}.hero h1{margin:17px auto 17px;font-size:45px;line-height:1.14;letter-spacing:.008em}.hero p{font-size:16px;line-height:1.58}.hero-actions{display:grid;grid-template-columns:1fr;gap:9px;margin:24px 0 30px}.hero-actions .button{width:100%}.console{border-radius:10px 10px 0 0}.console-top{height:42px;padding:0 13px}.console-main{padding:18px 12px}.console-head{align-items:flex-start}.console-head p{max-width:190px;line-height:1.4}.new-map{min-height:32px;padding:0 8px;font-size:11px;white-space:nowrap}.metrics{gap:7px;margin:18px 0}.metric{padding:11px}.metric span{font-size:10px}.metric b{font-size:18px}.health{align-items:flex-start;gap:7px;padding:10px;font-size:11px;line-height:1.45}.mapping{overflow-x:auto}.mapping-row{min-width:390px;padding:11px 12px;font-size:11px}.mapping-row.header{font-size:9px}.intro{padding:56px 0 28px}.intro h2,.section-title{font-size:38px}.intro p{font-size:17px}.features{gap:10px;margin-bottom:42px}.feature{min-height:170px;padding:21px}.feature h3{margin-top:31px;font-size:23px}.feature p{font-size:14px}.deployment{padding:58px 0}.deployment h2{font-size:39px}.deployment p{font-size:16px}.terminal{padding:15px;font-size:11px;line-height:1.65;white-space:nowrap}.security{gap:26px}.check{grid-template-columns:29px 1fr;gap:10px;padding:17px 0}.check i{width:22px;height:22px}.check h3{font-size:16px}.final{padding:56px 0}.final h2{font-size:42px}.footer{padding:24px 0 calc(24px + env(safe-area-inset-bottom));font-size:12px;line-height:1.55} }
+    .console-main { transition:opacity .22s ease,transform .22s ease; } .console-main.is-switching { opacity:.18; transform:translateY(6px); } .side-link { width:100%; border:0; text-align:left; cursor:pointer; transition:background .18s ease,color .18s ease; } .side-link:hover { background:#f0f4ff; color:#2862df; } .console[data-demo-paused="true"] .console-top:after { content:"已暂停"; margin-left:auto; color:#8190a3; font:10px ui-monospace,SFMono-Regular,Menlo,monospace; } @media (prefers-reduced-motion:reduce) { .console-main,.side-link { transition:none; } }
+  </style>
+</head>
+<body>
+  <a class="skip" href="#content">跳至内容</a>
+  <header class="wrap nav">
+    <a class="brand" href="#top"><span>Power</span><span class="brand-map">Map</span><small>内网穿透控制台</small></a>
+    <nav class="nav-links" aria-label="主导航"><a href="#features">能力</a><a href="#docker">Docker</a><a href="#security">安全</a><a href="https://github.com/steven-ld/PowerMap" target="_blank" rel="noreferrer">GitHub</a><a class="nav-cta" href="https://github.com/steven-ld/PowerMap/releases/tag/v0.7.0" target="_blank" rel="noreferrer">下载 v0.7.0</a></nav>
+  </header>
+  <main id="content">
+    <section class="hero" id="top"><div class="wrap">
+      <span class="eyebrow"><i></i> v0.7.0 已发布 · Linux / macOS / Windows</span>
+      <h1>内网服务，<br>像<strong>本地</strong>一样简单。</h1>
+      <p>PowerMap 通过 P2P QUIC 安全连接不同网络，把远端服务映射到熟悉的 localhost。能直连时低延迟，受限网络自动经中继保持可用。</p>
+      <div class="hero-actions"><a class="button" href="https://github.com/steven-ld/PowerMap/releases/tag/v0.7.0" target="_blank" rel="noreferrer">下载 PowerMap <small>v0.7.0</small></a><a class="button secondary" href="https://github.com/steven-ld/PowerMap/pkgs/container/powermap" target="_blank" rel="noreferrer">Docker 镜像</a></div>
+      <section class="console" aria-label="PowerMap v0.7.0 控制台概览示例"><div class="console-top"><i class="dot"></i><i class="dot"></i><i class="dot"></i><span class="console-address">127.0.0.1:8088 / dashboard</span></div><div class="console-body"><aside class="sidebar"><div class="side-caption">POWERMAP</div><div class="side-link active">概览</div><div class="side-link">端口映射</div><div class="side-link">域名映射</div><div class="side-link">节点</div><div class="side-link">关于</div></aside><div class="console-main"><div class="console-head"><div><h2>概览</h2><p>连接、映射隧道与实时流量一目了然。</p></div><button class="new-map" type="button">+ 新建映射</button></div><div class="metrics"><div class="metric"><span>连接状态</span><b class="ok">已连接</b></div><div class="metric"><span>映射隧道</span><b>03</b></div><div class="metric"><span>总流量</span><b>2.4 GB</b></div></div><div class="health"><b>映射健康</b><span>3 条健康 · 0 条异常 · P2P 直连 18 ms</span></div><div class="mapping"><div class="mapping-row header"><span>本地入口</span><span>目标服务</span><span>状态</span><span>流量</span></div><div class="mapping-row"><b>127.0.0.1:6379</b><span>10.0.0.8:6379</span><span class="status">健康</span><span>1.8 GB</span></div><div class="mapping-row"><b>api.example.com</b><span>HTTPS · 443</span><span class="status">健康</span><span>432 MB</span></div></div></div></div></section>
+    </div></section>
+    <section class="section wrap intro"><div><span class="label">P2P first</span><h2>连接内网，<br>不必暴露内网。</h2></div><p>无需公网 IP、VPN 或路由器端口转发。持有凭证的设备建立加密连接后，即可按最小权限访问被允许的内网目标。</p></section>
+    <section class="wrap features" id="features"><article class="feature blue"><span class="num">01 / DIRECT OR RELAY</span><h3>先尝试直连，<br>再无缝中继。</h3><p>iroh 自动完成 NAT 穿透，网络条件允许时走 P2P，受限时可靠回退。</p></article><article class="feature green"><span class="num">02 / PORT AND DOMAIN</span><h3>端口与域名，<br>一处管理。</h3><p>TCP 默认开箱即用，高级模式支持 UDP、HTTP 网关与域名映射。</p></article><article class="feature"><span class="num">03 / OPERATE WITH CONFIDENCE</span><h3>健康检查，<br>诊断报告。</h3><p>监测映射状态、流量和连接路径；一键下载脱敏诊断报告用于排障。</p></article></section>
+    <section class="deployment" id="docker"><div class="wrap deployment-grid"><div><span class="label">Docker deployment</span><h2>用已发布镜像，<br>不在容器里编译。</h2><p>GHCR 同时提供 `linux/amd64` 与 `linux/arm64` 镜像。固定标签，持久化配置与节点身份，即可在内网设备上稳定运行。</p><a class="button" href="https://github.com/steven-ld/PowerMap/pkgs/container/powermap" target="_blank" rel="noreferrer">查看 GHCR 镜像</a></div><div class="terminal"><span class="muted"># 固定版本部署</span><br><em>mkdir -p data</em><br><em>docker pull ghcr.io/steven-ld/powermap:v0.7.0</em><br><br>docker run -d --name powermap --restart unless-stopped \<br>&nbsp;&nbsp;--network host -v "$(pwd)/data:/data" \<br>&nbsp;&nbsp;ghcr.io/steven-ld/powermap:v0.7.0 \<br>&nbsp;&nbsp;powermap --config /data/powermap.toml</div></div></section>
+    <section class="section wrap security" id="security"><div><span class="label">Security by default</span><h2 class="section-title">操作简单，<br>边界清晰。</h2><p>从凭证到目标访问策略，再到更新包校验，PowerMap 把远程访问中最容易出错的环节放在可见且可控的位置。</p></div><div class="checks"><article class="check"><i>01</i><div><h3>端到端加密传输</h3><p>QUIC + rustls 保护隧道数据；中继只转发密文，不读取业务内容。</p></div></article><article class="check"><i>02</i><div><h3>最小权限目标策略</h3><p>按 CIDR、端口和客户端凭证限制可达目标，反向映射默认全部拒绝。</p></div></article><article class="check"><i>03</i><div><h3>可验证的升级与运维</h3><p>Release 归档使用 SHA-256 校验；控制台提供更新提醒、运行诊断与脱敏报告。</p></div></article></div></section>
+    <section class="final"><div class="wrap final-inner"><h2>从任何网络，<br>回到你的服务。</h2><a class="button" href="https://github.com/steven-ld/PowerMap/releases/tag/v0.7.0" target="_blank" rel="noreferrer">开始使用 v0.7.0</a></div></section>
+  </main>
+  <footer class="wrap footer"><span>© 2026 PowerMap · Built with Rust and iroh</span><span><a href="https://github.com/steven-ld/PowerMap" target="_blank" rel="noreferrer">GitHub</a> · <a href="https://github.com/steven-ld/PowerMap/releases" target="_blank" rel="noreferrer">Releases</a> · <a href="https://github.com/steven-ld/PowerMap/pkgs/container/powermap" target="_blank" rel="noreferrer">Docker</a></span></footer>
+  <script>
+    (() => {
+      const releasesApi = 'https://api.github.com/repos/steven-ld/PowerMap/releases/latest';
+      const releaseBaseUrl = 'https://github.com/steven-ld/PowerMap/releases/tag/';
+      const fallbackTag = 'v0.7.0';
+      const consoleEl = document.querySelector('.console');
+      const main = document.querySelector('.console-main');
+      const address = document.querySelector('.console-address');
+      const links = [...document.querySelectorAll('.side-link')];
+      const views = [
+        { title:'概览', subtitle:'连接、映射隧道与实时流量一目了然。', address:'127.0.0.1:8088 / dashboard', metrics:[['连接状态','已连接','ok'],['映射隧道','03',''],['总流量','2.4 GB','']], health:'<b>映射健康</b><span>3 条健康 · 0 条异常 · P2P 直连 18 ms</span>', rows:[['127.0.0.1:6379','10.0.0.8:6379','健康','1.8 GB'],['api.example.com','HTTPS · 443','健康','432 MB']] },
+        { title:'端口映射', subtitle:'将本地端口安全地映射至内网服务。', address:'127.0.0.1:8088 / mappings', metrics:[['已启用','03','ok'],['活跃连接','12',''],['实时流量','8.2 MB/s','']], health:'<b>运行正常</b><span>全部本地监听已绑定 · 目标服务可达</span>', rows:[['127.0.0.1:6379','10.0.0.8:6379','已连接','1.8 GB'],['127.0.0.1:5432','10.0.0.9:5432','已连接','432 MB']] },
+        { title:'域名映射', subtitle:'将域名安全转发到远端 HTTPS 服务。', address:'127.0.0.1:8088 / domains', metrics:[['已启用','02','ok'],['TLS SNI','已就绪',''],['本地入口','443','']], health:'<b>域名健康</b><span>hosts 规则已接管 · HTTPS 转发正常</span>', rows:[['api.example.com','HTTPS · 443','健康','432 MB'],['admin.example.com','HTTPS · 8443','健康','91 MB']] },
+        { title:'节点', subtitle:'分享本机身份，或连接到其他节点。', address:'127.0.0.1:8088 / connection', metrics:[['远端节点','01','ok'],['传输路径','P2P 直连',''],['往返延迟','18 ms','']], health:'<b>连接健康</b><span>凭证有效 · 正在直连远端节点</span>', rows:[['node_a2f…91c','已连接节点','直连','18 ms'],['本机身份','可分享','就绪','—']] },
+        { title:'关于', subtitle:'查看版本、更新和诊断信息。', address:'127.0.0.1:8088 / about', metrics:[['当前版本','v0.7.0','ok'],['可用更新','已是最新',''],['诊断报告','可下载','']], health:'<b>运行状态</b><span>服务正常 · 映射配置已自动恢复</span>', rows:[['PowerMap','稳定发布','v0.7.0','已验证'],['Docker 镜像','linux/amd64 · arm64','就绪','GHCR']] }
+      ];
+      let current = 0;
+      let timer = null;
+      let resumeTimer = null;
+      const renderRows = rows => '<div class="mapping-row header"><span>本地入口</span><span>目标服务</span><span>状态</span><span>流量</span></div>' + rows.map(row => `<div class="mapping-row"><b>${row[0]}</b><span>${row[1]}</span><span class="status">${row[2]}</span><span>${row[3]}</span></div>`).join('');
+      function apply(index) {
+        const view = views[index];
+        main.querySelector('h2').textContent = view.title;
+        main.querySelector('.console-head p').textContent = view.subtitle;
+        address.textContent = view.address;
+        main.querySelectorAll('.metric').forEach((metric, i) => { metric.querySelector('span').textContent = view.metrics[i][0]; metric.querySelector('b').textContent = view.metrics[i][1]; metric.querySelector('b').className = view.metrics[i][2]; });
+        main.querySelector('.health').innerHTML = view.health;
+        main.querySelector('.mapping').innerHTML = renderRows(view.rows);
+        links.forEach((link, i) => link.classList.toggle('active', i === index));
+      }
+      function switchTo(index) {
+        if (index === current) return;
+        main.classList.add('is-switching');
+        window.setTimeout(() => { current = index; apply(index); main.classList.remove('is-switching'); }, 220);
+      }
+      function stop() { if (timer) { window.clearInterval(timer); timer = null; } consoleEl.dataset.demoPaused = 'true'; }
+      function start() { if (window.matchMedia('(prefers-reduced-motion: reduce)').matches || timer) return; consoleEl.dataset.demoPaused = 'false'; timer = window.setInterval(() => switchTo((current + 1) % views.length), 4200); }
+      function applyRelease(tag) {
+        const releaseUrl = `${releaseBaseUrl}${encodeURIComponent(tag)}`;
+        const description = `PowerMap ${tag} - 安全、可观测的 P2P 内网服务访问工具。`;
+        const eyebrow = document.querySelector('.eyebrow');
+        const heroDownload = document.querySelector('.hero-actions .button');
+        const terminal = document.querySelector('.terminal');
+
+        document.title = `PowerMap ${tag} - 内网服务，像本地一样简单`;
+        document.querySelector('meta[name="description"]').content = description;
+        document.querySelector('.nav-cta').href = releaseUrl;
+        document.querySelector('.nav-cta').textContent = `下载 ${tag}`;
+        eyebrow.replaceChildren(document.createElement('i'), document.createTextNode(` ${tag} 已发布 · Linux / macOS / Windows`));
+        heroDownload.href = releaseUrl;
+        heroDownload.firstChild.textContent = '下载 PowerMap ';
+        heroDownload.querySelector('small').textContent = tag;
+        consoleEl.setAttribute('aria-label', `PowerMap ${tag} 控制台概览示例`);
+        terminal.innerHTML = terminal.innerHTML.replaceAll(fallbackTag, tag);
+        document.querySelector('.final .button').href = releaseUrl;
+        document.querySelector('.final .button').textContent = `开始使用 ${tag}`;
+        views[4] = { title:'关于', subtitle:'查看版本、更新和诊断信息。', address:'127.0.0.1:8088 / about', metrics:[['当前版本',tag,'ok'],['可用更新','已是最新',''],['诊断报告','可下载','']], health:'<b>运行状态</b><span>服务正常 · 映射配置已自动恢复</span>', rows:[['PowerMap','稳定发布',tag,'已验证'],['Docker 镜像','linux/amd64 · arm64','就绪','GHCR']] };
+        if (current === 4) apply(4);
+      }
+      async function loadLatestRelease() {
+        try {
+          const response = await fetch(releasesApi, {
+            cache: 'no-store',
+            headers: { Accept: 'application/vnd.github+json' },
+          });
+          if (!response.ok) return;
+          const release = await response.json();
+          if (typeof release.tag_name !== 'string' || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) return;
+          applyRelease(release.tag_name);
+        } catch {
+          // The embedded version remains visible when GitHub is unavailable.
+        }
+      }
+      links.forEach((link, index) => {
+        link.setAttribute('role', 'button'); link.tabIndex = 0;
+        link.addEventListener('click', () => { stop(); switchTo(index); window.clearTimeout(resumeTimer); resumeTimer = window.setTimeout(start, 7000); });
+        link.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); link.click(); } });
+      });
+      consoleEl.addEventListener('mouseenter', stop);
+      consoleEl.addEventListener('mouseleave', start);
+      consoleEl.addEventListener('focusin', stop);
+      consoleEl.addEventListener('focusout', event => { if (!consoleEl.contains(event.relatedTarget)) start(); });
+      apply(0); start(); void loadLatestRelease();
+    })();
+  </script>
+</body>
+</html>
