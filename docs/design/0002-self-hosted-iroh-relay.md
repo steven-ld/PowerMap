@@ -1,13 +1,15 @@
 # Design 0002: Self-hosted Iroh Relay
 
-- Status: accepted and implemented
-- Applies to: PowerMap v0.8.x and the separately released `powermap-relay`
+- Status: accepted and implemented; v0.9 official-relay policy is recorded in
+  [ADR 0002](../adr/0002-official-relay-policy.md)
+- Applies to: self-hosted relay delivery and the separately released `powermap-relay`
 
 ## Decision
 
-PowerMap will ship an upstream-compatible `iroh-relay` as a separate release artifact and Docker
-image. Each customer deployment may run one or more of these relays. Relay configuration is
-absent by default, so existing PowerMap installations continue to use iroh's default relay map.
+PowerMap ships an upstream-compatible `iroh-relay` as a separate release artifact and Docker
+image. Each customer deployment may run one or more of these relays. In v0.9, absent relay
+configuration uses PowerMap's official relay first, with iroh's default map added only after that
+primary relay cannot register or loses registration.
 
 The relay is a fallback transport, not a terminating proxy: iroh's QUIC and rustls encryption
 remains end to end, while PowerMap's expose token and target allowlist remain the access-control
@@ -18,7 +20,7 @@ boundary for private services.
 | Area | Finding | Design consequence |
 | --- | --- | --- |
 | Endpoint construction | Both roles start from `Endpoint::builder(presets::N0)` and then apply the root relay mode. | Both roles use the same custom relay map when URLs are configured. |
-| Configuration | Root `[relay]` supports up to eight unique HTTPS URLs and an optional bearer token. | An empty URL list keeps iroh's default relay-mode selection, including its staging override. |
+| Configuration | Root `[relay]` supports up to eight unique HTTPS relay entries, each with its own optional bearer token, and `force_relay`. | An empty relay list selects the official relay; iroh's default map remains a later resilience fallback and retains its staging override. |
 | Peer discovery | N0 PKARR/DNS lookup remains enabled while relay transport is replaced. | This phase does not operate separate discovery infrastructure; explicit credential sharing applies the peer's relay configuration to the receiving access node. |
 | Transport health | Access already reports direct/relay path, RTT, and the selected relay host. | Add relay-selection and failover diagnostics instead of inventing a second health plane. |
 | Delivery | The repository already builds verified native archives and multi-architecture Docker images. | The relay gets a parallel Linux-only archive/image path, not a second repository. |
@@ -56,20 +58,29 @@ protects relay bandwidth but grants no permission to reach a private service.
 ## Application Behaviour
 
 1. `[relay]` is a root setting shared by `access` and `expose`. It is validated as a bounded set
-   of unique HTTPS relay URLs; an auth token without URLs is rejected.
-2. Empty URLs use iroh's default relay mode. Configured URLs construct `RelayMode::Custom(RelayMap)`
-   and apply the optional bearer token to every relay in the map.
-3. The Nodes page applies relay changes to the running access endpoint and invalidates only its
-   cached connection. The next connection uses the new map. Expose reads the same setting at
-   startup, so an expose endpoint needs a process restart after a UI change.
-4. Credentials may carry an optional `relay` object. It is absent by default and the receiving
+   of unique HTTPS relay entries; every entry independently owns an optional bearer token. The
+   legacy `urls`/`auth_token` shape is read for migration and written back as entries on save.
+2. Empty relay entries construct a map containing only the official relay and its public client
+   identifier. If that official relay cannot register or later loses registration, the endpoint
+   dynamically inserts iroh's default map. Configured entries instead replace the primary map as
+   an explicit operator override; each bearer token applies only to its corresponding custom URL,
+   and no automatic iroh fallback is added.
+3. `force_relay = true` removes all IP transports while the Endpoint is built, so it disables P2P
+   direct paths and requires a restart for either role. The Relay page persists the setting and
+   states this restart boundary.
+4. The Relay page applies relay-address changes to the running access endpoint and invalidates only
+   its cached connection. Expose reads the same setting at startup, so an expose endpoint needs a
+   process restart after a UI change.
+5. Credentials may carry an optional `relay` object. It is absent by default and the receiving
    access node retains its local relay settings. The UI adds it only after the operator explicitly
-   selects sharing, since it can contain the bearer token.
-5. N0 PKARR/DNS address lookup remains enabled during this phase. A separately operated
+   selects sharing, since it can contain private entry tokens.
+6. The Relay page probes configured relay frontends concurrently through iroh-relay's `/ping`
+   endpoint. The result measures DNS, TLS, and HTTP setup only; it does not create a tunnel and
+   cannot validate relay admission tokens.
+7. N0 PKARR/DNS address lookup remains enabled during this phase. A separately operated
    discovery service and live expose relay reconfiguration remain future work.
 
 ## Non-goals
 
-- PowerMap is not operating a shared public relay network.
 - A relay does not inspect tunnel contents or replace PowerMap authorization.
 - The first phase does not build a self-hosted PKARR/DNS discovery service.

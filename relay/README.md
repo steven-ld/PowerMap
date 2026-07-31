@@ -1,8 +1,8 @@
 # PowerMap Relay
 
 This directory packages the upstream `iroh-relay` server as a separate PowerMap delivery
-artifact. It is not part of the `powermap` process or application container. Deploy it only
-for a PowerMap installation that needs a private fallback relay.
+artifact. It is not part of the `powermap` process or application container. Use it when a
+deployment needs to replace PowerMap's built-in official relay with a private primary relay set.
 
 ## Deploy
 
@@ -16,7 +16,7 @@ cd powermap-relay
 cp /path/to/PowerMap/relay/relay.toml.example relay.toml
 # Edit relay.toml: set tls.hostname, tls.contact, and access.shared_token.
 sudo chown -R 10001:10001 state
-POWERMAP_RELAY_TAG=v0.8.0 \
+POWERMAP_RELAY_TAG=v0.9.0 \
 POWERMAP_RELAY_CONFIG="$(pwd)/relay.toml" \
 POWERMAP_RELAY_STATE_DIR="$(pwd)/state" \
 docker compose -f /path/to/PowerMap/relay/docker-compose.yml up -d
@@ -45,8 +45,12 @@ PowerMap's locked `iroh 1.0.2` dependency. Upgrade the two together after compat
 
 ## Application Integration
 
-Configure the same HTTPS relay URLs and relay token on both PowerMap endpoints, either in the
-Nodes page or as the root `[relay]` section in `powermap.toml`. Empty URLs retain iroh's default
-relay map. The Local-node copy control can explicitly include the relay settings in a credential
-JSON for the receiving access node; this is intentionally opt-in because it includes the relay
-bearer token. The relay token limits relay usage only and never grants access to private services.
+Configure the same HTTPS relay entries on both PowerMap endpoints, either in the dedicated Relay
+page or as the root `[relay]` section in `powermap.toml`. Each entry carries its own optional
+relay token. Empty entries keep PowerMap's official relay as the primary relay; iroh's default map
+is dynamically added only if the primary set fails. The Relay page can measure each saved entry's
+DNS, TLS, and HTTP latency through `GET /ping`; this control-plane probe does not validate relay
+admission. The Local-node copy control can explicitly include relay settings in a credential JSON
+for the receiving access node; this is intentionally opt-in because it includes private relay
+tokens and the forced-relay choice. Relay tokens limit relay usage only and never grant access to
+private services.

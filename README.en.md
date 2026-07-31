@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [v0.8.0 Release Notes](docs/releases/v0.8.0.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [v0.9.0 Release Notes](docs/releases/v0.9.0.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -58,7 +58,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.8.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
+The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v0.9.0` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
 
 ## Where It Fits
 
@@ -84,7 +84,7 @@ The installers download the Release SHA-256 file and validate the archive before
 Download a prebuilt archive for your platform from [Releases](https://github.com/steven-ld/PowerMap/releases). For macOS Apple Silicon:
 
 ```bash
-VERSION=v0.8.0
+VERSION=v0.9.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin; Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 
@@ -194,45 +194,64 @@ Prefer a pinned image version and persist configuration plus node identity in a 
 
 ```bash
 mkdir -p data
-docker pull ghcr.io/steven-ld/powermap:v0.8.0
+docker pull ghcr.io/steven-ld/powermap:v0.9.0
 docker run -d --name powermap --restart unless-stopped \
   --network host \
   -v "$(pwd)/data:/data" \
   -e RUST_LOG=info \
-  ghcr.io/steven-ld/powermap:v0.8.0 \
+  ghcr.io/steven-ld/powermap:v0.9.0 \
   powermap --config /data/powermap.toml
 ```
 
 Or use Compose:
 
 ```bash
-POWERMAP_TAG=v0.8.0 docker compose up -d
+POWERMAP_TAG=v0.9.0 docker compose up -d
 ```
 
 To upgrade, run `POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d` from the Compose project directory; the console generates the matching command when it detects Docker. Without a config, first start creates a default node with both expose and access capabilities.
 
 Run access natively where possible. Its mapped ports belong to its network namespace; Docker would add per-port publishing work.
 
-### Self-hosted relay
+### Relay policy
 
-For deployments that need their own fallback relay, [relay/](relay/README.md) contains a separate
-Docker image, Compose template, TLS setup, and metrics configuration. Linux AMD64/ARM64 binaries
-and the `ghcr.io/<owner>/powermap-relay` image are published separately with every Release.
+PowerMap keeps direct P2P paths first. When a direct path is unavailable, the client registers
+with the built-in official relay. If that relay cannot complete registration or later goes offline,
+PowerMap dynamically adds iroh's default relays as a resilience fallback. The embedded official
+relay client identifier is public by design; it controls relay admission only and cannot reach a
+private service.
 
-Use the **Relay service** area on the Nodes page to enter one or more HTTPS URLs and an optional
-relay token. The URLs form a failover set. The same setting can be supplied in `powermap.toml`:
+For deployments that need to replace the primary relay set, [relay/](relay/README.md) contains a
+separate Docker image, Compose template, TLS setup, and metrics configuration. Linux AMD64/ARM64
+binaries and the `ghcr.io/<owner>/powermap-relay` image are published separately with every
+Release.
+
+Use the dedicated **Relay** page to enter each HTTPS URL with its own optional relay token. After
+saving, it can test every configured relay's DNS, TLS, and HTTP latency concurrently; this does
+not validate a relay token. These URLs explicitly replace the official relay as the primary set
+and do not automatically fall back to iroh. The same setting can be supplied in `powermap.toml`:
 
 ```toml
 [relay]
-urls = ["https://relay-a.example.com", "https://relay-b.example.com"]
-auth_token = "relay-bearer-token"
+force_relay = false
+
+[[relay.relays]]
+url = "https://relay-a.example.com"
+auth_token = "relay-a-bearer-token"
+
+[[relay.relays]]
+url = "https://relay-b.example.com"
+auth_token = "relay-b-bearer-token"
 ```
 
-An empty setting continues to use the iroh default relays. The relay token controls admission to
-the relay and is independent of the `node_id + token` access credential. A Local node credential
-includes relay URLs and the token only when **Share relay configuration** is explicitly selected;
-treat that JSON as secret. The access role applies changes to subsequent connections immediately.
-When the same process also runs expose, restart PowerMap for its endpoint to use the new setting.
+Set `force_relay = true` to disable P2P/IP transport and allow relay paths only. Restart PowerMap
+after changing it so both endpoints are rebuilt with the new transport policy. A custom relay
+token controls admission only and is independent of the `node_id + token` access credential. A
+Local node credential includes custom relay URLs, their tokens, and the forced-relay choice only
+when **Share relay configuration** is explicitly selected; treat a JSON containing a private token
+as secret. Legacy `urls`/`auth_token` configuration remains readable and is migrated to entries on
+the next save. Custom URLs apply to later access connections immediately; expose reads them after
+restart.
 
 ### Managed services and secure remote administration
 
@@ -243,7 +262,7 @@ Unified service templates, upgrade guidance, and SSH/mTLS Nginx remote administr
 | Short-lived access from a personal computer | Run `powermap` and use the local admin UI |
 | A long-running intranet device | [Managed deployment templates](deployment/README.md) |
 | View the local admin UI remotely | SSH tunneling; use an mTLS gateway only when necessary |
-| Automate mappings | `POST /api/mappings` with a Bearer `web_token` |
+| Automate mappings | `POST /api/mappings` from the local host |
 
 ### Supported platforms
 
@@ -275,9 +294,9 @@ single-tenant top-level `token` remains compatible as the `default` client.
 | Target allowlist | CIDR and port rules limit dialable targets and prevent DNS-rebinding bypasses. |
 | Multi-tenant access | `[[expose.clients]]` supplies per-user tokens, allowlists, and concurrency caps; revoke independently. |
 | Audit and limits | JSON audit events and limits on streams, mappings, connections, and dial time protect operations. |
-| Admin API authentication | When `web_token` is set, only `Authorization: Bearer <token>` is accepted. Query-string tokens are rejected so secrets do not reach history, proxy, or access logs. |
+| Admin API | The management server only binds to a local loopback address; `web_token` remains a compatibility field. |
 
-**Do not publish the admin UI to the Internet.** If you change `web_bind` to `0.0.0.0`, set `web_token`, configure TLS, and restrict sources at your reverse proxy or firewall.
+**The admin UI only binds to loopback.** For remote administration, keep PowerMap on `127.0.0.1` or `::1` and use SSH forwarding or an mTLS reverse proxy on the same host.
 
 ## Operations
 
@@ -288,7 +307,7 @@ curl http://127.0.0.1:8088/metrics
 curl http://127.0.0.1:8088/api/health
 ```
 
-Metrics include tunnels, handshakes, rejections, dial failures, reconnects, and bytes transferred. `/metrics` and `/api/health` do not require the admin token and expose aggregate data only; protect them at the network layer when not bound locally.
+Metrics include tunnels, handshakes, rejections, dial failures, reconnects, and bytes transferred. `/metrics` and `/api/health` are served only with the local management listener and expose aggregate data only.
 
 ## Configuration Reference
 
@@ -345,7 +364,7 @@ routes = [
 
 ```
 
-An empty `web_token` means the UI is unauthenticated; use that only for the default local bind. When set, the admin API accepts only `Authorization: Bearer <token>` and never `?token=`. The UI keeps a manually entered admin token only in current-page memory, so it must be entered again after a refresh. The access capability refuses to start with a non-loopback `web_bind` without a token, an unpaired TLS certificate/key, or only one of `node_id` and `token`. Domain mappings are supported on macOS/Linux only and require PowerMap to be started as an administrator. They modify the system hosts file, so their create, update, toggle, and delete endpoints always require a configured `web_token`, including for local requests. Multiple domains share local `127.0.0.1:443` and route by TLS SNI, so clients must send SNI. `max_conns_per_mapping = 0` means unlimited. Domain mappings require a lowercase fully qualified DNS name (no wildcards or IP literals); omitted `remote_port` defaults to HTTPS port `443`, and omitted `enabled` defaults to enabled.
+`web_bind` accepts local loopback addresses only; `web_token` is retained for compatibility and is not read, generated, or validated by this version. Domain mappings are supported on macOS/Linux only and require PowerMap to be started as an administrator. They modify the system hosts file. Multiple domains share local `127.0.0.1:443` and route by TLS SNI, so clients must send SNI. `max_conns_per_mapping = 0` means unlimited. Domain mappings require a lowercase fully qualified DNS name (no wildcards or IP literals); omitted `remote_port` defaults to HTTPS port `443`, and omitted `enabled` defaults to enabled.
 
 A mapping's `mode` defaults to `tcp` (plain passthrough); `udp` tunnels UDP datagrams; `http` enables a single-port HTTP gateway that matches each request's `Host` header against `routes` (up to 32), falling back to the mapping's own `host`/`port` when nothing matches (`routes` only apply in `http` mode).
 

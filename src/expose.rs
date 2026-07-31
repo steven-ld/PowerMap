@@ -22,7 +22,7 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::metrics::Metrics;
-use crate::{config, proto, tunnel};
+use crate::{config, proto, relay_runtime, tunnel};
 
 fn resolve_identity(config_path: &Path, identity: &str) -> PathBuf {
     let p = PathBuf::from(identity);
@@ -320,15 +320,44 @@ pub async fn run(
     };
     let dial_timeout = Duration::from_secs(cfg.dial_timeout_secs.max(1));
     let relay_mode = relay.relay_mode().map_err(anyhow::Error::msg)?;
+    let primary_relay_urls = relay_mode.relay_map().urls::<Vec<_>>();
+    let force_relay = relay.force_relay;
 
-    let endpoint = Endpoint::builder(presets::N0)
+    let endpoint_builder = Endpoint::builder(presets::N0)
         .secret_key(secret_key)
         .alpns(vec![proto::ALPN.to_vec()])
         .relay_mode(relay_mode)
-        .transport_config(tunnel::transport_config())
+        .transport_config(tunnel::transport_config());
+    let endpoint_builder = if force_relay {
+        endpoint_builder.clear_ip_transports()
+    } else {
+        endpoint_builder
+    };
+    let endpoint = endpoint_builder
         .bind()
         .await
         .context("绑定 iroh endpoint 失败")?;
+    if force_relay {
+        tracing::warn!("已启用强制中继：此 expose Endpoint 不会尝试 P2P 直连");
+    }
+
+    if relay.uses_official_primary() {
+        let fallback_endpoint = endpoint.clone();
+        let fallback_cancel = cancel.clone();
+        let fallback_grace = Duration::from_secs(online_timeout.max(1));
+        tokio::spawn(async move {
+            if relay_runtime::wait_for_primary_relay_failure(
+                fallback_endpoint.clone(),
+                fallback_grace,
+                fallback_cancel,
+            )
+            .await
+            {
+                relay_runtime::install_iroh_fallback(&fallback_endpoint, &primary_relay_urls).await;
+                tracing::warn!("官方中继不可用，已启用 iroh 默认中继后备");
+            }
+        });
+    }
 
     let node_id = endpoint.id().to_string();
     tracing::info!("配置文件: {}", config_path.display());

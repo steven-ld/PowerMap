@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::Router;
@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
-use tokio::task::JoinHandle;
+use tokio::task::{JoinHandle, JoinSet};
 use tokio_util::sync::CancellationToken;
 
 use crate::metrics::Metrics;
@@ -44,7 +44,8 @@ use crate::{
     config, diagnostic_report,
     diagnostics::{Observation as DiagnosticObservation, Snapshot as DiagnosticSnapshot},
     domain_hosts::{HostsError, HostsStore},
-    local_services, mapping_health, port_suggestions, proto, runtime, tunnel, update,
+    local_services, mapping_health, port_suggestions, proto, relay_runtime, runtime, tunnel,
+    update,
 };
 
 /// 运行期可变的接入凭证：连接目标（node_id → PublicKey）与访问令牌。
@@ -65,6 +66,7 @@ struct Link {
     endpoint: Endpoint,
     creds: Arc<RwLock<Creds>>,
     relay: Arc<Mutex<RelayRuntime>>,
+    fallback_cancel: CancellationToken,
     conn: Arc<Mutex<Option<Connection>>>,
     /// 当前连接建立时刻（unix 毫秒，0 = 未连接）。每次成功新建连接时刷新，
     /// invalidate 时清零，供管理页展示"已连接时长"。
@@ -72,16 +74,31 @@ struct Link {
 }
 
 /// Endpoint 当前生效的 relay 设置及 URL 集合。URL 集合用于热更新时移除旧配置，
-/// 让“空配置回退 N0”和“自建 relay 集合”都能准确替换。
+/// 让主中继和运行期加入的 iroh 后备集合都能准确替换。
+#[derive(Clone)]
 struct RelayRuntime {
     settings: config::RelaySettings,
+    /// The force-relay policy used to bind this Endpoint. It cannot change in place because iroh
+    /// only accepts transport changes while building an Endpoint.
+    active_force_relay: bool,
     urls: Vec<RelayUrl>,
+    iroh_fallback_enabled: bool,
+}
+
+#[derive(Clone, Copy)]
+struct RelayApply {
+    restart_required: bool,
 }
 
 impl RelayRuntime {
     fn new(settings: config::RelaySettings) -> Result<Self, String> {
         let urls = settings.relay_mode()?.relay_map().urls::<Vec<_>>();
-        Ok(Self { settings, urls })
+        Ok(Self {
+            active_force_relay: settings.force_relay,
+            settings,
+            urls,
+            iroh_fallback_enabled: false,
+        })
     }
 }
 
@@ -97,6 +114,9 @@ impl Link {
     }
 
     async fn get(&self) -> Result<Connection> {
+        if !self.can_open_new_connections().await {
+            anyhow::bail!("强制中继设置已变更；重启 PowerMap 后才能建立新连接");
+        }
         let mut g = self.conn.lock().await;
         if let Some(c) = g.as_ref()
             && c.close_reason().is_none()
@@ -134,13 +154,36 @@ impl Link {
         target: PublicKey,
         published_targets: Vec<config::PublishedTarget>,
     ) {
-        {
-            let mut c = self.creds.write().await;
-            c.node_id = node_id;
-            c.token = token;
-            c.target = Some(target);
-            c.published_targets = published_targets;
-        }
+        self.replace_creds(Creds {
+            node_id,
+            token,
+            target: Some(target),
+            published_targets,
+        })
+        .await;
+    }
+
+    /// Keep an existing connection alive when a pending force-relay update means the new
+    /// credential cannot safely be applied until the Endpoint is rebuilt.
+    async fn set_creds_without_reconnect(
+        &self,
+        node_id: String,
+        token: String,
+        target: PublicKey,
+        published_targets: Vec<config::PublishedTarget>,
+    ) {
+        *self.creds.write().await = Creds {
+            node_id,
+            token,
+            target: Some(target),
+            published_targets,
+        };
+    }
+
+    /// Replace all credential fields together so a failed persistent update can restore the
+    /// previous connection target without leaving a partially updated runtime state.
+    async fn replace_creds(&self, creds: Creds) {
+        *self.creds.write().await = creds;
         self.invalidate().await;
     }
 
@@ -148,14 +191,82 @@ impl Link {
         self.relay.lock().await.settings.clone()
     }
 
-    /// Replace the relay map in place. iroh notifies its network actor for each insertion/removal;
-    /// cached tunnels are left alone while the next one connects using the replacement map.
-    async fn set_relay(&self, settings: config::RelaySettings) -> Result<(), String> {
+    async fn relay_restart_required(&self) -> bool {
+        let runtime = self.relay.lock().await;
+        runtime.active_force_relay != runtime.settings.force_relay
+    }
+
+    async fn can_open_new_connections(&self) -> bool {
+        !self.relay_restart_required().await
+    }
+
+    /// Monitor the current primary relay set. A changed configuration makes an earlier monitor
+    /// inert through its expected-settings comparison before it can add the iroh fallback.
+    fn watch_primary_relay(&self, expected: config::RelaySettings) {
+        if !expected.uses_official_primary() {
+            return;
+        }
+        let link = self.clone();
+        let endpoint = self.endpoint.clone();
+        let cancel = self.fallback_cancel.clone();
+        tokio::spawn(async move {
+            if relay_runtime::wait_for_primary_relay_failure(
+                endpoint,
+                relay_runtime::PRIMARY_RELAY_GRACE,
+                cancel,
+            )
+            .await
+                && link.enable_iroh_fallback(&expected).await
+            {
+                tracing::warn!("官方中继不可用，已启用 iroh 默认中继后备");
+            }
+        });
+    }
+
+    /// Add the N0 relay map only when the primary configuration has not changed since the
+    /// monitor began. iroh's RelayMap is dynamic, so new connections can then fail over without
+    /// rebuilding this access endpoint.
+    async fn enable_iroh_fallback(&self, expected: &config::RelaySettings) -> bool {
+        let fallback = config::iroh_fallback_relay_mode()
+            .relay_map()
+            .relays::<Vec<_>>();
+        let mut runtime = self.relay.lock().await;
+        if !expected.uses_official_primary()
+            || runtime.settings != *expected
+            || runtime.iroh_fallback_enabled
+        {
+            return false;
+        }
+
+        for relay in fallback {
+            if !runtime.urls.contains(&relay.url) {
+                self.endpoint
+                    .insert_relay(relay.url.clone(), relay.clone())
+                    .await;
+                runtime.urls.push(relay.url.clone());
+            }
+        }
+        runtime.iroh_fallback_enabled = true;
+        true
+    }
+
+    /// Replace the relay map in place when the Endpoint transport policy is unchanged. A force
+    /// relay change is persisted but requires a rebuilt Endpoint, so it deliberately does not
+    /// invalidate the current connection.
+    async fn set_relay(&self, settings: config::RelaySettings) -> Result<RelayApply, String> {
         let mode = settings.relay_mode()?;
         let map = mode.relay_map();
         let urls = map.urls::<Vec<_>>();
         let configs = map.relays::<Vec<_>>();
+        let expected = settings.clone();
         let mut runtime = self.relay.lock().await;
+
+        if runtime.active_force_relay != settings.force_relay {
+            runtime.settings = settings;
+            return Ok(RelayApply {
+                restart_required: true,
+            });
+        }
 
         for url in &runtime.urls {
             if !urls.contains(url) {
@@ -167,12 +278,16 @@ impl Link {
         }
         runtime.settings = settings;
         runtime.urls = urls;
+        runtime.iroh_fallback_enabled = false;
         drop(runtime);
 
         // Do not close cloned in-flight connections. Removing the cached connection makes
         // subsequent streams establish through the newly selected relay map.
         self.invalidate().await;
-        Ok(())
+        self.watch_primary_relay(expected);
+        Ok(RelayApply {
+            restart_required: false,
+        })
     }
 
     /// 实时存活判断：检查当前缓存的连接是否仍未被关闭。
@@ -798,6 +913,13 @@ async fn index() -> Html<&'static str> {
     Html(include_str!("web/index.html"))
 }
 
+async fn powermap_logo() -> impl IntoResponse {
+    (
+        [("content-type", "image/svg+xml")],
+        include_str!("../assets/powermap-logo.svg"),
+    )
+}
+
 async fn metrics_handler(State(st): State<AppState>) -> impl IntoResponse {
     (
         [("content-type", "text/plain; version=0.0.4")],
@@ -1100,6 +1222,7 @@ mod integration_tests {
                 relay: Arc::new(Mutex::new(
                     RelayRuntime::new(config::RelaySettings::default()).unwrap(),
                 )),
+                fallback_cancel: CancellationToken::new(),
                 conn: Arc::new(Mutex::new(None)),
                 connected_since: Arc::new(AtomicU64::new(0)),
             },
@@ -2507,8 +2630,11 @@ mod integration_tests {
         {
             let mut relay = state.link.relay.lock().await;
             relay.settings = config::RelaySettings {
-                urls: vec!["https://export-relay.example.com".into()],
-                auth_token: "relay-secret".into(),
+                relays: vec![config::RelayEntry {
+                    url: "https://export-relay.example.com".into(),
+                    auth_token: "relay-secret".into(),
+                }],
+                force_relay: false,
             };
         }
         let app = app(state);
@@ -2522,10 +2648,10 @@ mod integration_tests {
         .await;
         assert_eq!(redacted["token"], "");
         assert_eq!(
-            redacted["relay"]["urls"],
-            serde_json::json!(["https://export-relay.example.com"])
+            redacted["relay"]["relays"][0]["url"],
+            "https://export-relay.example.com"
         );
-        assert_eq!(redacted["relay"]["auth_token"], "");
+        assert!(redacted["relay"]["relays"][0].get("auth_token").is_none());
 
         let full = response_json(
             app.oneshot(
@@ -2538,7 +2664,7 @@ mod integration_tests {
         )
         .await;
         assert_eq!(full["token"], "private-token");
-        assert_eq!(full["relay"]["auth_token"], "relay-secret");
+        assert_eq!(full["relay"]["relays"][0]["auth_token"], "relay-secret");
     }
 
     #[tokio::test]
@@ -2548,8 +2674,11 @@ mod integration_tests {
             "node_id": "",
             "token": "",
             "relay": {
-                "urls": ["https://imported-relay.example.com"],
-                "auth_token": "imported-relay-token"
+                "relays": [{
+                    "url": "https://imported-relay.example.com",
+                    "auth_token": "imported-relay-token"
+                }],
+                "force_relay": true
             }
         }"#;
 
@@ -2574,10 +2703,51 @@ mod integration_tests {
         assert_eq!(relay.status(), StatusCode::OK);
         let relay = response_json(relay).await;
         assert_eq!(
-            relay["urls"],
-            serde_json::json!(["https://imported-relay.example.com"])
+            relay["relays"][0]["url"],
+            "https://imported-relay.example.com"
         );
-        assert_eq!(relay["auth_token"], "imported-relay-token");
+        assert_eq!(relay["relays"][0]["auth_token"], "imported-relay-token");
+        assert_eq!(relay["force_relay"], true);
+    }
+
+    #[tokio::test]
+    async fn import_returns_an_error_and_restores_relay_when_persistence_fails() {
+        let mut state = test_state("").await;
+        state.config_path = PathBuf::from("/dev/null/powermap-import.toml");
+        let app = app(state);
+        let payload = r#"{
+            "node_id": "",
+            "token": "",
+            "relay": {
+                "relays": [{
+                    "url": "https://imported-relay.example.com",
+                    "auth_token": "imported-relay-token"
+                }],
+                "force_relay": true
+            }
+        }"#;
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let relay = app
+            .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let relay = response_json(relay).await;
+        assert_eq!(relay["relays"], serde_json::json!([]));
+        assert_eq!(relay["force_relay"], false);
     }
 
     #[tokio::test]
@@ -2586,8 +2756,11 @@ mod integration_tests {
         state
             .link
             .set_relay(config::RelaySettings {
-                urls: vec!["https://local-relay.example.com".into()],
-                auth_token: "local-relay-token".into(),
+                relays: vec![config::RelayEntry {
+                    url: "https://local-relay.example.com".into(),
+                    auth_token: "local-relay-token".into(),
+                }],
+                force_relay: false,
             })
             .await
             .unwrap();
@@ -2612,11 +2785,8 @@ mod integration_tests {
             .await
             .unwrap();
         let relay = response_json(relay).await;
-        assert_eq!(
-            relay["urls"],
-            serde_json::json!(["https://local-relay.example.com"])
-        );
-        assert_eq!(relay["auth_token"], "local-relay-token");
+        assert_eq!(relay["relays"][0]["url"], "https://local-relay.example.com");
+        assert_eq!(relay["relays"][0]["auth_token"], "local-relay-token");
     }
 
     #[tokio::test]
@@ -2662,7 +2832,7 @@ mod integration_tests {
                     .uri("/api/credential")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!(
-                        r#"{{"node_id":"{node_id}","token":"access-token","relay":{{"urls":["https://relay-a.example.com","https://relay-b.example.com"],"auth_token":"relay-token"}}}}"#
+                        r#"{{"node_id":"{node_id}","token":"access-token","relay":{{"relays":[{{"url":"https://relay-a.example.com","auth_token":"relay-a-token"}},{{"url":"https://relay-b.example.com","auth_token":"relay-b-token"}}],"force_relay":true}}}}"#
                     )))
                     .unwrap(),
             )
@@ -2672,10 +2842,51 @@ mod integration_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(
-            body["relay"]["urls"],
-            serde_json::json!(["https://relay-a.example.com", "https://relay-b.example.com"])
+            body["relay"]["relays"][0]["url"],
+            "https://relay-a.example.com"
         );
-        assert_eq!(body["relay"]["auth_token"], "relay-token");
+        assert_eq!(body["relay"]["relays"][0]["auth_token"], "relay-a-token");
+        assert_eq!(body["relay"]["relays"][1]["auth_token"], "relay-b-token");
+        assert_eq!(body["relay"]["force_relay"], true);
+    }
+
+    #[tokio::test]
+    async fn shared_credential_reverts_runtime_state_when_persistence_fails() {
+        let mut state = test_state("").await;
+        let node_id = state.link.endpoint.id().to_string();
+        state.config_path = PathBuf::from("/dev/null/powermap-credential.toml");
+        let app = app(state);
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/credential")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"node_id":"{node_id}","token":"access-token","relay":{{"relays":[{{"url":"https://relay.example.com","auth_token":"relay-token"}}],"force_relay":true}}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+
+        let credential = app
+            .clone()
+            .oneshot(Request::get("/api/credential").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let credential = response_json(credential).await;
+        assert_eq!(credential["configured"], false);
+        assert_eq!(credential["node_id"], "");
+
+        let relay = app
+            .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response_json(relay).await["relays"], serde_json::json!([]));
     }
 
     #[tokio::test]
@@ -2685,8 +2896,11 @@ mod integration_tests {
         {
             let mut relay = state.link.relay.lock().await;
             relay.settings = config::RelaySettings {
-                urls: vec!["https://local-relay.example.com".into()],
-                auth_token: "local-relay-token".into(),
+                relays: vec![config::RelayEntry {
+                    url: "https://local-relay.example.com".into(),
+                    auth_token: "local-relay-token".into(),
+                }],
+                force_relay: false,
             };
         }
         let app = app(state);
@@ -2708,16 +2922,19 @@ mod integration_tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = response_json(response).await;
         assert_eq!(
-            body["relay"]["urls"],
-            serde_json::json!(["https://local-relay.example.com"])
+            body["relay"]["relays"][0]["url"],
+            "https://local-relay.example.com"
         );
-        assert_eq!(body["relay"]["auth_token"], "local-relay-token");
+        assert_eq!(
+            body["relay"]["relays"][0]["auth_token"],
+            "local-relay-token"
+        );
     }
 
     #[tokio::test]
     async fn relay_api_updates_the_runtime_configuration() {
         let app = app(test_state("").await);
-        let relay = r#"{"urls":["https://relay.example.com"],"auth_token":"relay-token"}"#;
+        let relay = r#"{"relays":[{"url":"https://relay.example.com","auth_token":"relay-token"}],"force_relay":false}"#;
 
         let updated = app
             .clone()
@@ -2732,17 +2949,90 @@ mod integration_tests {
             .await
             .unwrap();
         assert_eq!(updated.status(), StatusCode::OK);
-        assert_eq!(response_json(updated).await["auth_token"], "relay-token");
+        let updated = response_json(updated).await;
+        assert_eq!(updated["relays"][0]["auth_token"], "relay-token");
+        assert_eq!(updated["force_relay"], false);
 
         let current = app
             .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(current.status(), StatusCode::OK);
+        let current = response_json(current).await;
+        assert_eq!(current["relays"][0]["url"], "https://relay.example.com");
+        assert_eq!(current["force_relay"], false);
+    }
+
+    #[tokio::test]
+    async fn relay_api_marks_a_force_relay_change_for_restart() {
+        let state = test_state("").await;
+        let link = state.link.clone();
+        let app = app(state);
+        let relay = r#"{"relays":[],"force_relay":true}"#;
+
+        let updated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/relay")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(relay))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+        assert_eq!(response_json(updated).await["restart_required"], true);
+
+        let current = app
+            .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response_json(current).await["restart_required"], true);
+        assert!(!link.can_open_new_connections().await);
+    }
+
+    #[tokio::test]
+    async fn relay_probe_api_skips_the_embedded_official_relay() {
+        let app = app(test_state("").await);
+        let response = app
+            .oneshot(
+                Request::get("/api/relay/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
-            response_json(current).await["urls"],
-            serde_json::json!(["https://relay.example.com"])
+            response_json(response).await["relays"],
+            serde_json::json!([])
         );
+    }
+
+    #[test]
+    fn relay_probe_uses_iroh_ping_endpoint() {
+        assert_eq!(
+            relay_probe_url("https://relay.example.com:18443").unwrap(),
+            "https://relay.example.com:18443/ping"
+        );
+        assert!(relay_probe_url("not a relay").is_none());
+    }
+
+    #[test]
+    fn relay_probe_never_sends_a_relay_token() {
+        let custom = config::RelayEntry {
+            url: "https://private-relay.example.com".into(),
+            auth_token: "custom-relay-token".into(),
+        };
+        let request = relay_probe_request(&reqwest::Client::new(), &custom)
+            .unwrap()
+            .build()
+            .unwrap();
+
+        assert!(request.headers().get(header::AUTHORIZATION).is_none());
     }
 
     #[tokio::test]
@@ -2750,7 +3040,8 @@ mod integration_tests {
         let mut state = test_state("").await;
         state.config_path = PathBuf::from("/dev/null/powermap-relay.toml");
         let app = app(state);
-        let relay = r#"{"urls":["https://relay.example.com"],"auth_token":"relay-token"}"#;
+        let relay =
+            r#"{"relays":[{"url":"https://relay.example.com","auth_token":"relay-token"}]}"#;
 
         let response = app
             .clone()
@@ -2770,7 +3061,10 @@ mod integration_tests {
             .oneshot(Request::get("/api/relay").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response_json(current).await["urls"], serde_json::json!([]));
+        assert_eq!(
+            response_json(current).await["relays"],
+            serde_json::json!([])
+        );
     }
 
     #[tokio::test]
@@ -4469,6 +4763,7 @@ async fn toggle_all(
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
+        .route("/assets/powermap-logo.svg", get(powermap_logo))
         .route("/metrics", get(metrics_handler))
         .route("/api/health", get(health))
         .route("/api/runtime", get(runtime_info))
@@ -4502,6 +4797,7 @@ fn app(state: AppState) -> Router {
         .route("/api/node", get(get_node))
         .route("/api/update", get(check_update).post(install_update))
         .route("/api/credential", get(get_credential).post(set_credential))
+        .route("/api/relay/probe", get(probe_relays))
         .route("/api/relay", get(get_relay).put(set_relay))
         .route("/api/reverse", get(get_reverse).put(set_reverse))
         .route("/api/export", get(export_config))
@@ -4658,6 +4954,14 @@ struct CredentialView {
     token_hidden: bool,
     published_targets: Vec<config::PublishedTarget>,
     relay: config::RelaySettings,
+    restart_required: bool,
+}
+
+#[derive(Serialize)]
+struct RelaySettingsView {
+    #[serde(flatten)]
+    relay: config::RelaySettings,
+    restart_required: bool,
 }
 
 /// 当前节点的可分享凭证。expose 启动完成前没有凭证时返回 configured=false，
@@ -4699,6 +5003,7 @@ async fn get_node(State(st): State<AppState>) -> Json<NodeView> {
 async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
     let c = st.link.creds.read().await;
     let relay = st.link.relay_settings().await;
+    let restart_required = st.link.relay_restart_required().await;
     Json(CredentialView {
         configured: c.target.is_some(),
         node_id: c.node_id.clone(),
@@ -4706,22 +5011,159 @@ async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
         token_hidden: false,
         published_targets: c.published_targets.clone(),
         relay,
+        restart_required,
     })
 }
 
-/// GET /api/relay --- the active relay configuration used for new connections.
-async fn get_relay(State(st): State<AppState>) -> Json<config::RelaySettings> {
-    Json(st.link.relay_settings().await)
+/// GET /api/relay --- the persisted relay configuration and whether an Endpoint restart is due.
+async fn get_relay(State(st): State<AppState>) -> Json<RelaySettingsView> {
+    Json(RelaySettingsView {
+        relay: st.link.relay_settings().await,
+        restart_required: st.link.relay_restart_required().await,
+    })
+}
+
+/// A bounded control-plane probe for each configured private relay. This uses iroh-relay's
+/// `/ping` endpoint and measures DNS/TLS/HTTP setup only; it does not create a tunnel.
+#[derive(Serialize)]
+struct RelayProbeReport {
+    relays: Vec<RelayProbeResult>,
+}
+
+#[derive(Serialize)]
+struct RelayProbeResult {
+    url: String,
+    reachable: bool,
+    latency_ms: Option<u64>,
+    http_status: Option<u16>,
+    error: Option<&'static str>,
+}
+
+async fn probe_relays(State(st): State<AppState>) -> Json<RelayProbeReport> {
+    let settings = st.link.relay_settings().await;
+    Json(RelayProbeReport {
+        relays: probe_relay_entries(settings.relays).await,
+    })
+}
+
+async fn probe_relay_entries(entries: Vec<config::RelayEntry>) -> Vec<RelayProbeResult> {
+    if entries.is_empty() {
+        return Vec::new();
+    }
+
+    let client = match reqwest::Client::builder()
+        .https_only(true)
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(Duration::from_secs(2))
+        .timeout(Duration::from_secs(5))
+        .pool_max_idle_per_host(0)
+        .user_agent(format!(
+            "powermap/{} relay-probe",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return entries
+                .into_iter()
+                .map(|entry| RelayProbeResult {
+                    url: entry.url,
+                    reachable: false,
+                    latency_ms: None,
+                    http_status: None,
+                    error: Some("无法初始化探测器"),
+                })
+                .collect();
+        }
+    };
+
+    let mut probes = JoinSet::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        let client = client.clone();
+        probes.spawn(async move { (index, probe_relay(&client, entry).await) });
+    }
+
+    let mut results = Vec::new();
+    while let Some(result) = probes.join_next().await {
+        if let Ok(result) = result {
+            results.push(result);
+        }
+    }
+    results.sort_by_key(|(index, _)| *index);
+    results.into_iter().map(|(_, result)| result).collect()
+}
+
+async fn probe_relay(client: &reqwest::Client, entry: config::RelayEntry) -> RelayProbeResult {
+    let request = match relay_probe_request(client, &entry) {
+        Some(request) => request,
+        None => {
+            return RelayProbeResult {
+                url: entry.url,
+                reachable: false,
+                latency_ms: None,
+                http_status: None,
+                error: Some("中继地址无效"),
+            };
+        }
+    };
+    let started = Instant::now();
+
+    match request.send().await {
+        Ok(response) => {
+            let status = response.status();
+            RelayProbeResult {
+                url: entry.url,
+                reachable: status.is_success(),
+                latency_ms: Some(started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64),
+                http_status: Some(status.as_u16()),
+                error: (!status.is_success()).then_some("中继未返回成功状态"),
+            }
+        }
+        Err(error) => RelayProbeResult {
+            url: entry.url,
+            reachable: false,
+            latency_ms: None,
+            http_status: None,
+            error: Some(if error.is_timeout() {
+                "连接超时"
+            } else if error.is_connect() {
+                "无法建立 HTTPS 连接"
+            } else {
+                "中继探测失败"
+            }),
+        },
+    }
+}
+
+fn relay_probe_url(value: &str) -> Option<String> {
+    value
+        .parse::<RelayUrl>()
+        .ok()?
+        .join("/ping")
+        .ok()
+        .map(|url| url.to_string())
+}
+
+/// `/ping` is public control-plane health. It intentionally does not receive relay admission
+/// credentials, so a latency check cannot disclose a token to the configured destination.
+fn relay_probe_request(
+    client: &reqwest::Client,
+    entry: &config::RelayEntry,
+) -> Option<reqwest::RequestBuilder> {
+    relay_probe_url(&entry.url).map(|target| client.get(target))
 }
 
 /// PUT /api/relay --- validate, persist, and apply a replacement RelayMap without restarting.
 async fn set_relay(
     State(st): State<AppState>,
     Json(relay): Json<config::RelaySettings>,
-) -> Result<Json<config::RelaySettings>, (StatusCode, String)> {
+) -> Result<Json<RelaySettingsView>, (StatusCode, String)> {
     let _update = st.relay_update.lock().await;
     let previous = st.link.relay_settings().await;
-    st.link
+    let apply = st
+        .link
         .set_relay(relay.clone())
         .await
         .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
@@ -4734,9 +5176,19 @@ async fn set_relay(
             format!("保存 relay 配置失败: {error}"),
         ));
     }
-    st.events
-        .push("info", "relay", "已更新 relay 配置，后续连接将使用新节点");
-    Ok(Json(relay))
+    st.events.push(
+        "info",
+        "relay",
+        if apply.restart_required {
+            "已保存 relay 配置；强制中继变更将在重启后生效"
+        } else {
+            "已更新 relay 配置，后续连接将使用新节点"
+        },
+    );
+    Ok(Json(RelaySettingsView {
+        relay,
+        restart_required: apply.restart_required,
+    }))
 }
 
 /// POST /api/credential —— 粘贴 server 端凭证接入；校验后即时切换连接目标并重连。
@@ -4748,26 +5200,57 @@ async fn set_credential(
         return Err((StatusCode::BAD_REQUEST, "node_id 与 token 不能为空".into()));
     }
     let target = parse_target(&cred.node_id).map_err(|m| (StatusCode::BAD_REQUEST, m))?;
-    if let Some(relay) = cred.relay.clone() {
+    // A shared credential may replace the relay settings. Keep it, the credential, and
+    // persistence as one operation so a write error cannot leave either change memory-only.
+    let _relay_update = st.relay_update.lock().await;
+    let previous_creds = st.link.creds.read().await.clone();
+    let previous_relay = st.link.relay_settings().await;
+    let replaces_relay = cred.relay.is_some();
+    let apply = if let Some(relay) = cred.relay.clone() {
         st.link
             .set_relay(relay)
             .await
-            .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+            .map_err(|message| (StatusCode::BAD_REQUEST, message))?
+    } else {
+        RelayApply {
+            restart_required: st.link.relay_restart_required().await,
+        }
+    };
+    if apply.restart_required {
+        st.link
+            .set_creds_without_reconnect(
+                cred.node_id.trim().to_string(),
+                cred.token.trim().to_string(),
+                target,
+                cred.published_targets.clone(),
+            )
+            .await;
+    } else {
+        st.link
+            .set_creds(
+                cred.node_id.trim().to_string(),
+                cred.token.trim().to_string(),
+                target,
+                cred.published_targets.clone(),
+            )
+            .await;
     }
-    st.link
-        .set_creds(
-            cred.node_id.trim().to_string(),
-            cred.token.trim().to_string(),
-            target,
-            cred.published_targets.clone(),
-        )
-        .await;
-    save_config(&st).await;
+    if let Err(error) = persist_config(&st).await {
+        if replaces_relay && let Err(rollback_error) = st.link.set_relay(previous_relay).await {
+            tracing::error!(error = %rollback_error, "凭证配置持久化失败后无法回滚 relay 设置");
+        }
+        st.link.replace_creds(previous_creds).await;
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存接入凭证失败: {error}"),
+        ));
+    }
     st.events
         .push("info", "credential", "已更新接入凭证，正在用新凭证重连");
     tracing::info!("凭证已更新，将以新凭证重连");
     let c = st.link.creds.read().await;
     let relay = st.link.relay_settings().await;
+    let restart_required = st.link.relay_restart_required().await;
     Ok(Json(CredentialView {
         configured: true,
         node_id: c.node_id.clone(),
@@ -4775,6 +5258,7 @@ async fn set_credential(
         token_hidden: false,
         published_targets: c.published_targets.clone(),
         relay,
+        restart_required,
     }))
 }
 
@@ -4804,7 +5288,9 @@ async fn export_config(State(st): State<AppState>, Query(query): Query<ExportQue
     };
     let mut relay = st.link.relay_settings().await;
     if !query.include_credentials {
-        relay.auth_token.clear();
+        for entry in &mut relay.relays {
+            entry.auth_token.clear();
+        }
     };
     let payload = TransferPayload {
         access,
@@ -4938,10 +5424,15 @@ async fn import_config(
     // 所以更新目标时不会因端口仍被旧监听占用而失败。
     let mut previous = std::mem::take(&mut g.mappings);
     let mut next = HashMap::with_capacity(merged_total);
+    let started_locals = started_handles.keys().cloned().collect::<HashSet<_>>();
+    let mut replaced_mappings = Vec::new();
     let mut reused = 0usize;
     for mapping in &incoming.mappings {
         if let Some(handle) = previous.remove(&mapping.local) {
-            *handle.mapping.write().await = mapping.clone();
+            let mut current = handle.mapping.write().await;
+            replaced_mappings.push((mapping.local.clone(), current.clone()));
+            *current = mapping.clone();
+            drop(current);
             next.insert(mapping.local.clone(), handle);
             reused += 1;
         } else {
@@ -4962,30 +5453,82 @@ async fn import_config(
     g.mappings = next;
     drop(g);
 
-    // 覆盖模式下被导入删除的映射在新集合提交后才停止，不会影响失败回滚路径。
-    // 合并模式下 previous 已被清空，这里不会停止任何映射。
-    for (_, handle) in previous {
-        stop_mapping(handle).await;
-    }
-
-    // 4) 更新 relay/凭证（放在映射之后，确保新映射已就绪再触发重连）
+    // 4) 更新 relay/凭证并写盘。覆盖模式下被移除的旧映射暂不停止，只有写盘成功
+    // 才会提交；失败时它们会和复用监听的旧目标一起恢复。
+    let _relay_update = st.relay_update.lock().await;
+    let previous_relay = st.link.relay_settings().await;
+    let previous_creds = st.link.creds.read().await.clone();
+    let mut relay_replaced = false;
+    let mut restart_required = st.link.relay_restart_required().await;
     if let Some(relay) = relay {
-        st.link
+        let apply = st
+            .link
             .set_relay(relay)
             .await
             .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+        restart_required = apply.restart_required;
+        relay_replaced = true;
     }
     if let Some(target) = new_target {
-        st.link
-            .set_creds(
-                incoming.node_id.trim().to_string(),
-                incoming.token.trim().to_string(),
-                target,
-                incoming.published_targets.clone(),
-            )
-            .await;
+        if restart_required {
+            st.link
+                .set_creds_without_reconnect(
+                    incoming.node_id.trim().to_string(),
+                    incoming.token.trim().to_string(),
+                    target,
+                    incoming.published_targets.clone(),
+                )
+                .await;
+        } else {
+            st.link
+                .set_creds(
+                    incoming.node_id.trim().to_string(),
+                    incoming.token.trim().to_string(),
+                    target,
+                    incoming.published_targets.clone(),
+                )
+                .await;
+        }
     }
-    save_config(&st).await;
+    if let Err(error) = persist_config(&st).await {
+        if relay_replaced && let Err(rollback_error) = st.link.set_relay(previous_relay).await {
+            tracing::error!(error = %rollback_error, "导入配置保存失败后无法回滚 relay 设置");
+        }
+        if new_target.is_some() {
+            st.link.replace_creds(previous_creds).await;
+        }
+
+        let started_to_stop = {
+            let mut g = st.inner.lock().await;
+            let mut current = std::mem::take(&mut g.mappings);
+            let mut started_to_stop = Vec::new();
+            for local in &started_locals {
+                if let Some(handle) = current.remove(local) {
+                    started_to_stop.push(handle);
+                }
+            }
+            for (local, previous_mapping) in replaced_mappings {
+                if let Some(handle) = current.get(&local) {
+                    *handle.mapping.write().await = previous_mapping;
+                }
+            }
+            current.extend(previous);
+            g.mappings = current;
+            started_to_stop
+        };
+        for handle in started_to_stop {
+            stop_mapping(handle).await;
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("导入配置保存失败: {error}"),
+        ));
+    }
+
+    // 覆盖模式下被导入删除的映射到此才停止；合并模式下 previous 已被清空。
+    for (_, handle) in previous {
+        stop_mapping(handle).await;
+    }
     let started = incoming.mappings.len();
     tracing::info!(started, reused, kept, merge, "已导入配置");
     st.events.push(
@@ -5008,6 +5551,7 @@ async fn import_config(
         "kept": kept,
         "merged": merge,
         "credential_updated": new_target.is_some(),
+        "restart_required": restart_required,
     })))
 }
 
@@ -5048,18 +5592,6 @@ pub async fn run(
 
     let tls_enabled = !cfg.web_tls_cert.is_empty();
 
-    let is_loopback = cfg
-        .web_bind
-        .parse::<SocketAddr>()
-        .map(|addr| addr.ip().is_loopback())
-        .unwrap_or(false);
-    if !is_loopback && !tls_enabled {
-        tracing::warn!(
-            "Web 监听 {} 非回环且未启用 TLS。建议配置 web_tls_cert/web_tls_key 或置于 HTTPS 反代之后。",
-            cfg.web_bind
-        );
-    }
-
     config::save_access(&config_path, &cfg)?;
     tracing::info!("配置文件: {}", config_path.display());
 
@@ -5067,12 +5599,22 @@ pub async fn run(
     let events = EventLog::new(200);
     let relay_runtime = RelayRuntime::new(relay.clone()).map_err(anyhow::Error::msg)?;
     let relay_mode = relay.relay_mode().map_err(anyhow::Error::msg)?;
-    let endpoint = Endpoint::builder(presets::N0)
+    let force_relay = relay.force_relay;
+    let endpoint_builder = Endpoint::builder(presets::N0)
         .relay_mode(relay_mode)
-        .transport_config(tunnel::transport_config())
+        .transport_config(tunnel::transport_config());
+    let endpoint_builder = if force_relay {
+        endpoint_builder.clear_ip_transports()
+    } else {
+        endpoint_builder
+    };
+    let endpoint = endpoint_builder
         .bind()
         .await
         .context("绑定 iroh endpoint 失败")?;
+    if force_relay {
+        tracing::warn!("已启用强制中继：此 access Endpoint 不会尝试 P2P 直连");
+    }
     let link = Link {
         endpoint,
         creds: Arc::new(RwLock::new(Creds {
@@ -5082,9 +5624,11 @@ pub async fn run(
             published_targets: cfg.published_targets.clone(),
         })),
         relay: Arc::new(Mutex::new(relay_runtime)),
+        fallback_cancel: cancel.clone(),
         conn: Arc::new(Mutex::new(None)),
         connected_since: Arc::new(AtomicU64::new(0)),
     };
+    link.watch_primary_relay(relay.clone());
     let state = AppState {
         link: link.clone(),
         web_bind: cfg.web_bind.clone(),

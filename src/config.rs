@@ -11,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use ipnet::IpNet;
-use serde::de::DeserializeOwned;
+use serde::de::{DeserializeOwned, Error as DeError};
+use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
 static SAVE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -255,7 +256,7 @@ pub struct AConfig {
     /// Web 管理页监听地址
     #[serde(default = "default_web_bind")]
     pub web_bind: String,
-    /// Web 管理页访问令牌；留空表示不鉴权（仅本机回环时可留空，绑定 0.0.0.0 远程管理时务必设置）
+    /// 保留的 Web 管理页访问令牌字段；管理服务仅绑定本机回环地址。
     #[serde(default)]
     /// Reserved for future management API authentication. Kept to read/write old configs.
     pub web_token: String,
@@ -325,9 +326,15 @@ impl AConfig {
 
     /// 检查启动前必须明确处理的配置。空凭证仍可用于首次启动，由 Web 管理页完成接入。
     pub fn validate(&self) -> std::result::Result<(), String> {
-        self.web_bind
+        let web_bind = self
+            .web_bind
             .parse::<SocketAddr>()
             .map_err(|_| format!("web_bind 不是合法地址: {}", self.web_bind))?;
+        if !web_bind.ip().is_loopback() {
+            return Err(
+                "web_bind 仅支持本机回环地址；请使用 SSH 隧道或反向代理提供远程管理".into(),
+            );
+        }
         if self.web_tls_cert.is_empty() != self.web_tls_key.is_empty() {
             return Err("web_tls_cert 与 web_tls_key 必须同时设置或同时留空".into());
         }
@@ -596,7 +603,7 @@ impl BConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Endpoint 使用的中继配置。留空时兼容使用 iroh 的 N0 默认中继。
+    /// Endpoint 使用的中继配置。留空时使用内置官方中继，失效后再回退 iroh 默认中继。
     #[serde(default)]
     pub relay: RelaySettings,
     #[serde(default)]
@@ -605,59 +612,161 @@ pub struct Config {
     pub access: Option<AConfig>,
 }
 
-/// 自建 iroh relay 的连接设置。
-///
-/// `urls` 为空时不改变旧版行为，Endpoint 会回退到 iroh 的 N0 默认中继。
-/// 配置 URL 后，所有 URL 组成一个自定义 RelayMap，由 iroh 选择可用节点。
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub struct RelaySettings {
-    /// 自建 relay 的 HTTPS 基地址；多个地址共同构成故障切换集合。
-    #[serde(default)]
-    pub urls: Vec<String>,
-    /// relay 准入用的 Bearer token；导出配置时必须脱敏。
-    #[serde(default)]
+/// 内置官方中继的 HTTPS 地址。它的 bearer token 是公开客户端标识，不是安全边界。
+pub const OFFICIAL_RELAY_URL: &str = "https://powermap-relay.ga666666.com:18443";
+
+// The relay admission token is intentionally shipped with the client. It protects relay
+// bandwidth from unaffiliated traffic, but cannot authorize access to a private service.
+const OFFICIAL_RELAY_TOKEN: &str =
+    "cvLk8IPuCmXVaSXMjzhl0IbQCHzQPu21MIY+0wk2icI8gbMBRFQhv4jlIXBgSaUV";
+
+/// 一条用户自建 relay。每条 relay 独立携带可选 bearer token，避免多个 relay 被错误地
+/// 共用同一个准入凭据。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayEntry {
+    /// 自建 relay 的 HTTPS 基地址。
+    pub url: String,
+    /// 此 relay 的准入用 bearer token；导出配置时必须脱敏。
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub auth_token: String,
 }
 
-impl RelaySettings {
-    const MAX_URLS: usize = 8;
+/// 用户自建 iroh relay 的覆盖设置。
+///
+/// `relays` 为空时 Endpoint 先使用内置官方中继；其不可用时运行期会加入 iroh 的 N0
+/// 默认中继。非空 relay 列表是显式的主中继覆盖，不会自动加入 N0。
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct RelaySettings {
+    /// 自建 relay 的独立配置；配置后覆盖内置官方中继作为主中继集合。
+    pub relays: Vec<RelayEntry>,
+    /// 禁用 IP 传输，只允许通过中继建立连接；修改后需重启两端 Endpoint 才会生效。
+    pub force_relay: bool,
+}
 
-    /// 校验自建 relay 设置。空 URL 列表有意合法，用于兼容 N0 默认中继。
+/// Wire shape that accepts both the current per-relay fields and the v0.9.0 global-token shape.
+/// Serialization always emits only `relays`, so a successful config save performs the migration.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RelaySettingsWire {
+    #[serde(default)]
+    relays: Option<Vec<RelayEntry>>,
+    #[serde(default)]
+    urls: Option<Vec<String>>,
+    #[serde(default)]
+    auth_token: Option<String>,
+    #[serde(default)]
+    force_relay: bool,
+}
+
+impl<'de> Deserialize<'de> for RelaySettings {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = RelaySettingsWire::deserialize(deserializer)?;
+        if wire.relays.is_some() && (wire.urls.is_some() || wire.auth_token.is_some()) {
+            return Err(D::Error::custom(
+                "relay 不能同时使用 relays 与旧版 urls/auth_token 字段",
+            ));
+        }
+
+        let relays = match wire.relays {
+            Some(relays) => relays,
+            None => {
+                let token = wire.auth_token.unwrap_or_default();
+                match wire.urls {
+                    Some(urls) => urls
+                        .into_iter()
+                        .map(|url| RelayEntry {
+                            url,
+                            auth_token: token.clone(),
+                        })
+                        .collect(),
+                    None if token.is_empty() => Vec::new(),
+                    None => {
+                        return Err(D::Error::custom("relay 未配置 urls 时不能设置 auth_token"));
+                    }
+                }
+            }
+        };
+        Ok(Self {
+            relays,
+            force_relay: wire.force_relay,
+        })
+    }
+}
+
+impl Serialize for RelaySettings {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let mut state = serializer.serialize_struct("RelaySettings", 2)?;
+        state.serialize_field("relays", &self.relays)?;
+        state.serialize_field("force_relay", &self.force_relay)?;
+        state.end()
+    }
+}
+
+impl RelaySettings {
+    pub const MAX_RELAYS: usize = 8;
+
+    /// Only the built-in official relay receives an automatic iroh fallback. A non-empty custom
+    /// relay list is an explicit operator choice and is never widened at runtime.
+    pub fn uses_official_primary(&self) -> bool {
+        self.relays.is_empty()
+    }
+
+    /// 校验自建 relay 设置。空 relay 列表有意合法，表示使用内置官方中继。
     pub fn validate(&self) -> std::result::Result<(), String> {
-        let _ = self.parsed_urls()?;
-        if self.urls.is_empty() && !self.auth_token.is_empty() {
-            return Err("relay 未配置 urls 时不能设置 auth_token".into());
-        }
-        if self.auth_token.chars().any(char::is_whitespace) {
-            return Err("relay auth_token 不能包含空白字符".into());
-        }
+        let _ = self.parsed_relays()?;
         Ok(())
     }
 
-    /// 构造 Endpoint 所需的 relay 模式。空 URL 列表保持既有 N0 默认 relay 行为。
+    /// 构造 Endpoint 初始主中继模式。
+    ///
+    /// 初始 map 不包含 iroh 的默认 relay，避免 iroh 按延迟选择时绕过官方中继。运行期
+    /// 只有空配置下的官方中继无法完成握手或随后失效时，才会加入
+    /// [`iroh_fallback_relay_mode`]。
     pub fn relay_mode(&self) -> std::result::Result<iroh::RelayMode, String> {
         self.validate()?;
-        let urls = self.parsed_urls()?;
-        if urls.is_empty() {
-            return Ok(iroh::endpoint::default_relay_mode());
+        let relays = self.parsed_relays()?;
+        if relays.is_empty() {
+            let official_url = OFFICIAL_RELAY_URL
+                .parse::<iroh::RelayUrl>()
+                .expect("official relay URL must be valid");
+            let official =
+                iroh::RelayConfig::from(official_url).with_auth_token(OFFICIAL_RELAY_TOKEN);
+            return Ok(iroh::RelayMode::Custom(iroh::RelayMap::from(official)));
         }
 
-        let mut map = iroh::RelayMap::from_iter(urls);
-        if !self.auth_token.is_empty() {
-            map = map.with_auth_token(self.auth_token.clone());
-        }
-        Ok(iroh::RelayMode::Custom(map))
+        let official_url = OFFICIAL_RELAY_URL
+            .parse::<iroh::RelayUrl>()
+            .expect("official relay URL must be valid");
+        let relays = relays.into_iter().map(|(url, auth_token)| {
+            if url == official_url {
+                iroh::RelayConfig::from(url).with_auth_token(OFFICIAL_RELAY_TOKEN)
+            } else {
+                let relay = iroh::RelayConfig::from(url);
+                if auth_token.is_empty() {
+                    relay
+                } else {
+                    relay.with_auth_token(auth_token)
+                }
+            }
+        });
+        Ok(iroh::RelayMode::Custom(iroh::RelayMap::from_iter(relays)))
     }
 
-    fn parsed_urls(&self) -> std::result::Result<Vec<iroh::RelayUrl>, String> {
-        if self.urls.len() > Self::MAX_URLS {
-            return Err(format!("relay urls 最多可配置 {} 项", Self::MAX_URLS));
+    fn parsed_relays(&self) -> std::result::Result<Vec<(iroh::RelayUrl, String)>, String> {
+        if self.relays.len() > Self::MAX_RELAYS {
+            return Err(format!("relay 最多可配置 {} 项", Self::MAX_RELAYS));
         }
 
         let mut seen = HashSet::new();
-        let mut urls = Vec::with_capacity(self.urls.len());
-        for raw in &self.urls {
-            let value = raw.trim();
+        let mut relays = Vec::with_capacity(self.relays.len());
+        for entry in &self.relays {
+            let value = entry.url.trim();
             if value.is_empty() {
                 return Err("relay url 不能为空".into());
             }
@@ -670,17 +779,32 @@ impl RelaySettings {
             if !seen.insert(url.as_str().to_owned()) {
                 return Err(format!("relay urls 包含重复地址: {value}"));
             }
-            urls.push(url);
+            if entry.auth_token.chars().any(char::is_whitespace) {
+                return Err(format!("relay {value} 的 auth_token 不能包含空白字符"));
+            }
+            relays.push((url, entry.auth_token.clone()));
         }
-        Ok(urls)
+        Ok(relays)
     }
 
     fn redacted(&self) -> Self {
         Self {
-            urls: self.urls.clone(),
-            auth_token: String::new(),
+            relays: self
+                .relays
+                .iter()
+                .map(|entry| RelayEntry {
+                    url: entry.url.clone(),
+                    auth_token: String::new(),
+                })
+                .collect(),
+            force_relay: self.force_relay,
         }
     }
+}
+
+/// iroh 官方默认中继作为运行期后备。保留其 staging 环境变量语义。
+pub fn iroh_fallback_relay_mode() -> iroh::RelayMode {
+    iroh::endpoint::default_relay_mode()
 }
 
 /// 首次设置时用户选择的使用场景。
@@ -1418,6 +1542,14 @@ revoked = false
                 ..Default::default()
             }
             .validate()
+            .is_err()
+        );
+        assert!(
+            AConfig {
+                web_bind: "[::1]:8088".into(),
+                ..Default::default()
+            }
+            .validate()
             .is_ok()
         );
     }
@@ -1520,8 +1652,11 @@ token = "shared-token"
     fn redacted_export_preserves_config_structure_without_credentials() {
         let config = Config {
             relay: RelaySettings {
-                urls: vec!["https://relay.example.test".into()],
-                auth_token: "relay-access-token".into(),
+                relays: vec![RelayEntry {
+                    url: "https://relay.example.test".into(),
+                    auth_token: "relay-access-token".into(),
+                }],
+                force_relay: true,
             },
             access: Some(AConfig {
                 node_id: "node-id".into(),
@@ -1558,8 +1693,9 @@ token = "shared-token"
         assert_eq!(exported.access.as_ref().unwrap().token, "");
         assert_eq!(exported.expose.as_ref().unwrap().token, "");
         assert_eq!(exported.expose.as_ref().unwrap().clients[0].token, "");
-        assert_eq!(exported.relay.urls, config.relay.urls);
-        assert_eq!(exported.relay.auth_token, "");
+        assert_eq!(exported.relay.relays[0].url, config.relay.relays[0].url);
+        assert!(exported.relay.relays[0].auth_token.is_empty());
+        assert!(exported.relay.force_relay);
         assert_eq!(exported.access.as_ref().unwrap().node_id, "node-id");
         assert_eq!(
             exported.access.as_ref().unwrap().mappings,
@@ -1573,24 +1709,34 @@ token = "shared-token"
     }
 
     #[test]
-    fn relay_settings_fall_back_to_n0_when_no_url_is_configured() {
-        let mode = RelaySettings::default().relay_mode().unwrap();
+    fn relay_settings_use_the_official_relay_when_no_url_is_configured() {
+        let settings = RelaySettings::default();
+        let map = settings.relay_mode().unwrap().relay_map();
+        let official_url = OFFICIAL_RELAY_URL.parse::<iroh::RelayUrl>().unwrap();
+        let official = map.get(&official_url).unwrap();
 
-        assert!(matches!(
-            mode,
-            iroh::RelayMode::Default | iroh::RelayMode::Staging
-        ));
+        assert_eq!(map.len(), 1);
+        assert!(official.auth_token.is_some());
+        assert!(iroh_fallback_relay_mode().relay_map().len() > 1);
+        assert!(settings.uses_official_primary());
     }
 
     #[test]
-    fn relay_settings_build_a_custom_multi_relay_mode_and_redact_its_token() {
+    fn relay_settings_build_a_custom_multi_relay_mode_and_redact_each_token() {
         let relay = RelaySettings {
-            urls: vec![
-                "https://relay-1.example.test".into(),
-                "https://relay-2.example.test".into(),
+            relays: vec![
+                RelayEntry {
+                    url: "https://relay-1.example.test".into(),
+                    auth_token: "relay-one-token".into(),
+                },
+                RelayEntry {
+                    url: "https://relay-2.example.test".into(),
+                    auth_token: "relay-two-token".into(),
+                },
             ],
-            auth_token: "relay-access-token".into(),
+            force_relay: true,
         };
+        assert!(!relay.uses_official_primary());
         let mut config = Config::for_scenario(Scenario::Expose);
         config.relay = relay.clone();
 
@@ -1600,31 +1746,165 @@ token = "shared-token"
         assert_eq!(urls.len(), 2);
         assert_eq!(urls[0].as_str(), "https://relay-1.example.test/");
         assert_eq!(urls[1].as_str(), "https://relay-2.example.test/");
+        assert_eq!(
+            mode.relay_map()
+                .get(&urls[0])
+                .unwrap()
+                .auth_token
+                .as_deref(),
+            Some("relay-one-token")
+        );
+        assert_eq!(
+            mode.relay_map()
+                .get(&urls[1])
+                .unwrap()
+                .auth_token
+                .as_deref(),
+            Some("relay-two-token")
+        );
 
         let redacted = config.redacted_for_export();
-        assert_eq!(redacted.relay.urls, relay.urls);
-        assert!(redacted.relay.auth_token.is_empty());
+        assert_eq!(redacted.relay.relays.len(), relay.relays.len());
+        assert!(
+            redacted
+                .relay
+                .relays
+                .iter()
+                .all(|entry| entry.auth_token.is_empty())
+        );
+        assert!(redacted.relay.force_relay);
     }
 
     #[test]
-    fn relay_settings_reject_invalid_urls_and_orphaned_auth_tokens() {
+    fn relay_settings_keep_auth_tokens_scoped_to_their_own_relay() {
+        let relay = RelaySettings {
+            relays: vec![
+                RelayEntry {
+                    url: OFFICIAL_RELAY_URL.into(),
+                    auth_token: "ignored-official-token".into(),
+                },
+                RelayEntry {
+                    url: "https://private-relay.example.test".into(),
+                    auth_token: "private-relay-token".into(),
+                },
+            ],
+            force_relay: false,
+        };
+        let map = relay.relay_mode().unwrap().relay_map();
+        let official_url = OFFICIAL_RELAY_URL.parse::<iroh::RelayUrl>().unwrap();
+        let private_url = "https://private-relay.example.test"
+            .parse::<iroh::RelayUrl>()
+            .unwrap();
+
+        assert!(map.get(&official_url).unwrap().auth_token.is_some());
+        assert_eq!(
+            map.get(&private_url).unwrap().auth_token.as_deref(),
+            Some("private-relay-token")
+        );
+    }
+
+    #[test]
+    fn legacy_relay_settings_deserialize_with_forced_relay_disabled() {
+        let relay: RelaySettings = toml::from_str(
+            r#"
+                urls = ["https://relay.example.test"]
+                auth_token = "relay-token"
+            "#,
+        )
+        .unwrap();
+
+        assert!(!relay.force_relay);
+        assert_eq!(relay.relays.len(), 1);
+        assert_eq!(relay.relays[0].url, "https://relay.example.test");
+        assert_eq!(relay.relays[0].auth_token, "relay-token");
+
+        let serialized = toml::to_string(&relay).unwrap();
+        assert!(serialized.contains("[[relays]]"));
+        assert!(!serialized.contains("urls ="));
+    }
+
+    #[test]
+    fn legacy_relay_json_migrates_each_token_and_preserves_forced_relay() {
+        let relay: RelaySettings = serde_json::from_str(&format!(
+            r#"{{"urls":["{}","https://private-relay.example.test"],"auth_token":"legacy-token","force_relay":true}}"#,
+            OFFICIAL_RELAY_URL
+        ))
+        .unwrap();
+
+        assert!(relay.force_relay);
+        assert_eq!(relay.relays.len(), 2);
+        assert!(
+            relay
+                .relays
+                .iter()
+                .all(|entry| entry.auth_token == "legacy-token")
+        );
+
+        let map = relay.relay_mode().unwrap().relay_map();
+        let official_url = OFFICIAL_RELAY_URL.parse::<iroh::RelayUrl>().unwrap();
+        let private_url = "https://private-relay.example.test"
+            .parse::<iroh::RelayUrl>()
+            .unwrap();
+        assert_ne!(
+            map.get(&official_url).unwrap().auth_token.as_deref(),
+            Some("legacy-token")
+        );
+        assert_eq!(
+            map.get(&private_url).unwrap().auth_token.as_deref(),
+            Some("legacy-token")
+        );
+
+        let serialized = serde_json::to_value(relay).unwrap();
+        assert!(serialized.get("urls").is_none());
+        assert!(serialized.get("auth_token").is_none());
+        assert_eq!(serialized["force_relay"], true);
+        assert_eq!(serialized["relays"][0]["auth_token"], "legacy-token");
+        assert_eq!(serialized["relays"][1]["auth_token"], "legacy-token");
+    }
+
+    #[test]
+    fn relay_settings_reject_mixed_legacy_and_per_entry_fields() {
+        let relay = toml::from_str::<RelaySettings>(
+            r#"
+                urls = ["https://legacy.example.test"]
+                auth_token = "legacy-token"
+
+                [[relays]]
+                url = "https://current.example.test"
+                auth_token = "current-token"
+            "#,
+        );
+        assert!(relay.is_err());
+    }
+
+    #[test]
+    fn relay_settings_reject_invalid_urls_and_entry_tokens() {
         let invalid_url = RelaySettings {
-            urls: vec!["not a relay url".into()],
-            auth_token: String::new(),
+            relays: vec![RelayEntry {
+                url: "not a relay url".into(),
+                auth_token: String::new(),
+            }],
+            force_relay: false,
         };
         assert!(invalid_url.validate().is_err());
 
         let insecure_url = RelaySettings {
-            urls: vec!["http://relay.example.test".into()],
-            auth_token: String::new(),
+            relays: vec![RelayEntry {
+                url: "http://relay.example.test".into(),
+                auth_token: String::new(),
+            }],
+            force_relay: false,
         };
         assert!(insecure_url.validate().is_err());
 
-        let orphaned_token = RelaySettings {
-            urls: Vec::new(),
-            auth_token: "relay-access-token".into(),
+        let invalid_token = RelaySettings {
+            relays: vec![RelayEntry {
+                url: "https://relay.example.test".into(),
+                auth_token: "relay token".into(),
+            }],
+            force_relay: false,
         };
-        assert!(orphaned_token.validate().is_err());
+        assert!(invalid_token.validate().is_err());
     }
 
     #[test]

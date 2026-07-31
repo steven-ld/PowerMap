@@ -9,6 +9,7 @@ pub mod mapping_health;
 pub mod metrics;
 pub mod port_suggestions;
 pub mod proto;
+pub mod relay_runtime;
 pub mod runtime;
 pub mod signal;
 pub mod tunnel;

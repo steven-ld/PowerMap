@@ -4,6 +4,24 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-07-31
+
+### Added
+
+- 内置 PowerMap 官方中继作为未配置节点的主中继：保持 P2P 直连优先；直连不可用时先使用
+  官方中继，主中继无法完成握手或随后离线时才动态加入 iroh 默认中继后备。官方 relay
+  bearer 值是公开客户端标识，不是访问私有网络的凭据。
+- 根 `[relay]` 新增 `force_relay`。开启后 access 和 expose Endpoint 均移除 IP transport，
+  只允许经中继连接；管理页提供开关并明确要求重启后生效。
+
+### Changed
+
+- 中继配置移至独立的“中继”页。每条自定义中继独立保存 token，支持并发测试 DNS、TLS 与
+  HTTP 控制平面延迟；旧 `urls`/`auth_token` 配置兼容读取并会在保存时迁移为条目格式。
+- 显式分享中继配置时会一并携带自定义中继条目和强制中继设置。
+- 管理页仅允许绑定本机回环地址；中继 `/ping` 测速不再发送 relay token。强制中继状态
+  变更会返回“需要重启”，导入配置写盘失败会回滚运行时中继设置并返回错误。
+
 ## [0.8.0] - 2026-07-31
 
 ### Added
@@ -133,7 +151,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/steven-ld/PowerMap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/steven-ld/PowerMap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/steven-ld/PowerMap/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/steven-ld/PowerMap/compare/v0.5.0...v0.6.0

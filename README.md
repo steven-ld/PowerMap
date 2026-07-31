@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-[官网](https://powermap.ga666666.com) · **简体中文** · [English](README.en.md) · [下载](https://github.com/steven-ld/PowerMap/releases) · [v0.8.0 发版说明](docs/releases/v0.8.0.md) · [贡献](CONTRIBUTING.md)
+[官网](https://powermap.ga666666.com) · **简体中文** · [English](README.en.md) · [下载](https://github.com/steven-ld/PowerMap/releases) · [v0.9.0 发版说明](docs/releases/v0.9.0.md) · [贡献](CONTRIBUTING.md)
 
 </div>
 
@@ -58,7 +58,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。若最新 Release 尚未上传当前平台的资产，脚本会显示对应资产和发布页；可稍后重试，或使用 `sh install.sh v0.8.0` 固定版本。也可设置 `POWERMAP_VERSION`，或继续使用下方的手动下载和源码构建方式。
+安装脚本会下载 Release 的 SHA-256 文件并在安装前校验归档。若最新 Release 尚未上传当前平台的资产，脚本会显示对应资产和发布页；可稍后重试，或使用 `sh install.sh v0.9.0` 固定版本。也可设置 `POWERMAP_VERSION`，或继续使用下方的手动下载和源码构建方式。
 
 ## 适用边界
 
@@ -84,7 +84,7 @@ powershell -ExecutionPolicy Bypass -File .\install.ps1
 从 [Releases](https://github.com/steven-ld/PowerMap/releases) 下载对应平台的预编译包。以 macOS Apple Silicon 为例：
 
 ```bash
-VERSION=v0.8.0
+VERSION=v0.9.0
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin；Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 
@@ -194,19 +194,19 @@ flowchart LR
 
 ```bash
 mkdir -p data
-docker pull ghcr.io/steven-ld/powermap:v0.8.0
+docker pull ghcr.io/steven-ld/powermap:v0.9.0
 docker run -d --name powermap --restart unless-stopped \
   --network host \
   -v "$(pwd)/data:/data" \
   -e RUST_LOG=info \
-  ghcr.io/steven-ld/powermap:v0.8.0 \
+  ghcr.io/steven-ld/powermap:v0.9.0 \
   powermap --config /data/powermap.toml
 ```
 
 也可使用 Compose：
 
 ```bash
-POWERMAP_TAG=v0.8.0 docker compose up -d
+POWERMAP_TAG=v0.9.0 docker compose up -d
 ```
 
 升级时在 Compose 项目目录运行
@@ -214,25 +214,40 @@ POWERMAP_TAG=v0.8.0 docker compose up -d
 
 access 建议原生运行：映射的本地端口位于 access 所在网络命名空间，放入 Docker 会额外增加逐端口发布的管理成本。
 
-### 自建中继
+### 中继策略
 
-需要由客户环境自行提供中继时，仓库中的 [relay/](relay/README.md) 提供独立 Docker
+PowerMap 默认优先使用 P2P 直连。直连不可用时，客户端先注册内置官方中继；官方中继
+无法完成握手或随后离线时，软件会动态加入 iroh 默认中继作为后备。官方中继中内置的
+客户端标识是公开值，只用于 relay 准入，不能访问任何私有服务。
+
+需要替换为客户环境自己的主中继时，仓库中的 [relay/](relay/README.md) 提供独立 Docker
 镜像、Compose 模板、TLS 与指标配置。它会作为 Linux AMD64/ARM64 二进制和
 `ghcr.io/<owner>/powermap-relay` 镜像随 Release 单独发布。
 
-在“节点”页的“中继服务”区域填写一行或多行 HTTPS 地址和可选的 relay token；多个地址
-会组成故障切换集合。也可直接在 `powermap.toml` 中配置：
+在“中继”页逐条填写 HTTPS 地址和可选 relay token；每个中继都使用自己的 token，可在保存后
+并发测试其 DNS、TLS 与 HTTP 延迟（不校验 relay token）。这些地址会替换官方中继成为显式的
+主中继集合；不会自动回退 iroh。也可直接在
+`powermap.toml` 中配置：
 
 ```toml
 [relay]
-urls = ["https://relay-a.example.com", "https://relay-b.example.com"]
-auth_token = "relay-bearer-token"
+force_relay = false
+
+[[relay.relays]]
+url = "https://relay-a.example.com"
+auth_token = "relay-a-bearer-token"
+
+[[relay.relays]]
+url = "https://relay-b.example.com"
+auth_token = "relay-b-bearer-token"
 ```
 
-留空时继续使用 iroh 默认中继。relay token 只用于中继准入，和 `node_id + token` 访问凭证
-彼此独立。分享本机节点时，只有显式勾选“分享中继配置”才会把地址和 relay token 写进
-分享 JSON；不要把该 JSON 发给不受信任的人。保存后的设置立即用于 access 端后续连接；
-同机也运行 expose 时，重启 PowerMap 后 expose 才会采用新设置。
+`force_relay = true` 会关闭 P2P 直连，仅允许经中继连接；保存后必须重启 PowerMap，两个
+Endpoint 才会切换。relay token 只用于自定义中继准入，和 `node_id + token` 访问凭证彼此
+独立。分享本机节点时，只有显式勾选“分享中继配置”才会把自定义地址、relay token 和
+强制中继开关写进分享 JSON；不要把包含私有 token 的 JSON 发给不受信任的人。旧版
+`urls`/`auth_token` 配置会在读取后兼容，并在下一次保存时迁移为条目格式。自定义地址保存后
+立即用于 access 的后续连接；同机运行 expose 时，重启后才会更新。
 
 ### 受管服务与安全远程管理
 
@@ -272,9 +287,9 @@ v0.4.0 起，Release 只包含一个 `powermap` 可执行文件：不再需要�
 | 目标白名单 | expose 能力可用 CIDR 和端口限制可拨号目标，并避免 DNS 重绑定绕过。 |
 | 多租户 | `[[expose.clients]]` 为每个使用者配置独立 token、白名单、并发上限，可单独吊销。 |
 | 审计与资源限制 | 每次拨号可记录 JSON 审计日志；并发流、映射数、连接数与拨号超时均有限制。 |
-| 管理 API 鉴权 | 当前版本未启用；`web_token` 字段仅为未来兼容保留。 |
+| 管理 API | 仅监听本机回环地址；`web_token` 字段仅为未来兼容保留。 |
 
-**不要将管理页直接暴露到公网。** 当前版本的管理 API 未启用应用层鉴权；若将 `web_bind` 改为 `0.0.0.0`，请通过反向代理、VPN 或防火墙限制访问来源。
+**管理页只能监听本机回环地址。** 需要远程管理时，请保持 PowerMap 使用 `127.0.0.1` 或 `::1`，再通过 SSH 隧道或在同一主机上使用 mTLS 反向代理转发。
 
 ## 运维
 
@@ -285,7 +300,7 @@ curl http://127.0.0.1:8088/metrics
 curl http://127.0.0.1:8088/api/health
 ```
 
-指标包含隧道、握手、拒绝、拨号失败、重连和收发字节。`/metrics` 与 `/api/health` 不要求管理页 token，仅输出聚合数据；若监听到非本地地址，请在网络层限制抓取来源。
+指标包含隧道、握手、拒绝、拨号失败、重连和收发字节。`/metrics` 与 `/api/health` 仅随本机管理服务提供，且只输出聚合数据。
 
 ## 配置参考
 
@@ -342,7 +357,7 @@ routes = [
 
 ```
 
-`web_token` 是保留字段：当前版本不读取、不生成、不校验它，管理 API 不要求 Bearer token。域名映射仅支持 macOS/Linux，必须以管理员身份启动 PowerMap；它会修改系统 hosts 文件。多个域名共享本机 `127.0.0.1:443`，按 TLS SNI 分流，客户端必须发送 SNI。`max_conns_per_mapping = 0` 表示不限制。域名映射要求小写的完整 DNS 域名（不接受通配符或 IP 地址）；省略 `remote_port` 时默认使用 HTTPS 的 `443`，省略 `enabled` 时默认启用。
+`web_bind` 仅接受本机回环地址；`web_token` 是保留字段，当前版本不读取、不生成、不校验它。域名映射仅支持 macOS/Linux，必须以管理员身份启动 PowerMap；它会修改系统 hosts 文件。多个域名共享本机 `127.0.0.1:443`，按 TLS SNI 分流，客户端必须发送 SNI。`max_conns_per_mapping = 0` 表示不限制。域名映射要求小写的完整 DNS 域名（不接受通配符或 IP 地址）；省略 `remote_port` 时默认使用 HTTPS 的 `443`，省略 `enabled` 时默认启用。
 
 映射的 `mode` 省略时为 `tcp`（裸透传）；`udp` 走 UDP 数据报隧道；`http` 启用单端口 HTTP 网关，按请求 `Host` 头匹配 `routes`（最多 32 条），未命中则回落到该映射的 `host`/`port` 兜底后端（`routes` 仅在 `http` 模式有效）。
 

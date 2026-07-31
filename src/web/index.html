@@ -86,17 +86,6 @@
   }
   code, .mono { font-family: var(--font-mono); }
 
-  /* ── 跳转到主内容（键盘/读屏用户跳过导航）── */
-  .skip-link {
-    position: fixed; top: 0; left: 0; z-index: 1000; transform: translateY(-120%);
-    margin: 0.5rem; padding: 0.55rem 0.9rem; border-radius: var(--radius-md);
-    background: var(--primary); color: var(--primary-foreground);
-    font: 600 0.8125rem/1 var(--font-sans); text-decoration: none;
-    transition: transform 0.15s ease;
-  }
-  .skip-link:focus { transform: translateY(0); outline: 2px solid var(--ring); outline-offset: 2px; }
-  @media (prefers-reduced-motion: reduce) { .skip-link { transition: none; } }
-
   ::-webkit-scrollbar { width: 10px; height: 10px; }
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; }
@@ -301,10 +290,25 @@
   .relay-section-title { color: var(--foreground); font: 700 .82rem/1.2 var(--font-sans); }
   .relay-url-count { color: var(--muted-foreground); font: 600 .7rem/1 var(--font-mono); white-space: nowrap; }
   .relay-field-hint { margin: .45rem 0 0; color: var(--muted-foreground); font-size: .76rem; line-height: 1.5; }
-  .relay-controls { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: .75rem; align-items: end; }
-  .relay-controls .btn { min-width: 9.5rem; }
+  .relay-actions { display: inline-flex; align-items: center; justify-content: flex-end; gap: .5rem; flex-wrap: wrap; }
+  .relay-rows { display: grid; gap: .6rem; }
+  .relay-row { display: grid; grid-template-columns: 2.25rem minmax(14rem, 1.25fr) minmax(13rem, 1fr) minmax(8rem, .65fr) 2.25rem; gap: .6rem; align-items: end; padding: .75rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--card); }
+  .relay-row-index { align-self: center; color: var(--muted-foreground); font: 700 .72rem/1 var(--font-mono); text-align: center; }
+  .relay-row-field { gap: .35rem; }
+  .relay-row-label { color: var(--muted-foreground); font: 600 .68rem/1 var(--font-sans); }
+  .relay-probe { min-height: 2.75rem; display: flex; align-items: center; overflow: hidden; color: var(--muted-foreground); font: 600 .72rem/1.35 var(--font-mono); overflow-wrap: anywhere; }
+  .relay-probe.ok { color: var(--success); }
+  .relay-probe.error { color: var(--destructive); }
+  .relay-icon-btn { width: 2.75rem; height: 2.75rem; flex: 0 0 2.75rem; padding: 0; border: 1px solid var(--border); border-radius: .5rem; background: var(--card); color: var(--muted-foreground); font: 700 1.05rem/1 var(--font-mono); cursor: pointer; }
+  .relay-icon-btn:hover { border-color: var(--destructive); background: color-mix(in srgb, var(--destructive) 9%, var(--card)); color: var(--destructive); }
+  .relay-icon-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  .relay-empty { margin: .8rem 0 0; color: var(--muted-foreground); font-size: .78rem; line-height: 1.5; }
+  .relay-force-option { margin-top: 0; padding-top: 0; border-top: 0; }
   .relay-runtime-note { display: flex; gap: .55rem; margin: 0; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted-foreground); font-size: .78rem; line-height: 1.55; }
   .relay-runtime-note strong { flex: 0 0 auto; color: var(--foreground); font-size: .75rem; }
+  .relay-footer { display: flex; align-items: end; justify-content: space-between; gap: 1rem; }
+  .relay-footer .relay-runtime-note { flex: 1; padding-top: 0; border-top: 0; }
+  .relay-footer .btn { flex: 0 0 auto; }
   .form-error { margin: -.25rem 0 0; color: var(--destructive); font-size: .78rem; line-height: 1.45; }
   .relay-form [aria-invalid="true"] { border-color: var(--destructive); }
   .badge { padding: .25rem .55rem; border-radius: .45rem; }
@@ -327,6 +331,15 @@
     .workspace-head { align-items: flex-start; flex-direction: column; gap: .75rem; margin-bottom: 1.25rem; }
     .workspace-subtitle { font-size: .875rem; }
     .stats-grid { gap: .625rem; }
+    .relay-section-head { align-items: flex-start; flex-direction: column; }
+    .relay-actions { width: 100%; justify-content: flex-start; }
+    .relay-row { grid-template-columns: 2rem minmax(0, 1fr) 2.5rem; align-items: start; }
+    .relay-row-index { padding-top: 1.7rem; }
+    .relay-row-field { grid-column: 2; }
+    .relay-probe { grid-column: 2; min-height: 1.3rem; }
+    .relay-icon-btn { grid-column: 3; grid-row: 1 / span 3; margin-top: 1.55rem; }
+    .relay-footer { align-items: stretch; flex-direction: column; }
+    .relay-footer .btn { width: 100%; }
     .stat-card { min-height: 7.3rem; padding: 1rem; }
     .stat-card:first-child .stat-value { gap: .3rem; font-size: 1.35rem; white-space: nowrap; }
     .stat-card:first-child .stat-icon { display: none; }
@@ -356,15 +369,14 @@
   #mainPage { min-height: 100vh; overflow: hidden; background: var(--background); }
   .app-header { height: 4.75rem; border-bottom: 1px solid var(--border); background: var(--card); }
   .app-header-inner { display: flex; align-items: center; justify-content: space-between; max-width: none; height: 100%; padding: 0 2rem; }
-  .console-brand { display: inline-flex; align-items: center; gap: .7rem; color: var(--foreground); text-decoration: none; font: 800 1.08rem/1 var(--font-display); letter-spacing: -.04em; }
-  .console-mark { display: grid; width: 2rem; height: 2rem; place-items: center; border-radius: .55rem; background: var(--primary); color: var(--primary-foreground); font: 500 .78rem/1 var(--font-mono); }
+  .console-brand { display: inline-flex; flex: 0 1 auto; align-items: center; gap: .7rem; min-width: 0; color: var(--foreground); text-decoration: none; }
+  .console-logo { display: block; width: clamp(7.5rem, 18vw, 10.5rem); max-width: 100%; height: auto; }
   .console-brand small { padding-left: .7rem; border-left: 1px solid var(--border); color: var(--muted-foreground); font: 500 .72rem/1 var(--font-mono); letter-spacing: .04em; }
-  .console-meta { color: var(--muted-foreground); font: 500 .75rem/1 var(--font-mono); }
   .app-shell { display: grid; grid-template-columns: 17rem minmax(0, 1fr); min-height: calc(100vh - 4.75rem); }
   .app-sidebar { display: flex; flex-direction: column; padding: 1.5rem 1rem; border-right: 1px solid var(--border); background: color-mix(in srgb, var(--card) 92%, var(--background)); }
   .header-nav { display: block; justify-self: auto; }
   .tabs { display: grid; gap: .45rem; padding: 0; border: 0; border-radius: 0; background: transparent; }
-  .tab { justify-content: flex-start; width: 100%; height: 3rem; padding: 0 .8rem; border-radius: .5rem; font: 700 .9rem/1 var(--font-sans); letter-spacing: 0; color: var(--muted-foreground); }
+  .tab { justify-content: flex-start; width: 100%; min-width: 0; height: 3rem; padding: 0 .8rem; border-radius: .5rem; color: var(--muted-foreground); font: 700 .9rem/1 var(--font-sans); letter-spacing: 0; white-space: nowrap; }
   .tab.active { color: var(--accent-foreground); background: var(--accent); }
   .tab:hover { color: var(--foreground); background: var(--muted); }
   .tab-icon { width: 1rem; height: 1rem; opacity: 1; }
@@ -389,7 +401,6 @@
   .workspace-eyebrow { display: none; }
   .workspace-title { font-size: clamp(2rem, 2.75vw, 3rem); letter-spacing: -.035em; }
   .workspace-subtitle { margin-top: .55rem; max-width: 42rem; font-size: .98rem; }
-  .workspace-head .btn { margin-top: .15rem; }
   .stats-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1.25rem; }
   .stat-card { min-height: 7.5rem; padding: 1rem 1.1rem; border: 1px solid var(--border); border-radius: .5rem; box-shadow: none !important; }
   .stat-card-title { font-size: .75rem; letter-spacing: 0; text-transform: none; }
@@ -434,7 +445,7 @@
   @media (max-width: 900px) {
     .app-header { height: 4rem; }
     .app-header-inner { padding: 0 1rem; }
-    .console-brand small, .console-meta { display: none; }
+    .console-brand small { display: none; }
     .app-shell { grid-template-columns: 1fr; min-height: calc(100vh - 4rem); }
     .app-sidebar { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: 1fr auto; padding: .75rem 1rem; border-right: 0; border-bottom: 1px solid var(--border); }
     .header-nav { grid-column: 1; min-width: 0; }
@@ -448,7 +459,6 @@
     .workspace-head { display: block; margin-bottom: 1.6rem; }
     .workspace-title { font-size: 2rem; }
     .workspace-subtitle { margin-top: .6rem; font-size: .94rem; }
-    .workspace-head .btn { width: 100%; margin-top: 1.1rem; }
     .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1.5rem; }
     .stat-card { min-height: 7.85rem; padding: 1.05rem; }
     .stat-card-title { font-size: .75rem; }
@@ -732,8 +742,8 @@
     .container { padding-left: 1rem; padding-right: 1rem; }
   }
   /* ── Final console density and typography ── */
-  .console-mark, .console-meta, .tab-icon { display: none !important; }
-  .console-actions { display: flex; align-items: center; gap: 1.4rem; color: var(--muted-foreground); font: 500 .75rem/1 var(--font-mono); }
+  .tab-icon { display: none !important; }
+  .console-actions { display: flex; flex: none; align-items: center; gap: 1.4rem; color: var(--muted-foreground); font: 500 .75rem/1 var(--font-mono); }
   .console-actions a { color: var(--foreground); text-decoration: none; }
   .console-actions a:hover { color: var(--primary); }
   .header-version { display: inline-flex; gap: .4rem; }
@@ -938,18 +948,17 @@
 </style>
 </head>
 <body>
-<a href="#mainContent" class="skip-link">跳到主内容</a>
-
 <div id="mainPage">
-  <header class="app-header"><div class="app-header-inner"><a class="console-brand" href="#dashboard">PowerMap <small>内网穿透控制台</small></a><div class="console-actions"><a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">官网</a><button id="updateNotice" class="update-notice" type="button">发现新版本</button><span class="header-version">当前版本 <strong id="headerVer">加载中</strong></span><button id="themeToggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">外观</button></div></div></header>
+  <header class="app-header"><div class="app-header-inner"><a class="console-brand" href="#dashboard"><img class="console-logo" src="/assets/powermap-logo.svg" alt="PowerMap" width="520" height="150" fetchpriority="high" /><small>内网穿透控制台</small></a><div class="console-actions"><a href="https://powermap.ga666666.com" target="_blank" rel="noopener noreferrer">官网</a><button id="updateNotice" class="update-notice" type="button">发现新版本</button><span class="header-version">当前版本 <strong id="headerVer">加载中</strong></span><button id="themeToggle" class="theme-toggle" type="button" title="切换主题" aria-label="切换主题" data-theme="system">外观</button></div></div></header>
   <div class="app-shell">
     <aside class="app-sidebar">
       <nav class="header-nav" aria-label="页面"><div class="tabs" id="tabBar" role="tablist" aria-label="页面">
         <button type="button" class="tab active" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="true" aria-controls="tabDashboard"><span>概览</span></button>
         <button type="button" class="tab" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="false" aria-controls="tabMappings" tabindex="-1"><span>端口映射</span><span id="issueBadge" class="issue-badge hidden" title="存在异常映射">0</span></button>
         <button type="button" class="tab" data-tab="domains" id="tab-domains" role="tab" aria-selected="false" aria-controls="tabDomains" tabindex="-1"><span>域名映射</span></button>
-        <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>节点</span></button>
-        <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件</span></button>
+        <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>节点管理</span></button>
+        <button type="button" class="tab" data-tab="relay" id="tab-relay" role="tab" aria-selected="false" aria-controls="tabRelay" tabindex="-1"><span>中继配置</span></button>
+        <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件日志</span></button>
         <button type="button" class="tab" data-tab="about" id="tab-about" role="tab" aria-selected="false" aria-controls="tabAbout" tabindex="-1"><span>关于</span></button>
       </div></nav>
       <div class="sidebar-bottom"><span class="conn"><span id="statusDot" class="status-dot"></span><span id="statusText">查询中</span><span id="pathChip" class="path-chip" style="display:none"></span></span></div>
@@ -1161,30 +1170,10 @@
           <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
           <label class="share-relay-option" for="shareRelayConfig">
             <input id="shareRelayConfig" name="share_relay_config" type="checkbox" />
-            <span><strong>同时分享中继配置</strong><small>复制的 JSON 将包含中继地址和 Relay token；接收方导入后会应用这些设置。未勾选时，对方保留自己的中继配置。</small></span>
+            <span><strong>同时分享中继配置</strong><small>复制的 JSON 将包含自定义中继地址、Relay token 和强制中继开关；接收方导入后会应用这些设置。未勾选时，对方保留自己的中继配置。</small></span>
           </label>
         </section>
         <span id="ioMsg"></span>
-      </div>
-
-      <div class="card relay-card">
-        <div class="card-header">
-          <div><h2 class="card-title">中继策略</h2><p class="relay-header-copy">为新建连接指定自建 iroh relay 集合；未配置时自动使用 iroh 默认免费中继。</p></div>
-          <span id="relayModeStatus" class="relay-mode-status" role="status" aria-live="polite">正在读取</span>
-        </div>
-        <form id="relayForm" class="relay-form">
-          <section class="relay-section" aria-labelledby="relayUrlsLabel">
-            <div class="relay-section-head"><label id="relayUrlsLabel" class="relay-section-title" for="relayUrls">中继地址</label><span id="relayUrlCount" class="relay-url-count">0 / 8 个地址</span></div>
-            <textarea id="relayUrls" name="relay_urls" class="mono" rows="4" placeholder="https://relay-1.example.com&#10;https://relay-2.example.com" spellcheck="false" autocomplete="off" autocapitalize="off" aria-describedby="relayUrlsHint relayFormError"></textarea>
-            <p id="relayUrlsHint" class="relay-field-hint">每行一个 HTTPS 地址，按集合故障切换，最多 8 个。留空即可回退到默认中继。</p>
-          </section>
-          <div class="relay-controls">
-            <div class="field"><label class="lbl" for="relayToken">Relay token（可选）</label><input id="relayToken" name="relay_token" class="mono" type="password" placeholder="部署时配置的 token" spellcheck="false" autocomplete="off" aria-describedby="relayTokenHint relayFormError" /><p id="relayTokenHint" class="relay-field-hint">仅在 relay 部署启用准入校验时填写。</p></div>
-            <button id="saveRelayBtn" type="submit" class="btn btn-primary">保存中继策略</button>
-          </div>
-          <p id="relayFormError" class="form-error hidden" role="alert"></p>
-        </form>
-        <p class="relay-runtime-note"><strong>生效范围</strong><span id="relayRuntimeNote">本机作为 access 时，新建连接会使用此策略；已建立连接继续使用原路径。同机运行 expose 时，保存后重启 PowerMap 才会生效。</span></p>
       </div>
 
       <div class="card hidden">
@@ -1206,6 +1195,32 @@
         </form>
       </div>
 
+    </div>
+
+    <!-- Tab: 中继 -->
+    <div id="tabRelay" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-relay" tabindex="0">
+      <div class="card relay-card">
+        <div class="card-header">
+          <div><h2 class="card-title">中继</h2><p class="relay-header-copy">默认优先 P2P 直连；无法直连时使用内置官方中继，官方中继不可用才回退到 iroh 默认中继。</p></div>
+          <span id="relayModeStatus" class="relay-mode-status" role="status" aria-live="polite">正在读取</span>
+        </div>
+        <form id="relayForm" class="relay-form">
+          <section class="relay-section" aria-labelledby="relayEntriesTitle">
+            <div class="relay-section-head"><div><span id="relayEntriesTitle" class="relay-section-title">自定义中继</span><p class="relay-field-hint">每条中继独立使用自己的 token。配置后会替换官方中继，且不会自动切换至 iroh；测速仅检查可达性与延迟，不验证 token。</p></div><div class="relay-actions"><span id="relayUrlCount" class="relay-url-count">0 / 8</span><button id="probeRelaysBtn" class="btn btn-outline btn-sm" type="button">测试全部</button><button id="addRelayBtn" class="btn btn-outline btn-sm" type="button">添加中继</button></div></div>
+            <div id="relayRows" class="relay-rows" aria-live="polite"></div>
+            <p id="relayEmpty" class="relay-empty">未配置自定义中继。连接在需要中继时会使用官方中继。</p>
+          </section>
+          <section class="relay-section" aria-labelledby="forceRelayTitle">
+            <div class="relay-section-head"><span id="forceRelayTitle" class="relay-section-title">连接路径</span></div>
+            <label class="share-relay-option relay-force-option" for="forceRelay">
+              <input id="forceRelay" name="force_relay" type="checkbox" aria-describedby="forceRelayHint" />
+              <span><strong>强制经中继</strong><small id="forceRelayHint">关闭 P2P 直连，只允许经中继建立连接。保存后必须重启 PowerMap，access 和 expose 才会生效。</small></span>
+            </label>
+          </section>
+          <p id="relayFormError" class="form-error hidden" role="alert"></p>
+          <div class="relay-footer"><p class="relay-runtime-note"><strong>生效范围</strong><span id="relayRuntimeNote">自定义中继会用于 access 的后续连接；强制中继必须重启 PowerMap 后才会作用于两端 Endpoint。</span></p><button id="saveRelayBtn" type="submit" class="btn btn-primary">保存中继配置</button></div>
+        </form>
+      </div>
     </div>
 
     <div id="tabAbout" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-about" tabindex="0">
@@ -1457,12 +1472,17 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 
 // ── 标签页切换 ──
 const TAB_KEY = 'powermap_tab';
-const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', connection: 'tabConnection', events: 'tabEvents', about: 'tabAbout' };
+// These values are read while resolving the initial URL hash, before the relay form helpers.
+let localRelay = { relays: [], force_relay: false, restart_required: false };
+let relayDirty = false;
+let relayProbeByUrl = new Map();
+const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', connection: 'tabConnection', relay: 'tabRelay', events: 'tabEvents', about: 'tabAbout' };
 const TAB_META = {
   dashboard: { title: '概览', subtitle: '查看节点连接、映射隧道和实时流量。' },
   mappings: { title: '端口映射', subtitle: '将本地端口安全地映射至内网服务。' },
   domains: { title: '域名映射', subtitle: '将域名解析到本机回环入口，并安全转发到远端服务。' },
   connection: { title: '节点', subtitle: '分享本机身份，或连接到其他节点。' },
+  relay: { title: '中继', subtitle: '管理自定义中继、独立 token 与控制平面延迟测试。' },
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
   about: { title: '关于', subtitle: '查看当前版本、发布说明与 PowerMap 功能。' },
 };
@@ -1489,6 +1509,7 @@ function selectTab(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
   if (name === 'domains') refreshDomains();
+  if (name === 'relay' && !relayDirty) refreshRelay();
   if (name === 'about') setTimeout(() => {
     if (!checkedUpdate) checkUpdate({ silent: true });
   }, 0);
@@ -2004,28 +2025,103 @@ async function copyText(t) {
 // ── 连接设置：凭证状态 / 复制 / 接入 ──
 let curCred = { node_id: '', token: '', configured: false, token_hidden: false, published_targets: [] };
 let ownCredential = null;
-let localRelay = { urls: [], auth_token: '' };
-function relayUrlsFromInput(value) {
-  return String(value || '').split(/\r?\n/).map(url => url.trim()).filter(Boolean);
-}
 function setRelayFormError(message = '') {
   const error = document.getElementById('relayFormError');
-  const urls = document.getElementById('relayUrls');
-  const token = document.getElementById('relayToken');
   error.textContent = message;
   error.classList.toggle('hidden', !message);
-  urls.toggleAttribute('aria-invalid', !!message);
-  token.toggleAttribute('aria-invalid', !!message);
+  document.querySelectorAll('.relay-url, .relay-token').forEach(input => input.toggleAttribute('aria-invalid', !!message));
 }
-function renderRelaySummary(urls, { draft = false } = {}) {
-  const count = urls.length;
+function relayEntriesFromForm() {
+  return [...document.querySelectorAll('#relayRows .relay-row')].map(row => ({
+    url: row.querySelector('.relay-url').value.trim(),
+    auth_token: row.querySelector('.relay-token').value,
+  }));
+}
+function relayEntriesForSave() {
+  return relayEntriesFromForm().filter(entry => entry.url || entry.auth_token);
+}
+function relayProbeText(probe) {
+  if (!probe) return '未测试';
+  if (probe.testing) return '检测中…';
+  const latency = Number.isFinite(probe.latency_ms) ? `${probe.latency_ms} ms` : '';
+  if (probe.reachable) return latency || '可达';
+  const status = probe.http_status ? `HTTP ${probe.http_status}` : '';
+  return [status, latency, probe.error || '不可达'].filter(Boolean).join(' · ');
+}
+function renderRelayRows(entries) {
+  const rows = document.getElementById('relayRows');
+  rows.replaceChildren();
+  entries.forEach((entry, index) => {
+    const row = document.createElement('div');
+    row.className = 'relay-row';
+    row.dataset.index = String(index);
+
+    const indexLabel = document.createElement('span');
+    indexLabel.className = 'relay-row-index';
+    indexLabel.textContent = String(index + 1).padStart(2, '0');
+
+    const urlField = document.createElement('label');
+    urlField.className = 'field relay-row-field';
+    urlField.innerHTML = '<span class="relay-row-label">中继地址</span>';
+    const url = document.createElement('input');
+    url.className = 'mono relay-url';
+    url.name = `relay_url_${index + 1}`;
+    url.type = 'url';
+    url.placeholder = 'https://relay.example.com';
+    url.autocomplete = 'off';
+    url.autocapitalize = 'off';
+    url.spellcheck = false;
+    url.value = entry.url || '';
+    urlField.append(url);
+
+    const tokenField = document.createElement('label');
+    tokenField.className = 'field relay-row-field';
+    tokenField.innerHTML = '<span class="relay-row-label">Token（可选）</span>';
+    const token = document.createElement('input');
+    token.className = 'mono relay-token';
+    token.name = `relay_auth_token_${index + 1}`;
+    token.type = 'password';
+    token.placeholder = '此中继的准入 token';
+    token.autocomplete = 'off';
+    token.spellcheck = false;
+    token.value = entry.auth_token || '';
+    tokenField.append(token);
+
+    const probe = relayProbeByUrl.get((entry.url || '').trim());
+    const probeState = document.createElement('span');
+    probeState.className = `relay-probe${probe?.reachable ? ' ok' : probe && !probe.testing ? ' error' : ''}`;
+    probeState.setAttribute('role', 'status');
+    probeState.textContent = relayProbeText(probe);
+
+    const remove = document.createElement('button');
+    remove.className = 'relay-icon-btn';
+    remove.type = 'button';
+    remove.dataset.relayRemove = String(index);
+    remove.setAttribute('aria-label', `移除第 ${index + 1} 个中继`);
+    remove.title = '移除中继';
+    remove.textContent = 'x';
+
+    row.append(indexLabel, urlField, tokenField, probeState, remove);
+    rows.append(row);
+  });
+  document.getElementById('relayEmpty').classList.toggle('hidden', entries.length > 0);
+}
+function renderRelaySummary(entries, { draft = false, restartRequired = localRelay.restart_required } = {}) {
+  const count = entries.filter(entry => entry.url.trim()).length;
+  const forced = document.getElementById('forceRelay').checked;
   const mode = document.getElementById('relayModeStatus');
-  document.getElementById('relayUrlCount').textContent = `${count} / 8 个地址`;
-  document.getElementById('relayRuntimeNote').textContent = count
-    ? '本机作为 access 时，新建连接会从此集合中选择可用中继；已建立连接继续使用原路径。同机运行 expose 时，保存后重启 PowerMap 才会生效。'
-    : '未配置自建地址时，本机作为 access 的新建连接会回退使用 iroh 默认免费中继。同机运行 expose 时，保存后重启 PowerMap 才会生效。';
-  mode.textContent = draft ? (count ? `待保存 · 自建 ${count} 个` : '待保存 · 默认中继') : (count ? `自建中继 · ${count} 个` : '默认中继');
-  mode.classList.toggle('custom', count > 0);
+  document.getElementById('relayUrlCount').textContent = `${count} / 8`;
+  document.getElementById('relayRuntimeNote').textContent = restartRequired && !draft
+    ? '强制中继配置已保存，但当前 Endpoint 仍使用启动时的传输策略。请重启 PowerMap 后再建立连接。'
+    : forced
+    ? '强制中继已启用：保存后必须重启 PowerMap，access 和 expose 都将禁用 P2P 直连。'
+    : count
+      ? '自定义中继会替换官方中继作为主中继；access 的后续连接立即使用新地址，expose 在重启后更新。'
+      : 'P2P 直连优先；无法直连时使用官方中继，官方中继不可用时自动回退 iroh 默认中继。';
+  const primary = count ? `自建 ${count} 个` : '官方中继';
+  const suffix = restartRequired && !draft ? ' · 需要重启' : forced ? ' · 强制中继' : '';
+  mode.textContent = draft ? `待保存 · ${primary}${suffix}` : `${primary}${suffix}`;
+  mode.classList.toggle('custom', count > 0 || forced);
 }
 function renderRelayUnavailable() {
   const mode = document.getElementById('relayModeStatus');
@@ -2034,23 +2130,62 @@ function renderRelayUnavailable() {
   document.getElementById('relayRuntimeNote').textContent = '未能读取当前中继配置。请检查管理页连接后重试，保存不会使用未知的本机配置。';
 }
 function renderRelay(relay) {
-  localRelay = relay && typeof relay === 'object' ? relay : { urls: [], auth_token: '' };
-  const urls = Array.isArray(localRelay.urls) ? localRelay.urls : [];
-  document.getElementById('relayUrls').value = urls.join('\n');
-  document.getElementById('relayToken').value = typeof localRelay.auth_token === 'string' ? localRelay.auth_token : '';
+  const raw = relay && typeof relay === 'object' ? relay : {};
+  const relays = Array.isArray(raw.relays)
+    ? raw.relays.map(entry => ({ url: String(entry?.url || ''), auth_token: String(entry?.auth_token || '') }))
+    : Array.isArray(raw.urls)
+      ? raw.urls.map(url => ({ url: String(url || ''), auth_token: String(raw.auth_token || '') }))
+      : [];
+  localRelay = {
+    relays,
+    force_relay: raw.force_relay === true,
+    restart_required: raw.restart_required === true,
+  };
+  relayDirty = false;
+  relayProbeByUrl = new Map();
+  document.getElementById('forceRelay').checked = localRelay.force_relay === true;
   setRelayFormError();
-  renderRelaySummary(urls);
+  renderRelayRows(localRelay.relays);
+  renderRelaySummary(localRelay.relays);
 }
-document.getElementById('relayUrls').addEventListener('input', () => {
-  renderRelaySummary(relayUrlsFromInput(document.getElementById('relayUrls').value), { draft: true });
+function markRelayDirty() {
+  relayDirty = true;
+  relayProbeByUrl = new Map();
+  renderRelaySummary(relayEntriesForSave(), { draft: true });
   setRelayFormError();
+}
+document.getElementById('relayRows').addEventListener('input', markRelayDirty);
+document.getElementById('relayRows').addEventListener('click', event => {
+  const button = event.target.closest('[data-relay-remove]');
+  if (!button) return;
+  const entries = relayEntriesFromForm();
+  entries.splice(Number(button.dataset.relayRemove), 1);
+  relayProbeByUrl = new Map();
+  relayDirty = true;
+  renderRelayRows(entries);
+  renderRelaySummary(entries, { draft: true });
 });
-document.getElementById('relayToken').addEventListener('input', () => setRelayFormError());
+document.getElementById('forceRelay').addEventListener('change', () => {
+  markRelayDirty();
+});
+document.getElementById('addRelayBtn').addEventListener('click', () => {
+  const entries = relayEntriesFromForm();
+  if (entries.length >= 8) { toast('最多可配置 8 个中继', 'err'); return; }
+  entries.push({ url: '', auth_token: '' });
+  relayProbeByUrl = new Map();
+  relayDirty = true;
+  renderRelayRows(entries);
+  renderRelaySummary(entries, { draft: true });
+  document.querySelector('#relayRows .relay-row:last-child .relay-url').focus();
+});
 async function refreshRelay() {
+  if (relayDirty) return localRelay;
   try {
     const response = await api('/api/relay');
     if (!response.ok) throw new Error((await response.text()) || '读取中继配置失败');
     const relay = await response.json();
+    // A slow initial/tab refresh must never replace text the operator started entering.
+    if (relayDirty) return localRelay;
     renderRelay(relay);
     return relay;
   } catch (error) {
@@ -2059,12 +2194,48 @@ async function refreshRelay() {
     return null;
   }
 }
+document.getElementById('probeRelaysBtn').addEventListener('click', async () => {
+  const button = document.getElementById('probeRelaysBtn');
+  if (relayDirty) {
+    const message = '请先保存中继配置，再测试已保存的中继。';
+    setRelayFormError(message);
+    toast(message, 'err');
+    return;
+  }
+  if (localRelay.relays.length === 0) {
+    toast('尚未配置自定义中继', 'err');
+    return;
+  }
+  relayProbeByUrl = new Map(localRelay.relays.map(entry => [entry.url.trim(), { testing: true }]));
+  renderRelayRows(localRelay.relays);
+  button.disabled = true;
+  button.textContent = '测试中…';
+  try {
+    const response = await api('/api/relay/probe');
+    if (!response.ok) throw new Error((await response.text()) || '中继测速失败');
+    const report = await response.json();
+    relayProbeByUrl = new Map((report.relays || []).map(result => [String(result.url || '').trim(), result]));
+    renderRelayRows(localRelay.relays);
+  } catch (error) {
+    relayProbeByUrl = new Map(localRelay.relays.map(entry => [entry.url.trim(), { error: '测速请求失败' }]));
+    renderRelayRows(localRelay.relays);
+    toast(String(error.message || error), 'err');
+  } finally {
+    button.disabled = false;
+    button.textContent = '测试全部';
+  }
+});
 document.getElementById('relayForm').addEventListener('submit', async (event) => {
   event.preventDefault();
   const button = document.getElementById('saveRelayBtn');
+  const relays = relayEntriesForSave();
+  if (relays.length > 8) {
+    setRelayFormError('最多可配置 8 个中继');
+    return;
+  }
   const relay = {
-    urls: relayUrlsFromInput(document.getElementById('relayUrls').value),
-    auth_token: document.getElementById('relayToken').value,
+    relays,
+    force_relay: document.getElementById('forceRelay').checked,
   };
   const defaultLabel = '保存中继策略';
   button.disabled = true;
@@ -2076,13 +2247,20 @@ document.getElementById('relayForm').addEventListener('submit', async (event) =>
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(relay),
     });
     if (!response.ok) throw new Error((await response.text()) || '保存中继配置失败');
-    renderRelay(relay);
-    toast(relay.urls.length ? '自建中继配置已保存' : '已恢复使用 iroh 默认免费中继');
+    const saved = await response.json();
+    renderRelay(saved);
+    toast(saved.restart_required
+      ? '强制中继配置已保存；请重启 PowerMap 后生效'
+      : relay.force_relay
+      ? '强制中继已保存；重启 PowerMap 后生效'
+      : relay.relays.length
+        ? '自定义中继配置已保存'
+        : '已恢复官方中继；不可用时自动回退 iroh');
   } catch (error) {
     if (String(error) !== 'Error: unauthorized') {
       const message = String(error.message || error);
       setRelayFormError(message);
-      (/(auth_token|token)/i.test(message) ? document.getElementById('relayToken') : document.getElementById('relayUrls')).focus();
+      document.querySelector(/(auth_token|token)/i.test(message) ? '.relay-token' : '.relay-url')?.focus();
       toast(message, 'err');
     }
   } finally {
@@ -2256,7 +2434,9 @@ document.getElementById('copyOwnCredential').addEventListener('click', async () 
     if (document.getElementById('shareRelayConfig').checked) {
       const response = await api('/api/relay');
       if (!response.ok) throw new Error((await response.text()) || '读取本机中继配置失败');
-      credential.relay = await response.json();
+      const relay = await response.json();
+      delete relay.restart_required;
+      credential.relay = relay;
     }
     const ok = await copyText(JSON.stringify(credential, null, 2));
     ioMsg(ok ? '本机分享凭证已复制' : '复制失败，请稍后重试');
@@ -2297,10 +2477,13 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
     body: JSON.stringify(credential),
   });
   if (!r.ok) { toast((await r.text()) || '接入失败', 'err'); return; }
+  const updated = await r.json();
   document.getElementById('credJson').value = '';
   document.getElementById('credNodeIn').value = '';
   document.getElementById('credTokenIn').value = '';
-  ioMsg('凭证已更新，正在用新凭证重连…');
+  ioMsg(updated.restart_required
+    ? '凭证和强制中继配置已保存；请重启 PowerMap 后生效'
+    : '凭证已更新，正在用新凭证重连…');
   await refreshCred(); refreshTargetCatalog(); refreshStatus();
 });
 
@@ -3152,6 +3335,7 @@ function paletteCommands() {
     { title: '新建域名映射', hint: '将域名映射到远端端口', keys: 'new domain mapping yuming', run: () => { selectTab('domains'); document.getElementById('domainName').focus(); } },
     { title: '前往域名映射', hint: '查看域名入口与 hosts 状态', keys: 'domains tab yuming', run: () => selectTab('domains') },
     { title: '前往连接设置', hint: '切换到连接页', keys: 'connection credential lianjie', run: () => selectTab('connection') },
+    { title: '前往中继配置', hint: '管理中继地址、token 与延迟测试', keys: 'relay zhongji token latency', run: () => selectTab('relay') },
     { title: '前往事件', hint: '查看近期事件', keys: 'events shijian log', run: () => selectTab('events') },
     { title: '立即刷新', hint: '手动刷新状态与列表', keys: 'refresh reload shuaxin', run: () => poll() },
     { title: '导出配置', hint: '下载完整配置 JSON', keys: 'export daochu backup', run: () => document.getElementById('exportBtn').click() },
@@ -3253,7 +3437,8 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === '1') { e.preventDefault(); selectTab('mappings'); }
   else if (e.key === '2') { e.preventDefault(); selectTab('domains'); }
   else if (e.key === '3') { e.preventDefault(); selectTab('connection'); }
-  else if (e.key === '4') { e.preventDefault(); selectTab('events'); }
+  else if (e.key === '4') { e.preventDefault(); selectTab('relay'); }
+  else if (e.key === '5') { e.preventDefault(); selectTab('events'); }
 });
 function showShortcutHelp() {
   openModal({
@@ -3330,6 +3515,11 @@ refreshPauseEl.addEventListener('click', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { stopPolling(); }
   else { if (pollInterval > 0 && !pollPaused) poll(); startPolling(); }
+});
+window.addEventListener('beforeunload', event => {
+  if (!relayDirty) return;
+  event.preventDefault();
+  event.returnValue = '';
 });
 syncRefreshControls();
 if (!document.hidden) startPolling();
