@@ -1246,10 +1246,65 @@ mod integration_tests {
     use super::*;
     use axum::body::{Body, to_bytes};
     use axum::http::{Request, header};
+    use iroh::protocol::{AcceptError, ProtocolHandler, Router};
     use serde_json::Value;
     use tower::ServiceExt;
 
     static TEST_STATE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    #[derive(Debug)]
+    struct LoopRiskPreflightHandler {
+        requests: Arc<Mutex<Vec<proto::OpenRequest>>>,
+    }
+
+    impl ProtocolHandler for LoopRiskPreflightHandler {
+        async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
+            while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+                let Ok(request) = proto::read_open(&mut recv).await else {
+                    continue;
+                };
+                self.requests.lock().await.push(request.clone());
+                let (status, message) = if request.preflight && request.host == "127.0.0.1" {
+                    (proto::STATUS_LOOP_RISK, "target resolves to loopback")
+                } else {
+                    (proto::STATUS_OK, "")
+                };
+                let _ = proto::write_status(&mut send, status, message).await;
+            }
+            Ok(())
+        }
+    }
+
+    async fn configure_loop_risk_preflight(
+        state: &AppState,
+    ) -> (Router, Arc<Mutex<Vec<proto::OpenRequest>>>) {
+        let server = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let server_id = server.id();
+        let server_addr = server.addr();
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let router = Router::builder(server)
+            .accept(
+                proto::ALPN,
+                LoopRiskPreflightHandler {
+                    requests: requests.clone(),
+                },
+            )
+            .spawn();
+        let connection = state
+            .link
+            .endpoint
+            .connect(server_addr, proto::ALPN)
+            .await
+            .unwrap();
+        *state.link.conn.lock().await = Some(connection);
+        *state.link.creds.write().await = Creds {
+            node_id: server_id.to_string(),
+            token: "test-token".into(),
+            target: Some(server_id),
+            published_targets: Vec::new(),
+        };
+        (router, requests)
+    }
 
     async fn test_state(web_token: &str) -> AppState {
         let endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
@@ -3034,6 +3089,120 @@ mod integration_tests {
         let updated = response_json(response).await;
         assert_eq!(updated["peer_id"], "peer-one");
         assert_eq!(updated["allow_loopback_target"], true);
+    }
+
+    #[tokio::test]
+    async fn http_route_targets_are_preflighted_on_create_and_update() {
+        let state = test_state("").await;
+        let (router, requests) = configure_loop_risk_preflight(&state).await;
+        let app = app(state.clone());
+        let routes = r#"[{"host_match":"service.example.test","target_host":"127.0.0.1","target_port":8080}]"#;
+
+        let create = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"local":"127.0.0.1:0","host":"10.0.0.10","port":80,"enabled":false,"mode":"http","routes":{routes}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create.status(), StatusCode::BAD_REQUEST);
+
+        let existing = config::Mapping {
+            peer_id: String::new(),
+            allow_loopback_target: false,
+            local: "127.0.0.1:0".into(),
+            host: "10.0.0.10".into(),
+            port: 80,
+            enabled: false,
+            name: String::new(),
+            mode: config::MappingMode::Http,
+            routes: Vec::new(),
+        };
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(existing.local.clone(), disabled_handle(existing.clone()));
+        let update = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/mappings/{}", existing.local))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"local":"{}","host":"10.0.0.10","port":80,"enabled":false,"mode":"http","routes":{routes}}}"#,
+                        existing.local
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(update.status(), StatusCode::BAD_REQUEST);
+
+        let requests = requests.lock().await;
+        assert!(requests.iter().any(|request| {
+            request.preflight && request.host == "10.0.0.10" && request.port == 80
+        }));
+        assert!(requests.iter().any(|request| {
+            request.preflight && request.host == "127.0.0.1" && request.port == 8080
+        }));
+        drop(requests);
+        router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn enabling_a_disabled_mapping_repeats_loopback_preflight() {
+        let state = test_state("").await;
+        let (router, requests) = configure_loop_risk_preflight(&state).await;
+        let mapping = config::Mapping {
+            peer_id: String::new(),
+            allow_loopback_target: false,
+            local: "127.0.0.1:0".into(),
+            host: "127.0.0.1".into(),
+            port: 8080,
+            enabled: false,
+            name: String::new(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.local.clone(), disabled_handle(mapping.clone()));
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/api/mappings/{}/toggle", mapping.local))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            !state.inner.lock().await.mappings[&mapping.local]
+                .mapping
+                .read()
+                .await
+                .enabled
+        );
+        assert!(requests.lock().await.iter().any(|request| {
+            request.preflight && request.host == "127.0.0.1" && request.port == 8080
+        }));
+        router.shutdown().await.unwrap();
     }
 
     #[tokio::test]
@@ -5149,6 +5318,17 @@ fn target_preflight_check(
     }
 }
 
+fn mapping_preflight_targets(mapping: &config::Mapping) -> Vec<(String, u16)> {
+    let mut targets = BTreeSet::new();
+    targets.insert((mapping.host.clone(), mapping.port));
+    if mapping.mode == config::MappingMode::Http {
+        for route in &mapping.routes {
+            targets.insert((route.target_host.clone(), route.target_port));
+        }
+    }
+    targets.into_iter().collect()
+}
+
 async fn require_mapping_loopback_acknowledgement(
     st: &AppState,
     mapping: &config::Mapping,
@@ -5162,27 +5342,32 @@ async fn require_mapping_loopback_acknowledgement(
         config::MappingMode::Udp => proto::TunnelKind::Udp,
         _ => proto::TunnelKind::Tcp,
     };
-    let request = proto::OpenRequest {
-        token: st.link.token().await,
-        host: mapping.host.clone(),
-        port: mapping.port,
-        kind,
-        register: false,
-        preflight: true,
-        allow_loopback_target: mapping.allow_loopback_target,
-    };
-    match tokio::time::timeout(
-        Duration::from_secs(8),
-        open_preflight_with_retry(&st.link, &request),
-    )
-    .await
-    {
-        Ok(Ok(proto::OpenStatus::LoopRisk(message))) => Err((
-            StatusCode::BAD_REQUEST,
-            format!("目标需要显式确认 loopback 风险：{message}"),
-        )),
-        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => Ok(()),
+    for (host, port) in mapping_preflight_targets(mapping) {
+        let request = proto::OpenRequest {
+            token: st.link.token().await,
+            host: host.clone(),
+            port,
+            kind,
+            register: false,
+            preflight: true,
+            allow_loopback_target: mapping.allow_loopback_target,
+        };
+        match tokio::time::timeout(
+            Duration::from_secs(8),
+            open_preflight_with_retry(&st.link, &request),
+        )
+        .await
+        {
+            Ok(Ok(proto::OpenStatus::LoopRisk(message))) => {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{host}:{port} 需要显式确认 loopback 风险：{message}"),
+                ));
+            }
+            Ok(Ok(_)) | Ok(Err(_)) | Err(_) => {}
+        }
     }
+    Ok(())
 }
 
 /// POST /api/mappings/preflight --- transiently verifies the same remote path a
@@ -5920,7 +6105,11 @@ async fn toggle(
         .get(&id)
         .ok_or((StatusCode::NOT_FOUND, format!("{id} 不存在映射")))?;
     let mut mapping = existing.mapping.read().await.clone();
+    let was_enabled = mapping.enabled;
     mapping.enabled = !mapping.enabled;
+    if !was_enabled && mapping.enabled {
+        require_mapping_loopback_acknowledgement(&st, &mapping).await?;
+    }
     // 启用时按当前地址重新绑定；停用时换成不占端口的把手。任一路径失败则保持原样。
     let handle = start_mapping_owned(&st, mapping.clone()).await?;
     let old = g.mappings.remove(&id).expect("已确认存在");
@@ -5991,7 +6180,18 @@ async fn toggle_all(
         if mapping.enabled == target {
             continue; // 已被其他请求切换
         }
+        let was_enabled = mapping.enabled;
         mapping.enabled = target;
+        if !was_enabled && mapping.enabled {
+            if require_mapping_loopback_acknowledgement(&st, &mapping)
+                .await
+                .is_err()
+            {
+                drop(g);
+                failed += 1;
+                continue;
+            }
+        }
         match start_mapping_owned(&st, mapping.clone()).await {
             Ok(handle) => {
                 let old = g.mappings.remove(&id).expect("已确认存在");

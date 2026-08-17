@@ -881,11 +881,13 @@ mod tests {
 
     #[tokio::test]
     async fn expose_preflight_reports_loopback_risk_without_dialing() {
+        let target = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
         let registry = Arc::new(ClientRegistry::from_configs(&[config::ClientCred {
             id: "test-client".into(),
             token: "test-token".into(),
             allow_networks: vec!["127.0.0.0/8".into()],
-            allow_ports: vec![1],
+            allow_ports: vec![target_addr.port()],
             published_targets: vec![],
             reverse: vec![],
             max_streams: 0,
@@ -901,7 +903,7 @@ mod tests {
         let request = proto::OpenRequest {
             token: "test-token".into(),
             host: "127.0.0.1".into(),
-            port: 1,
+            port: target_addr.port(),
             kind: proto::TunnelKind::Tcp,
             register: false,
             preflight: true,
@@ -918,6 +920,11 @@ mod tests {
 
         assert!(result.is_err());
         assert!(matches!(status, Ok(proto::OpenStatus::LoopRisk(_))));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), target.accept())
+                .await
+                .is_err()
+        );
     }
 
     #[test]
