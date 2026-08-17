@@ -1360,6 +1360,8 @@ mod integration_tests {
     async fn domain_mapping_put_keeps_remote_port_when_omitted() {
         let state = test_state("admin-token").await;
         let mapping = config::DomainMapping {
+            peer_id: String::new(),
+            allow_loopback_target: false,
             domain: "api.example.test".into(),
             remote_port: 8443,
             enabled: false,
@@ -1836,6 +1838,8 @@ mod integration_tests {
 
     fn http_mapping(routes: Vec<config::HttpRoute>) -> config::Mapping {
         config::Mapping {
+            peer_id: String::new(),
+            allow_loopback_target: false,
             local: "127.0.0.1:8080".into(),
             host: "10.0.0.1".into(),
             port: 80,
@@ -3104,6 +3108,8 @@ mod integration_tests {
         let old_local = reserved_old.local_addr().unwrap();
         drop(reserved_old);
         let old_mapping = config::Mapping {
+            peer_id: String::new(),
+            allow_loopback_target: false,
             local: old_local.to_string(),
             host: "127.0.0.1".into(),
             port: 6379,
@@ -3724,6 +3730,8 @@ async fn create_domain_mapping(
     }
     drop(domains);
     let mapping = config::DomainMapping {
+        peer_id: String::new(),
+        allow_loopback_target: false,
         domain: body.domain,
         remote_port: body.remote_port.unwrap_or_else(default_domain_remote_port),
         enabled: body.enabled.unwrap_or(true),
@@ -3771,6 +3779,8 @@ async fn update_domain_mapping(
     };
     let old_mapping = old_handle.read().await.clone();
     let mapping = config::DomainMapping {
+        peer_id: old_mapping.peer_id.clone(),
+        allow_loopback_target: old_mapping.allow_loopback_target,
         domain: body.domain,
         remote_port: body.remote_port.unwrap_or(old_mapping.remote_port),
         enabled: body.enabled.unwrap_or(old_mapping.enabled),
@@ -3985,6 +3995,8 @@ async fn preflight(
     Json(body): Json<CreateBody>,
 ) -> Result<Json<PreflightResult>, (StatusCode, String)> {
     let mapping = config::Mapping {
+        peer_id: String::new(),
+        allow_loopback_target: false,
         local: body.local,
         host: body.host,
         port: body.port,
@@ -4097,6 +4109,8 @@ async fn create(
     Json(body): Json<CreateBody>,
 ) -> Result<Json<config::Mapping>, (StatusCode, String)> {
     let mapping = config::Mapping {
+        peer_id: String::new(),
+        allow_loopback_target: false,
         local: body.local,
         host: body.host,
         port: body.port,
@@ -4333,6 +4347,8 @@ async fn start_tcp_mapping(
                             match peek_http_head(&mut tcp).await {
                                 Ok((buf, host_header)) => {
                                     let snapshot = config::Mapping {
+                                        peer_id: String::new(),
+                                        allow_loopback_target: false,
                                         local: String::new(),
                                         host: host.clone(),
                                         port,
@@ -4600,6 +4616,8 @@ async fn update(
         (m.enabled, m.name.clone(), m.mode, m.routes.clone())
     };
     let mapping = config::Mapping {
+        peer_id: String::new(),
+        allow_loopback_target: false,
         local: body.local,
         host: body.host,
         port: body.port,
@@ -4902,6 +4920,8 @@ async fn build_config(st: &AppState) -> config::AConfig {
     config::AConfig {
         node_id,
         token,
+        relay: config::RelaySettings::default(),
+        peers: Vec::new(),
         web_bind: st.web_bind.clone(),
         web_token: st.web_token.clone(),
         web_tls_cert: st.web_tls_cert.clone(),

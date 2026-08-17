@@ -16,6 +16,7 @@ use serde::ser::SerializeStruct;
 use serde::{Deserialize, Serialize};
 
 static SAVE_TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static PEER_ID_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// 一条映射承载的传输/代理模式。旧配置省略此字段时按 tcp 处理，保持兼容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -73,6 +74,12 @@ impl HttpRoute {
 /// 一条端口映射：本地监听地址 → B 端所在内网里的目标 host:port。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Mapping {
+    /// Immutable owner of this mapping's remote access peer.
+    #[serde(default)]
+    pub peer_id: String,
+    /// The operator explicitly acknowledged that this target resolves to loopback on the peer.
+    #[serde(default)]
+    pub allow_loopback_target: bool,
     /// 本地监听地址，可填 127.0.0.1:8080，也可填 127.0.0.2:6379 这类 127/8 虚拟 IP
     pub local: String,
     /// 目标主机（B 端内网里能访问到的 IP / 主机名）。HTTP 网关模式下作为兜底后端。
@@ -119,6 +126,12 @@ pub fn domain_mapping_limit(max_mappings: usize) -> usize {
 /// A domain name that should be exposed through the remote node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainMapping {
+    /// Immutable owner of this mapping's remote access peer.
+    #[serde(default)]
+    pub peer_id: String,
+    /// The operator explicitly acknowledged that this target resolves to loopback on the peer.
+    #[serde(default)]
+    pub allow_loopback_target: bool,
     /// Lowercase DNS domain name, for example "ai-router.dl-aiot.com".
     pub domain: String,
     /// Remote HTTPS port. Defaults to 443 for legacy-compatible concise config.
@@ -132,6 +145,8 @@ pub struct DomainMapping {
 impl DomainMapping {
     pub fn new(domain: impl Into<String>) -> Self {
         Self {
+            peer_id: String::new(),
+            allow_loopback_target: false,
             domain: domain.into(),
             remote_port: default_https_port(),
             enabled: default_enabled(),
@@ -247,12 +262,21 @@ impl Mapping {
 /// 用户端 A 的配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AConfig {
-    /// B 端的 EndpointId（PublicKey 字符串）
-    #[serde(default)]
+    /// v0.9.0 compatibility field. New configurations store this on a peer.
+    #[serde(default, skip_serializing)]
     pub node_id: String,
-    /// 访问令牌
-    #[serde(default)]
+    /// v0.9.0 compatibility field. New configurations store this on a peer.
+    #[serde(default, skip_serializing)]
     pub token: String,
+    /// v0.9.0 compatibility field. New configurations store this on a peer.
+    #[serde(default, skip_serializing)]
+    pub published_targets: Vec<PublishedTarget>,
+    /// v0.9.0 compatibility field for access-only configuration files.
+    #[serde(default, skip_serializing)]
+    pub relay: RelaySettings,
+    /// Persistent independently configured remote peers.
+    #[serde(default)]
+    pub peers: Vec<PeerConfig>,
     /// Web 管理页监听地址
     #[serde(default = "default_web_bind")]
     pub web_bind: String,
@@ -278,9 +302,6 @@ pub struct AConfig {
     /// 域名映射规则（持久化，重启自动恢复）。
     #[serde(default)]
     pub domain_mappings: Vec<DomainMapping>,
-    /// 从 B 端凭证带入的推荐目标；只用于管理页自动填写，不改变访问授权。
-    #[serde(default)]
-    pub published_targets: Vec<PublishedTarget>,
     /// 反向映射总开关：是否接受 B 端发起的反向隧道（把 A 侧服务暴露给内网）。
     /// 默认关闭；即使 B 端配置了反向监听，A 端不开此开关也一律拒绝，避免被动暴露本机服务。
     #[serde(default)]
@@ -299,6 +320,9 @@ impl Default for AConfig {
         AConfig {
             node_id: String::new(),
             token: String::new(),
+            published_targets: Vec::new(),
+            relay: RelaySettings::default(),
+            peers: Vec::new(),
             web_bind: default_web_bind(),
             web_token: String::new(),
             web_tls_cert: String::new(),
@@ -307,11 +331,45 @@ impl Default for AConfig {
             max_conns_per_mapping: default_max_conns_per_mapping(),
             mappings: Vec::new(),
             domain_mappings: Vec::new(),
-            published_targets: Vec::new(),
             reverse_enabled: false,
             reverse_allow_networks: Vec::new(),
             reverse_allow_ports: Vec::new(),
         }
+    }
+}
+
+/// One independently configured remote access peer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PeerConfig {
+    /// Opaque stable local identifier; it is not an access credential.
+    pub id: String,
+    /// Operator-facing peer name, unique within an access configuration.
+    pub name: String,
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub token: String,
+    #[serde(default)]
+    pub published_targets: Vec<PublishedTarget>,
+    #[serde(default)]
+    pub relay: RelaySettings,
+}
+
+impl PeerConfig {
+    pub fn validate(&self) -> std::result::Result<(), String> {
+        if self.id.trim().is_empty() {
+            return Err("peer id cannot be empty".into());
+        }
+        if self.name.trim().is_empty() || self.name.chars().count() > 60 {
+            return Err("peer name must contain 1-60 characters".into());
+        }
+        if self.node_id.trim().is_empty() != self.token.trim().is_empty() {
+            return Err("peer node_id and token must both be set or both be empty".into());
+        }
+        for target in &self.published_targets {
+            target.validate()?;
+        }
+        self.relay.validate()
     }
 }
 
@@ -321,7 +379,22 @@ impl AConfig {
         let mut exported = self.clone();
         exported.token.clear();
         exported.web_token.clear();
+        exported.relay = exported.relay.redacted();
+        for peer in &mut exported.peers {
+            peer.token.clear();
+            peer.relay = peer.relay.redacted();
+        }
         exported
+    }
+
+    pub fn peer(&self, id: &str) -> Option<&PeerConfig> {
+        self.peers.iter().find(|peer| peer.id == id)
+    }
+
+    /// Compatibility bridge for callers that can safely target the one migrated default peer.
+    pub fn legacy_default_peer_id(&self) -> Option<&str> {
+        (self.peers.len() == 1 && self.peers[0].name == "默认对端")
+            .then_some(self.peers[0].id.as_str())
     }
 
     /// 检查启动前必须明确处理的配置。空凭证仍可用于首次启动，由 Web 管理页完成接入。
@@ -341,10 +414,27 @@ impl AConfig {
         if self.node_id.trim().is_empty() != self.token.trim().is_empty() {
             return Err("node_id 与 token 必须同时设置；也可同时留空并在管理页完成接入".into());
         }
+        let mut peer_ids = HashSet::new();
+        let mut peer_names = HashSet::new();
+        for peer in &self.peers {
+            peer.validate()?;
+            if !peer_ids.insert(peer.id.as_str()) {
+                return Err(format!("peer id {} 重复", peer.id));
+            }
+            if !peer_names.insert(peer.name.trim().to_owned()) {
+                return Err(format!("peer name {} 重复", peer.name.trim()));
+            }
+        }
 
         let mut locals = HashSet::new();
         for mapping in &self.mappings {
             mapping.validate()?;
+            if mapping.peer_id.trim().is_empty() {
+                return Err("映射必须指定 peer_id".into());
+            }
+            if !peer_ids.contains(mapping.peer_id.as_str()) {
+                return Err(format!("映射引用了未知 peer_id {}", mapping.peer_id));
+            }
             if !locals.insert(&mapping.local) {
                 return Err(format!("本地监听地址 {} 重复", mapping.local));
             }
@@ -352,6 +442,12 @@ impl AConfig {
         let mut domains = HashSet::new();
         for mapping in &self.domain_mappings {
             mapping.validate()?;
+            if mapping.peer_id.trim().is_empty() {
+                return Err("域名映射必须指定 peer_id".into());
+            }
+            if !peer_ids.contains(mapping.peer_id.as_str()) {
+                return Err(format!("域名映射引用了未知 peer_id {}", mapping.peer_id));
+            }
             if !domains.insert(&mapping.domain) {
                 return Err(format!("域名映射 {} 重复", mapping.domain));
             }
@@ -359,9 +455,6 @@ impl AConfig {
         let domain_limit = domain_mapping_limit(self.max_mappings);
         if self.domain_mappings.len() > domain_limit {
             return Err(format!("域名映射数量超过上限 {domain_limit}"));
-        }
-        for target in &self.published_targets {
-            target.validate()?;
         }
         // 反向映射的允许网段必须是合法 CIDR；deny-all 语义下留空是合法的（表示全拒绝）。
         // 只校验格式，空集=拒绝的语义留给运行期 ReversePolicy。
@@ -819,6 +912,55 @@ pub enum Scenario {
 }
 
 impl Config {
+    /// Move the v0.9.0 single-credential access shape into one persistent peer.
+    /// Returns whether a later successful save must persist the new representation.
+    pub fn normalize_access_peers(&mut self) -> std::result::Result<bool, String> {
+        let Some(access) = &mut self.access else {
+            return Ok(false);
+        };
+        if !access.peers.is_empty() {
+            return Ok(false);
+        }
+
+        let needs_peer = !access.node_id.trim().is_empty()
+            || !access.token.trim().is_empty()
+            || !access.published_targets.is_empty()
+            || !access.relay.relays.is_empty()
+            || access.relay.force_relay
+            || !access.mappings.is_empty()
+            || !access.domain_mappings.is_empty();
+        if !needs_peer {
+            return Ok(false);
+        }
+
+        let relay = if access.relay != RelaySettings::default() {
+            access.relay.clone()
+        } else {
+            self.relay.clone()
+        };
+        let peer = PeerConfig {
+            id: new_peer_id(),
+            name: "默认对端".to_string(),
+            node_id: std::mem::take(&mut access.node_id),
+            token: std::mem::take(&mut access.token),
+            published_targets: std::mem::take(&mut access.published_targets),
+            relay,
+        };
+        peer.validate()?;
+        for mapping in &mut access.mappings {
+            mapping.peer_id = peer.id.clone();
+        }
+        for mapping in &mut access.domain_mappings {
+            mapping.peer_id = peer.id.clone();
+        }
+        access.relay = RelaySettings::default();
+        access.peers.push(peer);
+        if self.expose.is_none() {
+            self.relay = RelaySettings::default();
+        }
+        Ok(true)
+    }
+
     /// Produce a shareable backup without credentials that grant network access.
     pub fn redacted_for_export(&self) -> Self {
         let mut exported = self.clone();
@@ -904,7 +1046,10 @@ pub fn load_config(path: &Path, legacy_role: Option<LegacyRole>) -> Result<Loade
                 path: path.to_path_buf(),
             });
         }
-        if let Ok(config) = toml::from_str::<Config>(&raw) {
+        if let Ok(mut config) = toml::from_str::<Config>(&raw) {
+            config
+                .normalize_access_peers()
+                .map_err(anyhow::Error::msg)?;
             config.validate().map_err(anyhow::Error::msg)?;
             return Ok(LoadedConfig {
                 config,
@@ -948,6 +1093,9 @@ pub fn load_config(path: &Path, legacy_role: Option<LegacyRole>) -> Result<Loade
 pub fn save_access(path: &Path, access: &AConfig) -> Result<()> {
     let mut config = load_config(path, None)?.config;
     config.access = Some(access.clone());
+    config
+        .normalize_access_peers()
+        .map_err(anyhow::Error::msg)?;
     config.validate().map_err(anyhow::Error::msg)?;
     save(path, &config)
 }
@@ -982,6 +1130,9 @@ fn migrate_legacy_files(
             }
         }
     }
+    config
+        .normalize_access_peers()
+        .map_err(anyhow::Error::msg)?;
     config.validate().map_err(anyhow::Error::msg)?;
     save(&new_path, &config)?;
     for (path, _) in legacy {
@@ -992,6 +1143,15 @@ fn migrate_legacy_files(
         config,
         path: new_path,
     })
+}
+
+fn new_peer_id() -> String {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let counter = PEER_ID_COUNTER.fetch_add(1, Ordering::Relaxed);
+    format!("peer_{timestamp:x}_{counter:x}")
 }
 
 /// 校验一组反向监听：每条本身合法，且监听地址在整个 server 内不重复。
@@ -1214,6 +1374,182 @@ mod tests {
             .join(name)
     }
 
+    const LEGACY_ACCESS_TOML: &str = r#"
+[relay]
+relays = [{ url = "https://relay.example.test", auth_token = "relay-token" }]
+force_relay = true
+
+[access]
+node_id = "legacy-node"
+token = "legacy-token"
+published_targets = [{ host = "10.0.0.8", port = 443, label = "HTTPS" }]
+
+[[access.mappings]]
+local = "127.0.0.1:8080"
+host = "10.0.0.8"
+port = 8080
+
+[[access.domain_mappings]]
+domain = "app.example.test"
+"#;
+
+    #[test]
+    fn legacy_access_migrates_to_one_named_peer() {
+        let mut config: Config = toml::from_str(LEGACY_ACCESS_TOML).unwrap();
+
+        assert!(config.normalize_access_peers().unwrap());
+        let access = config.access.as_ref().unwrap();
+        assert_eq!(access.peers.len(), 1);
+        assert_eq!(access.peers[0].name, "默认对端");
+        assert_eq!(access.peers[0].node_id, "legacy-node");
+        assert_eq!(access.peers[0].token, "legacy-token");
+        assert!(access.peers[0].relay.force_relay);
+        assert_eq!(access.peers[0].relay.relays[0].auth_token, "relay-token");
+        assert!(
+            access
+                .mappings
+                .iter()
+                .all(|m| m.peer_id == access.peers[0].id)
+        );
+        assert!(
+            access
+                .domain_mappings
+                .iter()
+                .all(|m| m.peer_id == access.peers[0].id)
+        );
+
+        let serialized = toml::to_string(&config).unwrap();
+        let serialized: toml::Value = toml::from_str(&serialized).unwrap();
+        let access = serialized["access"].as_table().unwrap();
+        assert!(access.get("node_id").is_none());
+        assert!(access.get("token").is_none());
+        assert!(access.get("published_targets").is_none());
+        assert!(access.get("relay").is_none());
+        assert!(
+            serialized["relay"].as_table().unwrap()["relays"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn access_rejects_duplicate_trimmed_peer_names() {
+        let config: Config = toml::from_str(
+            r#"
+[access]
+peers = [
+  { id = "one", name = " office " },
+  { id = "two", name = "office" },
+]
+"#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn access_rejects_mappings_without_valid_peer_ownership() {
+        let missing: Config = toml::from_str(
+            r#"
+[access]
+peers = [{ id = "one", name = "office" }]
+[[access.mappings]]
+local = "127.0.0.1:8080"
+host = "10.0.0.8"
+port = 8080
+"#,
+        )
+        .unwrap();
+        assert!(missing.validate().is_err());
+
+        let unknown: Config = toml::from_str(
+            r#"
+[access]
+peers = [{ id = "one", name = "office" }]
+[[access.mappings]]
+local = "127.0.0.1:8080"
+host = "10.0.0.8"
+port = 8080
+peer_id = "missing"
+"#,
+        )
+        .unwrap();
+        assert!(unknown.validate().is_err());
+    }
+
+    #[test]
+    fn access_rejects_loopback_opt_in_without_a_peer() {
+        let config: Config = toml::from_str(
+            r#"
+[access]
+[[access.mappings]]
+local = "127.0.0.1:8080"
+host = "10.0.0.8"
+port = 8080
+allow_loopback_target = true
+"#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn empty_legacy_access_does_not_create_a_peer() {
+        let mut config: Config = toml::from_str("[access]").unwrap();
+
+        assert!(!config.normalize_access_peers().unwrap());
+        assert!(config.access.unwrap().peers.is_empty());
+    }
+
+    #[test]
+    fn legacy_mapping_without_credential_migrates_to_default_peer() {
+        let mut config: Config = toml::from_str(
+            r#"
+[access]
+[[access.mappings]]
+local = "127.0.0.1:8080"
+host = "10.0.0.8"
+port = 8080
+"#,
+        )
+        .unwrap();
+
+        assert!(config.normalize_access_peers().unwrap());
+        let access = config.access.unwrap();
+        assert_eq!(access.peers.len(), 1);
+        assert!(access.peers[0].node_id.is_empty());
+        assert!(access.peers[0].token.is_empty());
+        assert_eq!(access.mappings[0].peer_id, access.peers[0].id);
+    }
+
+    #[test]
+    fn legacy_access_migration_keeps_root_relay_for_expose() {
+        let mut config: Config = toml::from_str(
+            r#"
+[relay]
+relays = [{ url = "https://relay.example.test", auth_token = "relay-token" }]
+
+[access]
+node_id = "legacy-node"
+token = "legacy-token"
+
+[expose]
+token = "expose-token"
+"#,
+        )
+        .unwrap();
+
+        assert!(config.normalize_access_peers().unwrap());
+        assert_eq!(config.relay.relays[0].auth_token, "relay-token");
+        assert_eq!(
+            config.access.as_ref().unwrap().peers[0].relay.relays[0].auth_token,
+            "relay-token"
+        );
+    }
+
     #[test]
     fn save_does_not_touch_a_preexisting_legacy_temp_file() {
         let path = test_config_path("client.toml");
@@ -1247,11 +1583,19 @@ mod tests {
     #[test]
     fn a_config_roundtrips_through_toml() {
         let cfg = AConfig {
-            node_id: "abc".into(),
-            token: "t".into(),
             web_bind: "127.0.0.1:9000".into(),
             web_token: String::new(),
+            peers: vec![PeerConfig {
+                id: "peer-one".into(),
+                name: "office".into(),
+                node_id: "abc".into(),
+                token: "t".into(),
+                published_targets: Vec::new(),
+                relay: RelaySettings::default(),
+            }],
             mappings: vec![Mapping {
+                peer_id: "peer-one".into(),
+                allow_loopback_target: false,
                 local: "127.0.0.1:80".into(),
                 host: "10.0.0.1".into(),
                 port: 80,
@@ -1505,6 +1849,8 @@ revoked = false
     #[test]
     fn mapping_validate_rejects_bad_input() {
         let m = |local: &str, host: &str, port: u16| Mapping {
+            peer_id: String::new(),
+            allow_loopback_target: false,
             local: local.into(),
             host: host.into(),
             port,
@@ -1610,7 +1956,7 @@ token = "shared-token"
 
         assert_eq!(loaded.path, unified);
         assert_eq!(loaded.config.expose.unwrap().token, "server-token");
-        assert_eq!(loaded.config.access.unwrap().token, "client-token");
+        assert_eq!(loaded.config.access.unwrap().peers[0].token, "client-token");
         assert!(loaded.path.exists());
         assert!(!server.exists());
         assert!(!client.exists());
@@ -1659,9 +2005,23 @@ token = "shared-token"
                 force_relay: true,
             },
             access: Some(AConfig {
-                node_id: "node-id".into(),
-                token: "access-token".into(),
+                peers: vec![PeerConfig {
+                    id: "peer-one".into(),
+                    name: "office".into(),
+                    node_id: "node-id".into(),
+                    token: "access-token".into(),
+                    published_targets: Vec::new(),
+                    relay: RelaySettings {
+                        relays: vec![RelayEntry {
+                            url: "https://peer-relay.example.test".into(),
+                            auth_token: "peer-relay-token".into(),
+                        }],
+                        force_relay: false,
+                    },
+                }],
                 mappings: vec![Mapping {
+                    peer_id: "peer-one".into(),
+                    allow_loopback_target: false,
                     local: "127.0.0.1:8080".into(),
                     host: "10.0.0.5".into(),
                     port: 8080,
@@ -1690,13 +2050,23 @@ token = "shared-token"
 
         let exported = config.redacted_for_export();
 
-        assert_eq!(exported.access.as_ref().unwrap().token, "");
+        assert_eq!(exported.access.as_ref().unwrap().peers[0].token, "");
+        assert!(
+            exported.access.as_ref().unwrap().peers[0]
+                .relay
+                .relays
+                .iter()
+                .all(|entry| entry.auth_token.is_empty())
+        );
         assert_eq!(exported.expose.as_ref().unwrap().token, "");
         assert_eq!(exported.expose.as_ref().unwrap().clients[0].token, "");
         assert_eq!(exported.relay.relays[0].url, config.relay.relays[0].url);
         assert!(exported.relay.relays[0].auth_token.is_empty());
         assert!(exported.relay.force_relay);
-        assert_eq!(exported.access.as_ref().unwrap().node_id, "node-id");
+        assert_eq!(
+            exported.access.as_ref().unwrap().peers[0].node_id,
+            "node-id"
+        );
         assert_eq!(
             exported.access.as_ref().unwrap().mappings,
             config.access.as_ref().unwrap().mappings
