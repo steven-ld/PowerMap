@@ -563,11 +563,61 @@ where
         }
     };
 
+    // A loopback result can reconnect a mapping to the expose process itself. This check is
+    // intentionally limited to literal loopback addresses: NAT hairpin routes and generic
+    // multi-machine TCP cycles cannot be inferred reliably from a single resolved destination.
+    if let Some(reason) = loopback_target_risk(&allowed) {
+        if !req.allow_loopback_target {
+            Metrics::inc(&m.target_denied);
+            Metrics::inc(&m.tunnels_failed);
+            ctx.audit.record(&AuditEvent {
+                ts_ms: now_ms(),
+                client_id: &client.id,
+                peer: &ctx.peer,
+                target: &target,
+                result: "loop_risk",
+                detail: &reason,
+            });
+            proto::write_status(&mut send, proto::STATUS_LOOP_RISK, &reason).await?;
+            bail!(reason);
+        }
+    }
+
+    // Preflight validates the same authentication and target policy as a real tunnel, but must
+    // never create a TCP/UDP socket. Acknowledged loopback targets deliberately get this normal
+    // ready status; an unacknowledged one returned above with STATUS_LOOP_RISK.
+    if req.preflight {
+        ctx.audit.record(&AuditEvent {
+            ts_ms: now_ms(),
+            client_id: &client.id,
+            peer: &ctx.peer,
+            target: &target,
+            result: "preflight_ok",
+            detail: "",
+        });
+        proto::write_status(&mut send, proto::STATUS_OK, "").await?;
+        return Ok(());
+    }
+
     // 4) 按隧道类型分派：UDP 绑定并连接 UDP 目标；TCP 拨号已校验地址。
     match req.kind {
         proto::TunnelKind::Udp => serve_udp(send, recv, &allowed, ctx, client, &target).await,
         proto::TunnelKind::Tcp => serve_tcp(send, recv, &allowed, ctx, client, &target).await,
     }
+}
+
+fn loopback_target_risk(allowed: &[SocketAddr]) -> Option<String> {
+    let loopbacks = allowed
+        .iter()
+        .filter(|address| address.ip().is_loopback())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    (!loopbacks.is_empty()).then(|| {
+        format!(
+            "目标解析为 expose 端 loopback 地址 {}；请显式确认 allow_loopback_target",
+            loopbacks.join(", ")
+        )
+    })
 }
 
 /// B 端 TCP 隧道：拨号已校验地址（带超时、逐个尝试），双向透传并支持半关闭。
@@ -827,6 +877,47 @@ mod tests {
         // 只允许 10/8，解析 127.0.0.1 应被拒（结果不在网段）
         let p = TargetPolicy::from_config(&["10.0.0.0/8".into()], &[]);
         assert!(p.resolve_allowed("127.0.0.1", 6379).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn expose_preflight_reports_loopback_risk_without_dialing() {
+        let registry = Arc::new(ClientRegistry::from_configs(&[config::ClientCred {
+            id: "test-client".into(),
+            token: "test-token".into(),
+            allow_networks: vec!["127.0.0.0/8".into()],
+            allow_ports: vec![1],
+            published_targets: vec![],
+            reverse: vec![],
+            max_streams: 0,
+            revoked: false,
+        }]));
+        let ctx = ServeCtx {
+            registry,
+            metrics: Metrics::new(),
+            audit: Audit::disabled(),
+            dial_timeout: Duration::from_millis(10),
+            peer: "test-peer".into(),
+        };
+        let request = proto::OpenRequest {
+            token: "test-token".into(),
+            host: "127.0.0.1".into(),
+            port: 1,
+            kind: proto::TunnelKind::Tcp,
+            register: false,
+            preflight: true,
+            allow_loopback_target: false,
+        };
+        let (client, server) = tokio::io::duplex(1024);
+        let (mut client_recv, _client_send) = tokio::io::split(client);
+        let (server_recv, server_send) = tokio::io::split(server);
+
+        let (result, status) = tokio::join!(
+            serve_forward(server_send, server_recv, request, &ctx),
+            proto::read_status(&mut client_recv),
+        );
+
+        assert!(result.is_err());
+        assert!(matches!(status, Ok(proto::OpenStatus::LoopRisk(_))));
     }
 
     #[test]

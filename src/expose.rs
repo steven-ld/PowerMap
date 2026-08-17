@@ -222,13 +222,15 @@ async fn run_reverse_listener(
                 port,
                 kind: proto::TunnelKind::Tcp,
                 register: false,
+                preflight: false,
+                allow_loopback_target: false,
             };
             if proto::write_open(&mut send, &req).await.is_err() {
                 return;
             }
             match proto::read_status(&mut recv).await {
-                Ok(Ok(())) => {}
-                Ok(Err(msg)) => {
+                Ok(proto::OpenStatus::Ok) => {}
+                Ok(proto::OpenStatus::Error(msg)) | Ok(proto::OpenStatus::LoopRisk(msg)) => {
                     tracing::debug!(reason = %msg, "A 端拒绝反向目标");
                     return;
                 }
@@ -503,11 +505,16 @@ mod integration_tests {
                 port: target_addr.port(),
                 kind: proto::TunnelKind::Tcp,
                 register: false,
+                preflight: false,
+                allow_loopback_target: true,
             },
         )
         .await
         .unwrap();
-        assert_eq!(proto::read_status(&mut recv).await.unwrap(), Ok(()));
+        assert_eq!(
+            proto::read_status(&mut recv).await.unwrap(),
+            proto::OpenStatus::Ok
+        );
 
         send.write_all(b"PowerMap!").await.unwrap();
         send.shutdown().await.unwrap();
@@ -532,6 +539,8 @@ mod integration_tests {
                 port: 6379,
                 kind: proto::TunnelKind::Tcp,
                 register: false,
+                preflight: false,
+                allow_loopback_target: false,
             },
         )
         .await
@@ -539,9 +548,46 @@ mod integration_tests {
 
         let status = proto::read_status(&mut recv).await.unwrap();
         assert!(
-            matches!(status, Err(message) if message.contains("6379") && message.contains("允许列表"))
+            matches!(status, proto::OpenStatus::Error(message) if message.contains("6379") && message.contains("允许列表"))
         );
         assert_eq!(metrics.target_denied.load(Ordering::Relaxed), 1);
+
+        connection.close(0u8.into(), b"test complete");
+        client_endpoint.close().await;
+        router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn normal_loopback_target_requires_explicit_acknowledgement() {
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let (router, server_addr, _) = start_server(vec![target_addr.port()]).await;
+        let (client_endpoint, connection) = connect(server_addr).await;
+        let (mut send, mut recv) = connection.open_bi().await.unwrap();
+        proto::write_open(
+            &mut send,
+            &proto::OpenRequest {
+                token: "test-token".into(),
+                host: "127.0.0.1".into(),
+                port: target_addr.port(),
+                kind: proto::TunnelKind::Tcp,
+                register: false,
+                preflight: false,
+                allow_loopback_target: false,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert!(matches!(
+            proto::read_status(&mut recv).await.unwrap(),
+            proto::OpenStatus::LoopRisk(_)
+        ));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), target.accept())
+                .await
+                .is_err()
+        );
 
         connection.close(0u8.into(), b"test complete");
         client_endpoint.close().await;
@@ -571,11 +617,16 @@ mod integration_tests {
                 port: target_addr.port(),
                 kind: proto::TunnelKind::Udp,
                 register: false,
+                preflight: false,
+                allow_loopback_target: true,
             },
         )
         .await
         .unwrap();
-        assert_eq!(proto::read_status(&mut recv).await.unwrap(), Ok(()));
+        assert_eq!(
+            proto::read_status(&mut recv).await.unwrap(),
+            proto::OpenStatus::Ok
+        );
 
         // 上行一个数据报，读回下行数据报（均带 2 字节长度前缀）。
         proto::write_datagram(&mut send, b"ping").await.unwrap();

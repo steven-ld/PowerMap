@@ -26,6 +26,16 @@ pub const MAX_DATAGRAM_LEN: u16 = u16::MAX;
 
 pub const STATUS_OK: u8 = 0;
 pub const STATUS_ERR: u8 = 1;
+/// The target resolved to a loopback address and needs an explicit operator acknowledgement.
+/// This deliberately uses the existing error-message framing so older clients fail closed.
+pub const STATUS_LOOP_RISK: u8 = 2;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenStatus {
+    Ok,
+    Error(String),
+    LoopRisk(String),
+}
 
 /// 隧道承载的传输类型。旧端不发送此字段时默认 Tcp，保持线上兼容。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -62,6 +72,13 @@ pub struct OpenRequest {
     /// 旧端省略时为 false，即普通正向隧道，保持兼容。
     #[serde(default)]
     pub register: bool,
+    /// Requests a non-dialing target-policy check on the expose side.
+    /// Older peers omit this field and continue to open normal tunnels.
+    #[serde(default)]
+    pub preflight: bool,
+    /// Explicit acknowledgement that the resolved target may be loopback on the expose side.
+    #[serde(default)]
+    pub allow_loopback_target: bool,
 }
 
 pub async fn write_open<W: AsyncWriteExt + Unpin>(
@@ -113,18 +130,21 @@ pub async fn write_status<W: AsyncWriteExt + Unpin>(
     Ok(())
 }
 
-/// A 端读取状态；Ok(Ok(())) 表示隧道已建立，可以开始透传
-pub async fn read_status<R: AsyncReadExt + Unpin>(
-    r: &mut R,
-) -> std::io::Result<Result<(), String>> {
+/// A 端读取状态。未知非成功状态仍按普通错误处理，保持 fail-closed 语义。
+pub async fn read_status<R: AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<OpenStatus> {
     let code = r.read_u8().await?;
     if code == STATUS_OK {
-        return Ok(Ok(()));
+        return Ok(OpenStatus::Ok);
     }
     let len = r.read_u16().await? as usize;
     let mut buf = vec![0u8; len];
     r.read_exact(&mut buf).await?;
-    Ok(Err(String::from_utf8_lossy(&buf).into_owned()))
+    let message = String::from_utf8_lossy(&buf).into_owned();
+    Ok(if code == STATUS_LOOP_RISK {
+        OpenStatus::LoopRisk(message)
+    } else {
+        OpenStatus::Error(message)
+    })
 }
 
 /// 在 QUIC 流上写一个带 2 字节长度前缀的 UDP 数据报。
@@ -177,4 +197,29 @@ pub fn from_hex(s: &str) -> Option<Vec<u8>> {
         .step_by(2)
         .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn loopback_target_requires_explicit_acknowledgement() {
+        let request: OpenRequest = serde_json::from_str(
+            r#"{"token":"legacy","host":"127.0.0.1","port":443,"kind":"tcp","register":false}"#,
+        )
+        .unwrap();
+        assert!(!request.preflight);
+        assert!(!request.allow_loopback_target);
+
+        let (mut writer, mut reader) = tokio::io::duplex(1024);
+        let write = tokio::spawn(async move {
+            write_status(&mut writer, STATUS_LOOP_RISK, "target resolves to loopback").await
+        });
+        assert!(matches!(
+            read_status(&mut reader).await,
+            Ok(OpenStatus::LoopRisk(message)) if message.contains("loopback")
+        ));
+        write.await.unwrap().unwrap();
+    }
 }

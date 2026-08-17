@@ -822,10 +822,56 @@ async fn open_tunnel(
 )> {
     let (mut send, mut recv) = conn.open_bi().await.context("打开隧道流失败")?;
     proto::write_open(&mut send, req).await?;
-    proto::read_status(&mut recv)
-        .await?
-        .map_err(|m| anyhow::anyhow!("B 拒绝: {m}"))?;
+    match proto::read_status(&mut recv).await? {
+        proto::OpenStatus::Ok => {}
+        proto::OpenStatus::Error(message) => {
+            anyhow::bail!("B 拒绝: {message}");
+        }
+        proto::OpenStatus::LoopRisk(message) => return Err(LoopRiskError(message).into()),
+    }
     Ok((Box::new(send), Box::new(recv)))
+}
+
+#[derive(Debug)]
+struct LoopRiskError(String);
+
+impl std::fmt::Display for LoopRiskError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "B reports an unacknowledged loopback target: {}", self.0)
+    }
+}
+
+impl std::error::Error for LoopRiskError {}
+
+async fn open_preflight(conn: &Connection, req: &proto::OpenRequest) -> Result<proto::OpenStatus> {
+    let (mut send, mut recv) = conn.open_bi().await.context("打开预检流失败")?;
+    proto::write_open(&mut send, req).await?;
+    Ok(proto::read_status(&mut recv).await?)
+}
+
+async fn open_preflight_with_retry(
+    link: &Link,
+    req: &proto::OpenRequest,
+) -> Result<proto::OpenStatus> {
+    let mut last: Option<anyhow::Error> = None;
+    for attempt in 0..2u8 {
+        let conn = match link.get().await {
+            Ok(connection) => connection,
+            Err(error) => {
+                last = Some(error);
+                continue;
+            }
+        };
+        match open_preflight(&conn, req).await {
+            Ok(status) => return Ok(status),
+            Err(error) => {
+                link.invalidate().await;
+                tracing::warn!(attempt, error = %error, "预检握手失败，重试");
+                last = Some(error);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("无法建立预检流")))
 }
 
 /// 建立隧道（连接/握手失败时重连重试一次）。
@@ -3424,6 +3470,19 @@ mod integration_tests {
         assert_eq!(body["checks"]["target"]["ok"], false);
     }
 
+    #[test]
+    fn target_preflight_status_surfaces_loopback_as_structured_warning() {
+        let (check, loop_risk) = target_preflight_check(
+            proto::OpenStatus::LoopRisk("target resolves to loopback".into()),
+            "127.0.0.1",
+            443,
+        );
+
+        assert!(!check.ok);
+        assert!(check.detail.contains("loopback"));
+        assert_eq!(loop_risk.unwrap().message, "target resolves to loopback");
+    }
+
     #[tokio::test]
     async fn status_exposes_connected_ip_list_for_the_console() {
         let app = app(test_state("").await);
@@ -4245,6 +4304,8 @@ struct DomainMappingBody {
     remote_port: Option<u16>,
     #[serde(default)]
     enabled: Option<bool>,
+    #[serde(default)]
+    allow_loopback_target: Option<bool>,
 }
 
 fn default_domain_remote_port() -> u16 {
@@ -4488,9 +4549,30 @@ async fn preflight_domain_mapping(
         port: mapping.remote_port,
         kind: proto::TunnelKind::Tcp,
         register: false,
+        preflight: true,
+        allow_loopback_target: mapping.allow_loopback_target,
     };
-    match tokio::time::timeout(Duration::from_secs(8), open_with_retry(link, &request)).await {
-        Ok(Ok((_send, _recv))) => Ok(()),
+    match tokio::time::timeout(
+        Duration::from_secs(8),
+        open_preflight_with_retry(link, &request),
+    )
+    .await
+    {
+        Ok(Ok(proto::OpenStatus::Ok)) => Ok(()),
+        Ok(Ok(proto::OpenStatus::LoopRisk(message))) => Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "{}:{} 解析为 loopback 目标：{message}",
+                mapping.domain, mapping.remote_port
+            ),
+        )),
+        Ok(Ok(proto::OpenStatus::Error(error))) => Err((
+            StatusCode::BAD_GATEWAY,
+            format!(
+                "无法从 expose 端验证 {}:{}：{}",
+                mapping.domain, mapping.remote_port, error
+            ),
+        )),
         Ok(Err(error)) => Err((
             StatusCode::BAD_GATEWAY,
             format!(
@@ -4638,6 +4720,8 @@ async fn start_shared_domain_listener(st: &AppState, listener: TcpListener) {
                             port: mapping.remote_port,
                             kind: proto::TunnelKind::Tcp,
                             register: false,
+                            preflight: false,
+                            allow_loopback_target: mapping.allow_loopback_target,
                         };
                         drop(mapping);
                         let _permit = permit;
@@ -4749,7 +4833,7 @@ async fn create_domain_mapping(
     drop(domains);
     let mapping = config::DomainMapping {
         peer_id: peer_id.unwrap_or_default(),
-        allow_loopback_target: false,
+        allow_loopback_target: body.allow_loopback_target.unwrap_or(false),
         domain: body.domain,
         remote_port: body.remote_port.unwrap_or_else(default_domain_remote_port),
         enabled: body.enabled.unwrap_or(true),
@@ -4810,7 +4894,9 @@ async fn update_domain_mapping(
     let old_mapping = old_handle.read().await.clone();
     let mapping = config::DomainMapping {
         peer_id: old_mapping.peer_id.clone(),
-        allow_loopback_target: old_mapping.allow_loopback_target,
+        allow_loopback_target: body
+            .allow_loopback_target
+            .unwrap_or(old_mapping.allow_loopback_target),
         domain: body.domain,
         remote_port: body.remote_port.unwrap_or(old_mapping.remote_port),
         enabled: body.enabled.unwrap_or(old_mapping.enabled),
@@ -4821,7 +4907,10 @@ async fn update_domain_mapping(
     if mapping.enabled == old_mapping.enabled {
         // This changes the remote destination without rebuilding the shared loopback socket.
         // Validate it before exposing the new value to future connections or persistence.
-        if mapping.enabled && mapping.remote_port != old_mapping.remote_port {
+        if mapping.enabled
+            && (mapping.remote_port != old_mapping.remote_port
+                || mapping.allow_loopback_target != old_mapping.allow_loopback_target)
+        {
             (st.domain_preflight)(&mapping).await?;
         }
         *old_handle.write().await = mapping;
@@ -5008,6 +5097,8 @@ struct CreateBody {
     /// HTTP 网关模式下的按 Host 路由表；仅 http 模式有意义。
     #[serde(default)]
     routes: Option<Vec<config::HttpRoute>>,
+    #[serde(default)]
+    allow_loopback_target: Option<bool>,
 }
 
 #[derive(Serialize)]
@@ -5019,7 +5110,79 @@ struct PreflightCheck {
 #[derive(Serialize)]
 struct PreflightResult {
     ready: bool,
+    loop_risk: Option<LoopRisk>,
     checks: BTreeMap<&'static str, PreflightCheck>,
+}
+
+#[derive(Serialize)]
+struct LoopRisk {
+    message: String,
+}
+
+fn target_preflight_check(
+    status: proto::OpenStatus,
+    host: &str,
+    port: u16,
+) -> (PreflightCheck, Option<LoopRisk>) {
+    match status {
+        proto::OpenStatus::Ok => (
+            PreflightCheck {
+                ok: true,
+                detail: format!("{host}:{port} 可由 server 端访问"),
+            },
+            None,
+        ),
+        proto::OpenStatus::LoopRisk(message) => (
+            PreflightCheck {
+                ok: false,
+                detail: message.clone(),
+            },
+            Some(LoopRisk { message }),
+        ),
+        proto::OpenStatus::Error(message) => (
+            PreflightCheck {
+                ok: false,
+                detail: message,
+            },
+            None,
+        ),
+    }
+}
+
+async fn require_mapping_loopback_acknowledgement(
+    st: &AppState,
+    mapping: &config::Mapping,
+) -> Result<(), (StatusCode, String)> {
+    // Offline configuration remains supported. Once a peer is reachable, its own resolver is
+    // authoritative; every live tunnel still enforces the same rule before dialing.
+    if !st.link.configured().await {
+        return Ok(());
+    }
+    let kind = match mapping.mode {
+        config::MappingMode::Udp => proto::TunnelKind::Udp,
+        _ => proto::TunnelKind::Tcp,
+    };
+    let request = proto::OpenRequest {
+        token: st.link.token().await,
+        host: mapping.host.clone(),
+        port: mapping.port,
+        kind,
+        register: false,
+        preflight: true,
+        allow_loopback_target: mapping.allow_loopback_target,
+    };
+    match tokio::time::timeout(
+        Duration::from_secs(8),
+        open_preflight_with_retry(&st.link, &request),
+    )
+    .await
+    {
+        Ok(Ok(proto::OpenStatus::LoopRisk(message))) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("目标需要显式确认 loopback 风险：{message}"),
+        )),
+        Ok(Ok(_)) | Ok(Err(_)) | Err(_) => Ok(()),
+    }
 }
 
 /// POST /api/mappings/preflight --- transiently verifies the same remote path a
@@ -5031,7 +5194,7 @@ async fn preflight(
     ensure_legacy_mapping_mutation_compatible(&st).await?;
     let mapping = config::Mapping {
         peer_id: String::new(),
-        allow_loopback_target: false,
+        allow_loopback_target: body.allow_loopback_target.unwrap_or(false),
         local: body.local,
         host: body.host,
         port: body.port,
@@ -5095,15 +5258,21 @@ async fn preflight(
 
     let local_ready = checks["local_listener"].ok;
     let target = if !local_ready {
-        PreflightCheck {
-            ok: false,
-            detail: "请先解决本地监听地址或端口占用问题".into(),
-        }
+        (
+            PreflightCheck {
+                ok: false,
+                detail: "请先解决本地监听地址或端口占用问题".into(),
+            },
+            None,
+        )
     } else if !configured {
-        PreflightCheck {
-            ok: false,
-            detail: "需要有效凭证后才能验证目标服务".into(),
-        }
+        (
+            PreflightCheck {
+                ok: false,
+                detail: "需要有效凭证后才能验证目标服务".into(),
+            },
+            None,
+        )
     } else {
         // 预检按映射模式选对应隧道类型：udp 校验 UDP 目标可达，其余（含 http 网关）走 tcp。
         let kind = match mapping.mode {
@@ -5116,27 +5285,39 @@ async fn preflight(
             port: mapping.port,
             kind,
             register: false,
+            preflight: true,
+            allow_loopback_target: mapping.allow_loopback_target,
         };
-        match tokio::time::timeout(Duration::from_secs(8), open_with_retry(&st.link, &request))
-            .await
+        match tokio::time::timeout(
+            Duration::from_secs(8),
+            open_preflight_with_retry(&st.link, &request),
+        )
+        .await
         {
-            Ok(Ok((_send, _recv))) => PreflightCheck {
-                ok: true,
-                detail: format!("{}:{} 可由 server 端访问", mapping.host, mapping.port),
-            },
-            Ok(Err(error)) => PreflightCheck {
-                ok: false,
-                detail: diagnostic_reason(&error),
-            },
-            Err(_) => PreflightCheck {
-                ok: false,
-                detail: "验证目标服务超时，请检查网络、白名单和目标端口".into(),
-            },
+            Ok(Ok(status)) => target_preflight_check(status, &mapping.host, mapping.port),
+            Ok(Err(error)) => (
+                PreflightCheck {
+                    ok: false,
+                    detail: diagnostic_reason(&error),
+                },
+                None,
+            ),
+            Err(_) => (
+                PreflightCheck {
+                    ok: false,
+                    detail: "验证目标服务超时，请检查网络、白名单和目标端口".into(),
+                },
+                None,
+            ),
         }
     };
-    checks.insert("target", target);
+    checks.insert("target", target.0);
     let ready = checks.values().all(|check| check.ok);
-    Ok(Json(PreflightResult { ready, checks }))
+    Ok(Json(PreflightResult {
+        ready,
+        loop_risk: target.1,
+        checks,
+    }))
 }
 
 async fn create(
@@ -5146,7 +5327,7 @@ async fn create(
     let peer_id = legacy_default_peer_id_for_route(&st).await?;
     let mapping = config::Mapping {
         peer_id: peer_id.unwrap_or_default(),
-        allow_loopback_target: false,
+        allow_loopback_target: body.allow_loopback_target.unwrap_or(false),
         local: body.local,
         host: body.host,
         port: body.port,
@@ -5158,6 +5339,7 @@ async fn create(
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
     }
+    require_mapping_loopback_acknowledgement(&st, &mapping).await?;
     // 先查上限与重复，再真正绑定端口，避免无谓占用。
     {
         let g = st.inner.lock().await;
@@ -5380,9 +5562,15 @@ async fn start_tcp_mapping(
                             id: conn_id,
                         };
                         // 每条隧道建立时实时读取当前令牌，凭证轮换后新连接立即生效。
-                        let (mode, host, port, routes) = {
+                        let (mode, host, port, routes, allow_loopback_target) = {
                             let m = mapping.read().await;
-                            (m.mode, m.host.clone(), m.port, m.routes.clone())
+                            (
+                                m.mode,
+                                m.host.clone(),
+                                m.port,
+                                m.routes.clone(),
+                                m.allow_loopback_target,
+                            )
                         };
                         // HTTP 网关：窥探 Host 头选后端，读走的头随后重放给后端。
                         let mut tcp = tcp;
@@ -5393,7 +5581,7 @@ async fn start_tcp_mapping(
                                 Ok((buf, host_header)) => {
                                     let snapshot = config::Mapping {
                                         peer_id: String::new(),
-                                        allow_loopback_target: false,
+                                        allow_loopback_target,
                                         local: String::new(),
                                         host: host.clone(),
                                         port,
@@ -5423,6 +5611,8 @@ async fn start_tcp_mapping(
                             port: target_port,
                             kind: proto::TunnelKind::Tcp,
                             register: false,
+                            preflight: false,
+                            allow_loopback_target,
                         };
                         tokio::select! {
                             _ = child.cancelled() => {}
@@ -5533,9 +5723,9 @@ async fn start_udp_mapping(
                     stats: stats.clone(),
                     id: conn_id,
                 };
-                let (host, port) = {
+                let (host, port, allow_loopback_target) = {
                     let m = mapping.read().await;
-                    (m.host.clone(), m.port)
+                    (m.host.clone(), m.port, m.allow_loopback_target)
                 };
                 let req = proto::OpenRequest {
                     token: link.token().await,
@@ -5543,6 +5733,8 @@ async fn start_udp_mapping(
                     port,
                     kind: proto::TunnelKind::Udp,
                     register: false,
+                    preflight: false,
+                    allow_loopback_target,
                 };
                 tokio::select! {
                     _ = child.cancelled() => {}
@@ -5673,7 +5865,9 @@ async fn update(
     };
     let mapping = config::Mapping {
         peer_id: was_peer_id,
-        allow_loopback_target: was_allow_loopback_target,
+        allow_loopback_target: body
+            .allow_loopback_target
+            .unwrap_or(was_allow_loopback_target),
         local: body.local,
         host: body.host,
         port: body.port,
@@ -5685,6 +5879,7 @@ async fn update(
     if let Err(reason) = mapping.validate() {
         return Err((StatusCode::BAD_REQUEST, reason));
     }
+    require_mapping_loopback_acknowledgement(&st, &mapping).await?;
 
     // 本地地址与启用状态都没变：复用原把手，原子更新目标，无重绑竞争。
     if mapping.local == id && mapping.enabled == was_enabled {
@@ -7229,12 +7424,14 @@ pub async fn run(
                 port: 0,
                 kind: proto::TunnelKind::Tcp,
                 register: true,
+                preflight: false,
+                allow_loopback_target: false,
             };
             if proto::write_open(&mut send, &req).await.is_err() {
                 continue;
             }
             match proto::read_status(&mut recv).await {
-                Ok(Ok(())) => {
+                Ok(proto::OpenStatus::Ok) => {
                     reverse_state.events.push(
                         "info",
                         "reverse",
@@ -7242,7 +7439,7 @@ pub async fn run(
                     );
                     tracing::info!("反向注册成功，开始接受 B 的反向流");
                 }
-                Ok(Err(msg)) => {
+                Ok(proto::OpenStatus::Error(msg)) | Ok(proto::OpenStatus::LoopRisk(msg)) => {
                     // B 未为该客户配置反向监听等：稍等再试，避免忙循环。
                     tracing::debug!(reason = %msg, "B 拒绝反向注册");
                     tokio::time::sleep(Duration::from_secs(20)).await;
