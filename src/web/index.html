@@ -1180,7 +1180,8 @@
         </div>
         <section id="nodeRemotePanel" class="node-panel node-table" role="tabpanel" aria-labelledby="node-tab-remote">
           <div class="node-table-head"><span id="remoteNodeTitle" class="node-table-title">远端节点</span></div>
-          <p class="node-table-copy">粘贴对方 expose 设备生成的 <kbd>powermap.credential.json</kbd> 内容，接入后立即切换连接目标并重连。</p>
+          <p id="remoteNodeCopy" class="node-table-copy">粘贴对方 expose 设备生成的 <kbd>powermap.credential.json</kbd> 内容，接入后立即切换连接目标并重连。</p>
+          <p id="peerManagedNotice" class="hint hidden">当前配置由“对端管理”维护。请在那里编辑每个对端的凭证和专用中继。</p>
           <div class="cred-status">
             <span id="credBadge" class="badge no">未配置</span>
             <span id="credNode" class="node-id"></span>
@@ -1203,7 +1204,7 @@
           <div class="node-table-head"><span id="ownNodeTitle" class="node-table-title">本机节点</span><button id="copyOwnCredential" class="btn btn-outline btn-sm" type="button" style="display:none">复制分享凭证</button></div>
           <p class="node-table-copy">把本机凭证交给对方，对方即可在自己的“远端节点”中接入。</p>
           <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
-          <label class="share-relay-option" for="shareRelayConfig">
+          <label id="shareRelayOption" class="share-relay-option" for="shareRelayConfig">
             <input id="shareRelayConfig" name="share_relay_config" type="checkbox" />
             <span><strong>同时分享中继配置</strong><small>复制的 JSON 将包含自定义中继地址、Relay token 和强制中继开关；接收方导入后会应用这些设置。未勾选时，对方保留自己的中继配置。</small></span>
           </label>
@@ -1223,6 +1224,7 @@
         </p>
         <form id="reverseForm">
           <div class="grid cred">
+            <div class="field"><label class="lbl" for="revPeer">对端</label><select id="revPeer" name="peer_id"></select></div>
             <div class="field"><label class="lbl" for="revNets">允许回拨网段（CIDR，逗号分隔）</label><input id="revNets" class="mono" placeholder="127.0.0.0/8, 192.168.1.0/24" spellcheck="false" autocomplete="off" autocapitalize="off" /></div>
             <div class="field"><label class="lbl" for="revPorts">允许回拨端口（逗号分隔）</label><input id="revPorts" class="mono" placeholder="8080, 5900" spellcheck="false" autocomplete="off" /></div>
             <button type="submit" class="btn btn-primary">保存反向策略</button>
@@ -1511,6 +1513,7 @@ const TAB_KEY = 'powermap_tab';
 let localRelay = { relays: [], force_relay: false, restart_required: false };
 let relayDirty = false;
 let relayProbeByUrl = new Map();
+let peerManagedMode = false;
 const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', peers: 'tabPeers', connection: 'tabConnection', relay: 'tabRelay', events: 'tabEvents', about: 'tabAbout' };
 const TAB_META = {
   dashboard: { title: '概览', subtitle: '查看节点连接、映射隧道和实时流量。' },
@@ -1522,7 +1525,8 @@ const TAB_META = {
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
   about: { title: '关于', subtitle: '查看当前版本、发布说明与 PowerMap 功能。' },
 };
-function selectTab(name) {
+function selectTab(name, { refreshPeerList = true } = {}) {
+  if (name === 'relay' && peerManagedMode) name = 'peers';
   if (!tabViews[name]) name = 'dashboard';
   document.getElementById('mainPage').dataset.activeTab = name;
   for (const [k, id] of Object.entries(tabViews)) {
@@ -1545,7 +1549,7 @@ function selectTab(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
   if (name === 'domains') refreshDomains();
-  if (name === 'peers') refreshPeers();
+  if (name === 'peers' && refreshPeerList) refreshPeers();
   if (name === 'relay' && !relayDirty) refreshRelay();
   if (name === 'about') setTimeout(() => {
     if (!checkedUpdate) checkUpdate({ silent: true });
@@ -1828,6 +1832,9 @@ async function api(path, opts) {
 // ── 对端管理：名称是展示标识；映射始终保存 peer_id，改名不会改变归属。 ──
 let peers = [];
 let peerEditId = null;
+function isLegacyPeerCollection(list) {
+  return Array.isArray(list) && list.length === 1 && String(list[0]?.name || '') === '默认对端';
+}
 function peerName(peerId) {
   const peer = peers.find(item => item.id === peerId);
   return peer ? peer.name : '';
@@ -1860,6 +1867,7 @@ function refreshPeerSelects() {
   const domains = document.getElementById('domainPeer');
   if (mapping) populatePeerSelect(mapping, mapping.value, mapping.dataset.legacy === '1');
   if (domains) populatePeerSelect(domains, domains.value, false);
+  populateReversePeerSelect();
 }
 function relayEntriesText(relay) {
   return (relay?.relays || []).map(entry => [entry.url, entry.auth_token].filter(Boolean).join(' ')).join('\n');
@@ -1933,6 +1941,7 @@ async function refreshPeers() {
     if (!response.ok) throw new Error((await response.text()) || '读取对端失败');
     const list = await response.json();
     renderPeers(list);
+    if (!isLegacyPeerCollection(peers)) enterPeerManagedMode({ refreshPeerList: false });
     return peers;
   } catch (error) {
     if (String(error) !== 'Error: unauthorized') console.warn('读取对端失败', error);
@@ -2294,6 +2303,45 @@ async function copyText(t) {
 // ── 连接设置：凭证状态 / 复制 / 接入 ──
 let curCred = { node_id: '', token: '', configured: false, token_hidden: false, published_targets: [] };
 let ownCredential = null;
+let legacyCredentialReadSucceeded = false;
+let legacyRelayReadSucceeded = false;
+let reversePeerId = '';
+function isLegacyGlobalConflict(response) {
+  return response && response.status === 409;
+}
+function renderPeerManagedGlobalControls() {
+  curCred = { node_id: '', token: '', configured: false, token_hidden: false, published_targets: [] };
+  localRelay = { relays: [], force_relay: false, restart_required: false };
+  relayDirty = false;
+  relayProbeByUrl = new Map();
+  document.getElementById('remoteNodeTitle').textContent = '远端节点（由对端管理）';
+  document.getElementById('remoteNodeCopy').classList.add('hidden');
+  document.getElementById('peerManagedNotice').classList.remove('hidden');
+  document.getElementById('credBadge').textContent = '由对端管理';
+  document.getElementById('credBadge').className = 'badge no';
+  document.getElementById('credNode').textContent = '';
+  document.getElementById('copyNode').style.display = 'none';
+  document.getElementById('copyToken').style.display = 'none';
+  document.querySelectorAll('#credForm input, #credForm textarea, #credForm button').forEach(control => { control.disabled = true; });
+  document.getElementById('shareRelayConfig').checked = false;
+  document.getElementById('shareRelayConfig').disabled = true;
+  document.getElementById('shareRelayOption').classList.add('hidden');
+  document.getElementById('forceRelay').checked = false;
+  document.getElementById('relayRows').replaceChildren();
+  document.getElementById('relayEmpty').classList.add('hidden');
+  document.getElementById('relayModeStatus').textContent = '由对端管理';
+  document.getElementById('relayModeStatus').classList.remove('custom');
+  document.getElementById('relayRuntimeNote').textContent = '请在“对端管理”中为每个对端维护专用中继和连接路径。';
+  document.querySelectorAll('#relayForm input, #relayForm button').forEach(control => { control.disabled = true; });
+  document.getElementById('saveRelayBtn').removeAttribute('aria-busy');
+}
+function enterPeerManagedMode({ refreshPeerList = true } = {}) {
+  if (peerManagedMode) return;
+  peerManagedMode = true;
+  renderPeerManagedGlobalControls();
+  if (location.hash.slice(1) === 'relay') selectTab('peers', { refreshPeerList: false });
+  if (refreshPeerList) refreshPeers();
+}
 function setRelayFormError(message = '') {
   const error = document.getElementById('relayFormError');
   error.textContent = message;
@@ -2448,13 +2496,18 @@ document.getElementById('addRelayBtn').addEventListener('click', () => {
   document.querySelector('#relayRows .relay-row:last-child .relay-url').focus();
 });
 async function refreshRelay() {
-  if (relayDirty) return localRelay;
+  if (peerManagedMode || relayDirty) return localRelay;
   try {
     const response = await api('/api/relay');
+    if (isLegacyGlobalConflict(response)) {
+      enterPeerManagedMode();
+      return null;
+    }
     if (!response.ok) throw new Error((await response.text()) || '读取中继配置失败');
     const relay = await response.json();
     // A slow initial/tab refresh must never replace text the operator started entering.
-    if (relayDirty) return localRelay;
+    if (peerManagedMode || relayDirty) return localRelay;
+    legacyRelayReadSucceeded = true;
     renderRelay(relay);
     return relay;
   } catch (error) {
@@ -2464,6 +2517,8 @@ async function refreshRelay() {
   }
 }
 document.getElementById('probeRelaysBtn').addEventListener('click', async () => {
+  if (peerManagedMode) { selectTab('peers'); return; }
+  if (!legacyRelayReadSucceeded) { toast('正在确认旧版中继配置，请稍后重试', 'err'); return; }
   const button = document.getElementById('probeRelaysBtn');
   if (relayDirty) {
     const message = '请先保存中继配置，再测试已保存的中继。';
@@ -2481,8 +2536,14 @@ document.getElementById('probeRelaysBtn').addEventListener('click', async () => 
   button.textContent = '测试中…';
   try {
     const response = await api('/api/relay/probe');
+    if (isLegacyGlobalConflict(response)) {
+      enterPeerManagedMode();
+      selectTab('peers');
+      return;
+    }
     if (!response.ok) throw new Error((await response.text()) || '中继测速失败');
     const report = await response.json();
+    if (peerManagedMode) return;
     relayProbeByUrl = new Map((report.relays || []).map(result => [String(result.url || '').trim(), result]));
     renderRelayRows(localRelay.relays);
   } catch (error) {
@@ -2490,12 +2551,16 @@ document.getElementById('probeRelaysBtn').addEventListener('click', async () => 
     renderRelayRows(localRelay.relays);
     toast(String(error.message || error), 'err');
   } finally {
-    button.disabled = false;
-    button.textContent = '测试全部';
+    if (!peerManagedMode) {
+      button.disabled = false;
+      button.textContent = '测试全部';
+    }
   }
 });
 document.getElementById('relayForm').addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (peerManagedMode) { selectTab('peers'); return; }
+  if (!legacyRelayReadSucceeded) { toast('正在确认旧版中继配置，请稍后重试', 'err'); return; }
   const button = document.getElementById('saveRelayBtn');
   const relays = relayEntriesForSave();
   if (relays.length > 8) {
@@ -2515,8 +2580,14 @@ document.getElementById('relayForm').addEventListener('submit', async (event) =>
     const response = await api('/api/relay', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(relay),
     });
+    if (isLegacyGlobalConflict(response)) {
+      enterPeerManagedMode();
+      selectTab('peers');
+      return;
+    }
     if (!response.ok) throw new Error((await response.text()) || '保存中继配置失败');
     const saved = await response.json();
+    if (peerManagedMode) return;
     renderRelay(saved);
     toast(saved.restart_required
       ? '强制中继配置已保存；请重启 PowerMap 后生效'
@@ -2533,9 +2604,11 @@ document.getElementById('relayForm').addEventListener('submit', async (event) =>
       toast(message, 'err');
     }
   } finally {
-    button.disabled = false;
-    button.textContent = defaultLabel;
-    button.removeAttribute('aria-busy');
+    if (!peerManagedMode) {
+      button.disabled = false;
+      button.textContent = defaultLabel;
+      button.removeAttribute('aria-busy');
+    }
   }
 });
 async function refreshOwnNode() {
@@ -2551,7 +2624,15 @@ async function refreshOwnNode() {
 }
 async function refreshCred() {
   try {
-    const c = await (await api('/api/credential')).json();
+    const response = await api('/api/credential');
+    if (isLegacyGlobalConflict(response)) {
+      enterPeerManagedMode();
+      return null;
+    }
+    if (!response.ok) throw new Error((await response.text()) || '读取凭证失败');
+    const c = await response.json();
+    if (peerManagedMode) return null;
+    legacyCredentialReadSucceeded = true;
     curCred = c;
     const badge = document.getElementById('credBadge');
     badge.textContent = c.configured ? '已配置' : '未配置';
@@ -2700,10 +2781,19 @@ document.getElementById('copyOwnCredential').addEventListener('click', async () 
   try {
     const credential = Object.assign({}, ownCredential);
     delete credential.relay;
-    if (document.getElementById('shareRelayConfig').checked) {
+    if (!peerManagedMode && document.getElementById('shareRelayConfig').checked) {
+      if (!legacyRelayReadSucceeded) {
+        ioMsg('正在确认旧版中继配置，请稍后重试', 'err');
+        return;
+      }
       const response = await api('/api/relay');
+      if (isLegacyGlobalConflict(response)) {
+        enterPeerManagedMode();
+        return;
+      }
       if (!response.ok) throw new Error((await response.text()) || '读取本机中继配置失败');
       const relay = await response.json();
+      if (peerManagedMode) return;
       delete relay.restart_required;
       credential.relay = relay;
     }
@@ -2715,6 +2805,8 @@ document.getElementById('copyOwnCredential').addEventListener('click', async () 
 });
 document.getElementById('credForm').addEventListener('submit', async (e) => {
   e.preventDefault();
+  if (peerManagedMode) { selectTab('peers'); return; }
+  if (!legacyCredentialReadSucceeded) { toast('正在确认旧版连接配置，请稍后重试', 'err'); return; }
   let node_id = document.getElementById('credNodeIn').value.trim();
   let tok = document.getElementById('credTokenIn').value.trim();
   let published_targets = [];
@@ -2745,8 +2837,14 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(credential),
   });
+  if (isLegacyGlobalConflict(r)) {
+    enterPeerManagedMode();
+    selectTab('peers');
+    return;
+  }
   if (!r.ok) { toast((await r.text()) || '接入失败', 'err'); return; }
   const updated = await r.json();
+  if (peerManagedMode) return;
   document.getElementById('credJson').value = '';
   document.getElementById('credNodeIn').value = '';
   document.getElementById('credTokenIn').value = '';
@@ -2757,17 +2855,47 @@ document.getElementById('credForm').addEventListener('submit', async (e) => {
 });
 
 // ── 反向映射策略：读取并回填当前 deny-all 白名单，保存时解析逗号分隔的网段/端口。 ──
+function legacyDefaultPeer() {
+  return peers.length === 1 && peers[0].name === '默认对端' ? peers[0] : null;
+}
+function populateReversePeerSelect(selectedId) {
+  const select = document.getElementById('revPeer');
+  if (!select) return;
+  const prior = selectedId === undefined ? (select.value || reversePeerId) : selectedId;
+  select.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = peers.length ? '请选择对端' : '请先添加对端';
+  select.append(placeholder);
+  for (const peer of peers) {
+    const option = document.createElement('option');
+    option.value = peer.id;
+    option.textContent = peer.name;
+    select.append(option);
+  }
+  if (peers.some(peer => peer.id === prior)) select.value = prior;
+  else {
+    const legacyDefault = legacyDefaultPeer();
+    select.value = legacyDefault ? legacyDefault.id : '';
+  }
+}
+document.getElementById('revPeer').addEventListener('change', event => {
+  reversePeerId = event.currentTarget.value;
+});
 async function refreshReverse() {
   try {
     const r = await (await api('/api/reverse')).json();
+    reversePeerId = String(r.peer_id || '');
     document.getElementById('revEnabled').checked = !!r.enabled;
     document.getElementById('revNets').value = (r.allow_networks || []).join(', ');
     document.getElementById('revPorts').value = (r.allow_ports || []).join(', ');
+    populateReversePeerSelect(reversePeerId);
   } catch (e) { if (String(e) === 'Error: unauthorized') return; }
 }
 document.getElementById('reverseForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   const enabled = document.getElementById('revEnabled').checked;
+  const peer_id = document.getElementById('revPeer').value;
   const allow_networks = document.getElementById('revNets').value
     .split(',').map(s => s.trim()).filter(Boolean);
   const ports = [];
@@ -2779,9 +2907,14 @@ document.getElementById('reverseForm').addEventListener('submit', async (e) => {
   if (enabled && (allow_networks.length === 0 || ports.length === 0)) {
     toast('启用反向映射时，允许网段和端口都不能为空（默认全部拒绝）', 'err'); return;
   }
+  if (enabled && !peer_id) {
+    toast('启用反向映射时必须选择对端', 'err');
+    document.getElementById('revPeer').focus();
+    return;
+  }
   const r = await api('/api/reverse', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled, allow_networks, allow_ports: ports }),
+    body: JSON.stringify({ enabled, peer_id, allow_networks, allow_ports: ports }),
   });
   if (!r.ok) { toast((await r.text()) || '保存失败', 'err'); return; }
   await refreshReverse();
