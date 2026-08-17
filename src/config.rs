@@ -306,6 +306,9 @@ pub struct AConfig {
     /// 默认关闭；即使 B 端配置了反向监听，A 端不开此开关也一律拒绝，避免被动暴露本机服务。
     #[serde(default)]
     pub reverse_enabled: bool,
+    /// 反向映射使用的对端。启用时必须指向一个已配置的 peer。
+    #[serde(default)]
+    pub reverse_peer_id: String,
     /// 反向映射允许 A 端拨号的目标网段（CIDR）。
     /// 与正向白名单相反：留空表示**全部拒绝**（deny-all），必须显式列出才放行。
     #[serde(default)]
@@ -332,6 +335,7 @@ impl Default for AConfig {
             mappings: Vec::new(),
             domain_mappings: Vec::new(),
             reverse_enabled: false,
+            reverse_peer_id: String::new(),
             reverse_allow_networks: Vec::new(),
             reverse_allow_ports: Vec::new(),
         }
@@ -444,6 +448,18 @@ impl AConfig {
             }
             if !peer_names.insert(peer.name.trim().to_owned()) {
                 return Err(format!("peer name {} 重复", peer.name.trim()));
+            }
+        }
+
+        if self.reverse_enabled {
+            if self.reverse_peer_id.trim().is_empty() {
+                return Err("反向映射启用时必须指定 reverse_peer_id".into());
+            }
+            if !peer_ids.contains(self.reverse_peer_id.as_str()) {
+                return Err(format!(
+                    "反向映射引用了未知 reverse_peer_id {}",
+                    self.reverse_peer_id
+                ));
             }
         }
 
@@ -941,48 +957,54 @@ impl Config {
         let Some(access) = &mut self.access else {
             return Ok(false);
         };
-        if !access.peers.is_empty() {
-            return Ok(false);
+        let mut changed = false;
+        if access.peers.is_empty() {
+            let needs_peer = !access.node_id.trim().is_empty()
+                || !access.token.trim().is_empty()
+                || !access.published_targets.is_empty()
+                || !access.relay.relays.is_empty()
+                || access.relay.force_relay
+                || !access.mappings.is_empty()
+                || !access.domain_mappings.is_empty()
+                || access.reverse_enabled
+                || root_relay_requires_access_peer;
+            if needs_peer {
+                let relay = if access.relay != RelaySettings::default() {
+                    access.relay.clone()
+                } else {
+                    self.relay.clone()
+                };
+                let peer = PeerConfig {
+                    id: new_peer_id(),
+                    name: "默认对端".to_string(),
+                    node_id: std::mem::take(&mut access.node_id),
+                    token: std::mem::take(&mut access.token),
+                    published_targets: std::mem::take(&mut access.published_targets),
+                    relay,
+                };
+                peer.validate()?;
+                for mapping in &mut access.mappings {
+                    mapping.peer_id = peer.id.clone();
+                }
+                for mapping in &mut access.domain_mappings {
+                    mapping.peer_id = peer.id.clone();
+                }
+                access.relay = RelaySettings::default();
+                access.peers.push(peer);
+                if self.expose.is_none() {
+                    self.relay = RelaySettings::default();
+                }
+                changed = true;
+            }
         }
-
-        let needs_peer = !access.node_id.trim().is_empty()
-            || !access.token.trim().is_empty()
-            || !access.published_targets.is_empty()
-            || !access.relay.relays.is_empty()
-            || access.relay.force_relay
-            || !access.mappings.is_empty()
-            || !access.domain_mappings.is_empty()
-            || root_relay_requires_access_peer;
-        if !needs_peer {
-            return Ok(false);
+        if access.reverse_enabled
+            && access.reverse_peer_id.trim().is_empty()
+            && matches!(access.peers.as_slice(), [peer] if peer.name == "默认对端")
+        {
+            access.reverse_peer_id = access.peers[0].id.clone();
+            changed = true;
         }
-
-        let relay = if access.relay != RelaySettings::default() {
-            access.relay.clone()
-        } else {
-            self.relay.clone()
-        };
-        let peer = PeerConfig {
-            id: new_peer_id(),
-            name: "默认对端".to_string(),
-            node_id: std::mem::take(&mut access.node_id),
-            token: std::mem::take(&mut access.token),
-            published_targets: std::mem::take(&mut access.published_targets),
-            relay,
-        };
-        peer.validate()?;
-        for mapping in &mut access.mappings {
-            mapping.peer_id = peer.id.clone();
-        }
-        for mapping in &mut access.domain_mappings {
-            mapping.peer_id = peer.id.clone();
-        }
-        access.relay = RelaySettings::default();
-        access.peers.push(peer);
-        if self.expose.is_none() {
-            self.relay = RelaySettings::default();
-        }
-        Ok(true)
+        Ok(changed)
     }
 
     /// Produce a shareable backup without credentials that grant network access.
@@ -1454,6 +1476,72 @@ domain = "app.example.test"
                 .as_array()
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn enabled_reverse_mapping_migrates_to_the_generated_default_peer() {
+        let mut config: Config = toml::from_str(
+            r#"
+[access]
+node_id = "legacy-node"
+token = "legacy-token"
+reverse_enabled = true
+"#,
+        )
+        .unwrap();
+
+        assert!(config.normalize_access_peers().unwrap());
+        let access = config.access.as_ref().unwrap();
+        assert_eq!(access.peers.len(), 1);
+        assert_eq!(access.reverse_peer_id, access.peers[0].id);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn enabled_reverse_mapping_without_legacy_credentials_migrates_to_default_peer() {
+        let mut config: Config = toml::from_str(
+            r#"
+[access]
+reverse_enabled = true
+"#,
+        )
+        .unwrap();
+
+        assert!(config.normalize_access_peers().unwrap());
+        let access = config.access.as_ref().unwrap();
+        assert_eq!(access.peers.len(), 1);
+        assert_eq!(access.peers[0].name, "默认对端");
+        assert_eq!(access.reverse_peer_id, access.peers[0].id);
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn enabled_reverse_mapping_requires_an_existing_peer_id() {
+        let blank: Config = toml::from_str(
+            r#"
+[access]
+peers = [{ id = "office", name = "office" }]
+reverse_enabled = true
+"#,
+        )
+        .unwrap();
+        assert!(blank.validate().unwrap_err().contains("reverse_peer_id"));
+
+        let unknown: Config = toml::from_str(
+            r#"
+[access]
+peers = [{ id = "office", name = "office" }]
+reverse_enabled = true
+reverse_peer_id = "missing"
+"#,
+        )
+        .unwrap();
+        assert!(
+            unknown
+                .validate()
+                .unwrap_err()
+                .contains("未知 reverse_peer_id missing")
         );
     }
 

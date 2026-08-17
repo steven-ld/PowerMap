@@ -580,6 +580,30 @@ impl PeerManager {
         self.get_link(&peer_id).await
     }
 
+    /// Acquire the configured reverse-mapping peer for one registration lifecycle.
+    /// A missing owner is accepted only for the one legacy default peer.
+    async fn acquire_reverse_link(
+        &self,
+        configured_peer_id: &str,
+    ) -> Result<(String, Link), String> {
+        let peer_id = self.resolve_reverse_peer_id(configured_peer_id).await?;
+        let link = self.acquire_link(&peer_id).await?;
+        Ok((peer_id, link))
+    }
+
+    /// Resolve reverse ownership without allocating a peer endpoint.
+    async fn resolve_reverse_peer_id(&self, configured_peer_id: &str) -> Result<String, String> {
+        if configured_peer_id.trim().is_empty() {
+            self.legacy_default_peer_id().await
+        } else if self.peers.read().await.contains_key(configured_peer_id) {
+            Ok(configured_peer_id.to_owned())
+        } else {
+            Err(format!(
+                "反向映射引用了未知 reverse_peer_id {configured_peer_id}"
+            ))
+        }
+    }
+
     /// Return a running peer link without starting an inactive peer.
     async fn cached_link(&self, peer_id: &str) -> Result<Option<Link>, String> {
         let peer_id = self.resolve_mapping_peer_id(peer_id).await?;
@@ -1350,6 +1374,8 @@ struct AppState {
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct ReverseConfig {
     enabled: bool,
+    #[serde(default)]
+    peer_id: String,
     allow_networks: Vec<String>,
     allow_ports: Vec<u16>,
 }
@@ -2010,6 +2036,30 @@ mod integration_tests {
 
         assert_ne!(a.endpoint.id(), b.endpoint.id());
         assert_eq!(state.peers.link_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn reverse_mapping_acquires_its_configured_peer_in_multi_peer_state() {
+        let state = test_state_with_peers([peer("office", "office"), peer("home", "home")]).await;
+        let reverse = ReverseConfig {
+            enabled: true,
+            peer_id: "office".into(),
+            ..Default::default()
+        };
+
+        let (owner_id, link) = state
+            .peers
+            .acquire_reverse_link(&reverse.peer_id)
+            .await
+            .unwrap();
+
+        assert_eq!(owner_id, "office");
+        assert_eq!(
+            link.endpoint.id(),
+            state.peers.get_link("office").await.unwrap().endpoint.id()
+        );
+        assert_eq!(state.peers.link_count().await, 1);
+        state.peers.release_link(&owner_id).await;
     }
 
     #[tokio::test]
@@ -8488,7 +8538,7 @@ async fn get_reverse(State(st): State<AppState>) -> Json<ReverseConfig> {
 /// 开关/白名单变更对后续新反向流即时生效（反向流建立时实时读取策略）。
 async fn set_reverse(
     State(st): State<AppState>,
-    Json(body): Json<ReverseConfig>,
+    Json(mut body): Json<ReverseConfig>,
 ) -> Result<Json<ReverseConfig>, (StatusCode, String)> {
     // 与 config::AConfig::validate 共用同一套格式校验（空集=拒绝的语义由运行期策略负责）。
     config::validate_allowlist(
@@ -8498,6 +8548,13 @@ async fn set_reverse(
         &body.allow_ports,
     )
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    if body.enabled {
+        body.peer_id = st
+            .peers
+            .resolve_reverse_peer_id(&body.peer_id)
+            .await
+            .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    }
     let previous = std::mem::replace(&mut *st.reverse.write().await, body.clone());
     if let Err(error) = persist_peer_state(&st).await {
         *st.reverse.write().await = previous;
@@ -8572,6 +8629,7 @@ async fn build_config(st: &AppState) -> Result<config::AConfig, String> {
         domain_mappings,
         published_targets,
         reverse_enabled: reverse.enabled,
+        reverse_peer_id: reverse.peer_id,
         reverse_allow_networks: reverse.allow_networks,
         reverse_allow_ports: reverse.allow_ports,
     })
@@ -9819,6 +9877,7 @@ pub async fn run(
         updater: update::UpdateCoordinator::new(cancel.clone()),
         reverse: Arc::new(RwLock::new(ReverseConfig {
             enabled: cfg.reverse_enabled,
+            peer_id: cfg.reverse_peer_id.clone(),
             allow_networks: cfg.reverse_allow_networks.clone(),
             allow_ports: cfg.reverse_allow_ports.clone(),
         })),
@@ -9872,24 +9931,36 @@ pub async fn run(
         const REVERSE_DIAL_TIMEOUT: Duration = Duration::from_secs(10);
         loop {
             tokio::time::sleep(Duration::from_secs(3)).await;
-            if !reverse_state.reverse.read().await.enabled {
+            let reverse = reverse_state.reverse.read().await.clone();
+            if !reverse.enabled {
                 continue;
             }
-            let reverse_link = match reverse_state.peers.legacy_default_link().await {
+            let (reverse_peer_id, reverse_link) = match reverse_state
+                .peers
+                .acquire_reverse_link(&reverse.peer_id)
+                .await
+            {
                 Ok(link) => link,
                 Err(_) => continue,
             };
             if !reverse_link.configured().await {
+                reverse_state.peers.release_link(&reverse_peer_id).await;
                 continue;
             }
             let conn = match reverse_link.get().await {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(_) => {
+                    reverse_state.peers.release_link(&reverse_peer_id).await;
+                    continue;
+                }
             };
             // 在既有连接上开一条 register 流：B 据此认证连接并启动该客户的反向监听。
             let (mut send, mut recv) = match conn.open_bi().await {
                 Ok(s) => s,
-                Err(_) => continue,
+                Err(_) => {
+                    reverse_state.peers.release_link(&reverse_peer_id).await;
+                    continue;
+                }
             };
             let req = proto::OpenRequest {
                 token: reverse_link.token().await,
@@ -9901,6 +9972,7 @@ pub async fn run(
                 allow_loopback_target: false,
             };
             if proto::write_open(&mut send, &req).await.is_err() {
+                reverse_state.peers.release_link(&reverse_peer_id).await;
                 continue;
             }
             match proto::read_status(&mut recv).await {
@@ -9915,10 +9987,14 @@ pub async fn run(
                 Ok(proto::OpenStatus::Error(msg)) | Ok(proto::OpenStatus::LoopRisk(msg)) => {
                     // B 未为该客户配置反向监听等：稍等再试，避免忙循环。
                     tracing::debug!(reason = %msg, "B 拒绝反向注册");
+                    reverse_state.peers.release_link(&reverse_peer_id).await;
                     tokio::time::sleep(Duration::from_secs(20)).await;
                     continue;
                 }
-                Err(_) => continue,
+                Err(_) => {
+                    reverse_state.peers.release_link(&reverse_peer_id).await;
+                    continue;
+                }
             }
             // 接受 B 发起的反向流，直到连接断开（accept_bi 出错则回到外层重连并重新注册）。
             while let Ok((s, r)) = conn.accept_bi().await {
@@ -9936,6 +10012,7 @@ pub async fn run(
                     }
                 });
             }
+            reverse_state.peers.release_link(&reverse_peer_id).await;
         }
     });
 
