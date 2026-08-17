@@ -1,38 +1,44 @@
-# Task 3 Report: Domain Lifecycle and REST APIs
+# Task 3 Report: PeerManager and Isolated Access Runtimes
 
 ## Delivered
 
-- Added separate `GET/POST /api/domain-mappings`, `PUT/DELETE /api/domain-mappings/{domain}`, and `POST /api/domain-mappings/{domain}/toggle` APIs.
-- Added `DomainMappingHandle` and `DomainMappingStatus` with cancellation, connection accounting, managed-hosts state, listener state, and actionable errors.
-- Activation is transactional: validation, current-process administrator check, expose-side TCP `OpenRequest` preflight, exact hosts marker, then loopback listener. A failed listener bind rolls back the exact marker.
-- The process never attempts elevation. macOS/Linux use `geteuid()` directly with no shell; unsupported platforms return HTTP 501 from domain operations.
-- Injected test hosts file, ephemeral listener factory, and administrator check. Tests do not touch `/etc/hosts` or bind port 443.
-- Disable/delete cancel the listener and remove only the exact PowerMap marker. Startup restores enabled records and retains failed records as disabled with an error.
+- Replaced the access-wide runtime link with `PeerManager`, keyed by immutable peer IDs.
+- Each lazily-created peer link owns an independent Iroh endpoint, relay runtime, credential lock, connection cache, and fallback watchdog.
+- Enabled port and domain mappings acquire/release the owning peer runtime. A peer runtime is cancelled and dropped when its final enabled mapping stops.
+- Mapping start and persistence normalize blank legacy ownership to the runtime's sole `默认对端` ID, without consulting disk as the runtime authority. Unknown owners are rejected before allocating a listener or endpoint.
+- Domain SNI dispatch resolves the selected mapping's peer immediately before opening its tunnel.
+- Startup derives the persistent expose public key and rejects a peer pointing at that exact local identity; NAT hairpin paths remain unaffected.
+- Legacy single-peer adapters remain available only for the one migrated default peer.
 
 ## TDD Evidence
 
-1. Added `domain_mapping_api_rejects_invalid_domain_before_system_mutation`.
-2. Ran `cargo test access::integration_tests::domain_mapping_api_ -- --nocapture` before routes existed; it failed as intended with `404 Not Found` instead of the expected `400 Bad Request`.
-3. Implemented the route and lifecycle, then reran the focused test; it passed.
-4. Added coverage for disabled-record creation without system mutation and administrator-denied enablement.
+1. Extended `create_and_list_preserve_the_optional_mapping_name` to require the returned and persisted `peer_id` to be `default`.
+2. Before the fix, `cargo test create_and_list_preserve_the_optional_mapping_name -- --nocapture` failed because legacy creation took no ID from the absent on-disk config, then persistence rejected the blank owner.
+3. Implemented runtime default-ID resolution and normalization before mapping lifecycle and snapshot persistence.
+4. Reran the regression successfully: 1 passed, 0 failed.
+5. Added isolated-runtime coverage for distinct/lazy links, peer update isolation, inactive links, view/removal behavior, unknown owners, owner-change listener rebuild, and self-peer rejection.
 
 ## Verification
 
-- `cargo fmt --all`
-- `cargo test access::integration_tests -- --nocapture` (23 passed)
-- `cargo test config::tests -- --nocapture` (24 passed)
-- `cargo test domain_hosts::tests -- --nocapture` (5 passed)
-- `git diff --check`
+- `cargo fmt --all -- --check`: passed.
+- `cargo test access::integration_tests -- --nocapture`: 77 passed, 0 failed.
+- `cargo test`: 174 passed, 0 failed; doc tests: 0 passed, 0 failed.
+- `git diff --check`: passed.
+- Normal compilation/test output has no Task 3 dead-code warnings.
 
-The attempted combined command `cargo test config::tests domain_hosts::tests -- --nocapture` was rejected by Cargo because it accepts one test filter; both filters were then run separately and passed.
+## Files Changed
 
-## Review Follow-up
+- `src/access.rs`
+- `src/bin/powermap.rs`
+- `src/expose.rs`
 
-- `failed_disable_cleanup_preserves_retryable_hosts_error_state` proves a failed disable keeps a disabled mapping with `hosts_managed = true` and an actionable error in both the response and persisted runtime configuration. A restarted runtime detects the retained exact marker and keeps the cleanup state visible for a later disable/delete retry.
-- `concurrent_create_does_not_rollback_the_published_mapping_hosts_marker` holds the first injected listener activation while a second create competes for the same domain. The per-domain operation lock admits only the first activation; the second returns conflict without invoking its simulated bind failure or removing the successful mapping's marker.
-- Follow-up verification: both focused regressions pass, and `cargo test --all-targets` passes with 71 tests.
+## Self-Review
 
-## Re-review Follow-up
+- All lifecycle entry points resolve immutable mapping ownership from `PeerManager`; persistence repeats that normalization for pre-existing legacy handles.
+- Per-peer link state is not shared across IDs; changing peer A's relay/credentials cannot invalidate peer B's link.
+- Disabled mappings validate/normalize their owner without creating a link, and enabled unknown owners fail before allocation.
+- The local expose-key check compares persistent public keys only and does not attempt generic cycle or NAT hairpin detection.
 
-- `failed_delete_cleanup_persists_disabled_recovery_state` first persisted an active mapping, then simulated a hosts cleanup failure on DELETE. It verifies the replacement disabled record is saved, reloads the config, and confirms recovery remains disabled while surfacing the retained marker for cleanup retry.
-- Verification: the focused delete regression passes and `cargo test --all-targets` passes with 72 tests.
+## Concerns
+
+- `cargo clippy --all-targets -- -D warnings` remains non-clean only because of a pre-existing style suggestion in `src/tunnel.rs`. It does not affect the passing test suite or introduce dead-code warnings.

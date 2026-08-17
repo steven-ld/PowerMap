@@ -51,6 +51,12 @@ async fn run() -> Result<()> {
     loaded.config.validate().map_err(anyhow::Error::msg)?;
     config::save(&loaded.path, &loaded.config)?;
     let relay = loaded.config.relay.clone();
+    let local_expose_id = loaded
+        .config
+        .expose
+        .as_ref()
+        .map(|expose_cfg| expose::persistent_public_key(&loaded.path, expose_cfg))
+        .transpose()?;
 
     let cancel = CancellationToken::new();
     let signal_cancel = cancel.clone();
@@ -70,14 +76,11 @@ async fn run() -> Result<()> {
         ));
     }
     if let Some(access_cfg) = loaded.config.access {
-        let (access_cfg, access_relay) = access_cfg
-            .legacy_runtime_inputs(&relay)
-            .map_err(anyhow::Error::msg)?;
         tasks.spawn(access::run(
             access_cfg,
-            access_relay,
             loaded.path,
             cancel.clone(),
+            local_expose_id,
         ));
     }
 

@@ -16,7 +16,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use iroh::endpoint::{Connection, presets};
 use iroh::protocol::{AcceptError, ProtocolHandler, Router};
-use iroh::{Endpoint, SecretKey};
+use iroh::{Endpoint, PublicKey, SecretKey};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
@@ -53,6 +53,16 @@ fn load_or_create_key(path: &std::path::Path) -> Result<SecretKey> {
         std::fs::write(path, proto::to_hex(&sk.to_bytes()))?;
         Ok(sk)
     }
+}
+
+/// Return the persistent expose identity used by this configuration.
+///
+/// The access runtime uses this before it starts so it can reject a peer that
+/// points back to the same local expose endpoint. Calling this helper shares
+/// the exact identity-file semantics with [`run`].
+pub fn persistent_public_key(config_path: &Path, cfg: &config::BConfig) -> Result<PublicKey> {
+    let identity_path = resolve_identity(config_path, &cfg.identity);
+    Ok(load_or_create_key(&identity_path)?.public())
 }
 
 /// ALPN 协议处理器：每个对端连接上循环 accept_bi，每条流 = 一条隧道。
