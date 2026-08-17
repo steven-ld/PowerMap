@@ -88,9 +88,9 @@ peer_id = "peer_01J..."
 (`node_id`, `token`, and `published_targets`) remain read-compatible only for v0.9.0 migration;
 new writes use `access.peers` exclusively.
 
-On loading a v0.9.0 access configuration with a credential, PowerMap creates one peer named
-`默认对端`, copies the old credential, published targets, and root relay settings into it,
-and assigns its ID to every existing port and domain mapping. If the same file has an expose
+On loading a v0.9.0 access configuration with a credential or a mapping, PowerMap creates one
+peer named `默认对端`, copies the old credential, published targets, and root relay settings into
+it, and assigns its ID to every existing port and domain mapping. If the same file has an expose
 configuration, the root relay settings continue to configure that expose endpoint as before. An
 empty v0.9.0 access configuration creates no peer; the first peer must be named by the operator.
 
