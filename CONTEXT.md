@@ -5,6 +5,20 @@ remote private network. It uses iroh to establish a direct encrypted path where 
 
 ## Connectivity
 
+**Peer**:
+A named access-side connection target owning its endpoint credential and relay settings; every
+port or domain mapping stores its immutable peer identifier, so it cannot silently use another
+remote private network. Its name is required and unique for operator selection, while renaming
+does not change mappings; an in-use peer cannot be deleted until its mappings are migrated or
+removed.
+_Avoid_: connection, remote node, server
+
+**Connection cycle**:
+A mapping path that returns traffic to the same PowerMap listener or node and can recursively
+forward it; proven self-connections are rejected, while a potentially cyclic target requires an
+explicit warning because a peer's loopback service can also be legitimate.
+_Avoid_: NAT hairpin, relay fallback
+
 **Expose node**:
 The PowerMap capability that accepts authenticated tunnel requests and dials an allowed service
 in its local private network.
@@ -35,11 +49,11 @@ official-relay traffic. It is intentionally public and never grants access to a 
 _Avoid_: secret token, access credential
 
 **Relay settings**:
-The root `powermap.toml` setting shared by both capabilities. It may replace the official relay
-with a bounded set of private relay entries and a forced-relay choice. A private relay override
-does not automatically add iroh fallback relays. Private relay values are copied into a node
-credential only when the operator explicitly opts in.
-_Avoid_: access token, relay server configuration
+The endpoint-level choice of relay entries and forced-relay behavior; each peer and the expose
+node own independent settings, so changing one peer never changes another peer's route. A private
+relay override does not automatically add iroh fallback relays, and its values are copied into a
+node credential only when the operator explicitly opts in.
+_Avoid_: global connection setting, access token, relay server configuration
 
 **Relay entry**:
 One configured private relay HTTPS address and its own optional bearer token. Entries may share a
