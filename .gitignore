@@ -23,3 +23,4 @@ powermap.key
 # Local AI assistant settings and generated workspace metadata
 /.agents/
 /.claude/
+/.worktrees/
