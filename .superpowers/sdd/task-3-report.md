@@ -42,3 +42,18 @@
 ## Concerns
 
 - `cargo clippy --all-targets -- -D warnings` remains non-clean only because of a pre-existing style suggestion in `src/tunnel.rs`. It does not affect the passing test suite or introduce dead-code warnings.
+
+## Review Fixes
+
+- Read-only status, diagnostics, onboarding, credential, relay, and relay-probe paths now use a cached link or a peer configuration snapshot, so they never create an Endpoint for an inactive peer.
+- Port and domain preflight temporarily acquire a peer runtime and release it on every result path. This preserves remote preflight behavior without retaining a hot connection.
+- Link creation and active-reference acquisition now happen while holding the same runtime lock. A final release therefore cannot cancel a link between creation and reference registration.
+- The port-mapping publish race now drains the unpublished handle before returning a conflict or mapping-limit error, releasing its peer reference and watchdog.
+
+## Review-Fix Verification
+
+- RED: `status_does_not_activate_an_inactive_default_peer` and `mapping_preflight_releases_an_inactive_default_peer` each failed with `link_count == 1` before the read-only/temporary-lease changes.
+- GREEN: both focused lifecycle regressions passed after the change.
+- `cargo test http_route_targets_are_preflighted_on_create_and_update -- --nocapture`: passed after aligning the loopback fixture with active-reference semantics.
+- `cargo fmt --all`: passed.
+- `cargo test access::integration_tests -- --nocapture`: 79 passed, 0 failed.

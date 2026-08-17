@@ -579,6 +579,43 @@ impl PeerManager {
         self.get_link(&peer_id).await
     }
 
+    /// Return a running peer link without starting an inactive peer.
+    async fn cached_link(&self, peer_id: &str) -> Result<Option<Link>, String> {
+        let peer_id = self.resolve_mapping_peer_id(peer_id).await?;
+        Ok(self.runtime.lock().await.links.get(&peer_id).cloned())
+    }
+
+    async fn legacy_default_cached_link(&self) -> Result<Option<Link>, String> {
+        let peer_id = self.legacy_default_peer_id().await?;
+        self.cached_link(&peer_id).await
+    }
+
+    /// Return the current peer configuration without allocating an Endpoint. A running peer's
+    /// in-memory credential or relay update takes precedence over the persisted value.
+    async fn peer_config(&self, peer_id: &str) -> Result<config::PeerConfig, String> {
+        let mut peer = self
+            .peers
+            .read()
+            .await
+            .get(peer_id)
+            .cloned()
+            .ok_or_else(|| format!("映射引用了未知 peer_id {peer_id}"))?;
+        if let Some(link) = self.runtime.lock().await.links.get(peer_id).cloned() {
+            let creds = link.creds.read().await;
+            peer.node_id = creds.node_id.clone();
+            peer.token = creds.token.clone();
+            peer.published_targets = creds.published_targets.clone();
+            drop(creds);
+            peer.relay = link.relay_settings().await;
+        }
+        Ok(peer)
+    }
+
+    async fn legacy_default_peer_config(&self) -> Result<config::PeerConfig, String> {
+        let peer_id = self.legacy_default_peer_id().await?;
+        self.peer_config(&peer_id).await
+    }
+
     /// Return the immutable owner for a mapping and reject unconfigured peers before any
     /// listener or endpoint is allocated.
     async fn resolve_mapping_peer_id(&self, peer_id: &str) -> Result<String, String> {
@@ -592,15 +629,23 @@ impl PeerManager {
         }
     }
 
-    async fn link_for_mapping(&self, peer_id: &str) -> Result<(String, Link), String> {
-        let peer_id = self.resolve_mapping_peer_id(peer_id).await?;
-        let link = self.get_link(&peer_id).await?;
-        Ok((peer_id, link))
-    }
-
     async fn acquire_link(&self, peer_id: &str) -> Result<Link, String> {
-        let link = self.get_link(peer_id).await?;
+        let peer = self
+            .peers
+            .read()
+            .await
+            .get(peer_id)
+            .cloned()
+            .ok_or_else(|| format!("映射引用了未知 peer_id {peer_id}"))?;
         let mut runtime = self.runtime.lock().await;
+        let link = match runtime.links.get(peer_id) {
+            Some(link) => link.clone(),
+            None => {
+                let link = Link::from_peer(&peer, self.cancel.child_token()).await?;
+                runtime.links.insert(peer_id.to_owned(), link.clone());
+                link
+            }
+        };
         *runtime
             .active_references
             .entry(peer_id.to_owned())
@@ -1113,11 +1158,17 @@ fn domain_preflight(peers: PeerManager) -> DomainPreflight {
         let peers = peers.clone();
         let mapping = mapping.clone();
         Box::pin(async move {
-            let link = peers
-                .get_link(&mapping.peer_id)
+            let peer_id = peers
+                .resolve_mapping_peer_id(&mapping.peer_id)
                 .await
                 .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-            preflight_domain_mapping(&link, &mapping).await
+            let link = peers
+                .acquire_link(&peer_id)
+                .await
+                .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+            let result = preflight_domain_mapping(&link, &mapping).await;
+            peers.release_link(&peer_id).await;
+            result
         })
     })
 }
@@ -1386,7 +1437,8 @@ struct Status {
 
 async fn status(State(st): State<AppState>) -> Json<Status> {
     let n = st.inner.lock().await.mappings.len();
-    let link = st.peers.legacy_default_link().await.ok();
+    let peer = st.peers.legacy_default_peer_config().await.ok();
+    let link = st.peers.legacy_default_cached_link().await.ok().flatten();
     let path_info = match &link {
         Some(link) => link.transport_path().await,
         None => None,
@@ -1421,13 +1473,9 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
     } else {
         Vec::new()
     };
-    let (configured, node_id) = match &link {
-        Some(link) => {
-            let creds = link.creds.read().await;
-            (creds.target.is_some(), creds.node_id.clone())
-        }
-        None => (false, String::new()),
-    };
+    let (configured, node_id) = peer
+        .map(|peer| (!peer.node_id.trim().is_empty(), peer.node_id))
+        .unwrap_or_else(|| (false, String::new()));
     Json(Status {
         connected,
         configured,
@@ -1449,11 +1497,13 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
 
 /// GET /api/diagnostics --- current peer transport and conservative NAT guidance.
 async fn diagnostics(State(st): State<AppState>) -> Json<DiagnosticSnapshot> {
-    let link = st.peers.legacy_default_link().await.ok();
-    let configured = match &link {
-        Some(link) => link.configured().await,
-        None => false,
-    };
+    let configured = st
+        .peers
+        .legacy_default_peer_config()
+        .await
+        .map(|peer| !peer.node_id.trim().is_empty())
+        .unwrap_or(false);
+    let link = st.peers.legacy_default_cached_link().await.ok().flatten();
     let connected = match &link {
         Some(link) => link.is_alive().await,
         None => false,
@@ -1490,10 +1540,12 @@ async fn runtime_info(State(st): State<AppState>) -> Json<runtime::RuntimeInfo> 
 
 /// GET /api/onboarding --- stable first-use state, derived only from local config.
 async fn onboarding(State(st): State<AppState>) -> Json<OnboardingStatus> {
-    let credential_configured = match st.peers.legacy_default_link().await {
-        Ok(link) => link.configured().await,
-        Err(_) => false,
-    };
+    let credential_configured = st
+        .peers
+        .legacy_default_peer_config()
+        .await
+        .map(|peer| !peer.node_id.trim().is_empty())
+        .unwrap_or(false);
     let mappings = st.inner.lock().await.mappings.len();
     let domain_mappings = st.domains.lock().await.mappings.len();
     Json(OnboardingStatus {
@@ -1543,7 +1595,7 @@ async fn mapping_health(State(st): State<AppState>) -> Json<mapping_health::Summ
 
 /// GET /api/diagnostic-report --- a downloadable, credential-free support snapshot.
 async fn diagnostic_report(State(st): State<AppState>) -> Json<diagnostic_report::Report> {
-    let link = st.peers.legacy_default_link().await.ok();
+    let link = st.peers.legacy_default_cached_link().await.ok().flatten();
     let connected = match &link {
         Some(link) => link.is_alive().await,
         None => false,
@@ -1707,7 +1759,7 @@ mod integration_tests {
                 },
             )
             .spawn();
-        let link = test_link(state).await;
+        let link = state.peers.acquire_link("default").await.unwrap();
         let connection = link
             .endpoint
             .connect(server_addr, proto::ALPN)
@@ -1838,6 +1890,43 @@ mod integration_tests {
 
         assert_ne!(a.endpoint.id(), b.endpoint.id());
         assert_eq!(state.peers.link_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn status_does_not_activate_an_inactive_default_peer() {
+        let state = test_state("").await;
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.peers.link_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn mapping_preflight_releases_an_inactive_default_peer() {
+        let state = test_state("").await;
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings/preflight")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:0","host":"10.0.0.10","port":443}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(state.peers.link_count().await, 0);
     }
 
     #[tokio::test]
@@ -5998,41 +6087,56 @@ async fn require_mapping_loopback_acknowledgement(
 ) -> Result<(), (StatusCode, String)> {
     // Offline configuration remains supported. Once a peer is reachable, its own resolver is
     // authoritative; every live tunnel still enforces the same rule before dialing.
-    let (_, link) = st
+    let peer_id = st
         .peers
-        .link_for_mapping(&mapping.peer_id)
+        .resolve_mapping_peer_id(&mapping.peer_id)
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    if !link.configured().await {
+    let peer = st
+        .peers
+        .peer_config(&peer_id)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    if peer.node_id.trim().is_empty() {
         return Ok(());
     }
+    let link = st
+        .peers
+        .acquire_link(&peer_id)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let kind = match mapping.mode {
         config::MappingMode::Udp => proto::TunnelKind::Udp,
         _ => proto::TunnelKind::Tcp,
     };
-    for (host, port) in mapping_preflight_targets(mapping) {
-        let request = proto::OpenRequest {
-            token: link.token().await,
-            host: host.clone(),
-            port,
-            kind,
-            register: false,
-            preflight: true,
-            allow_loopback_target: mapping.allow_loopback_target,
-        };
-        if let Ok(Ok(proto::OpenStatus::LoopRisk(message))) = tokio::time::timeout(
-            Duration::from_secs(8),
-            open_preflight_with_retry(&link, &request),
-        )
-        .await
-        {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                format!("{host}:{port} 需要显式确认 loopback 风险：{message}"),
-            ));
+    let result = async {
+        for (host, port) in mapping_preflight_targets(mapping) {
+            let request = proto::OpenRequest {
+                token: link.token().await,
+                host: host.clone(),
+                port,
+                kind,
+                register: false,
+                preflight: true,
+                allow_loopback_target: mapping.allow_loopback_target,
+            };
+            if let Ok(Ok(proto::OpenStatus::LoopRisk(message))) = tokio::time::timeout(
+                Duration::from_secs(8),
+                open_preflight_with_retry(&link, &request),
+            )
+            .await
+            {
+                return Err((
+                    StatusCode::BAD_REQUEST,
+                    format!("{host}:{port} 需要显式确认 loopback 风险：{message}"),
+                ));
+            }
         }
+        Ok(())
     }
-    Ok(())
+    .await;
+    st.peers.release_link(&peer_id).await;
+    result
 }
 
 /// POST /api/mappings/preflight --- transiently verifies the same remote path a
@@ -6093,12 +6197,17 @@ async fn preflight(
         }
     }
 
-    let (_, link) = st
+    let peer_id = st
         .peers
-        .link_for_mapping(&mapping.peer_id)
+        .resolve_mapping_peer_id(&mapping.peer_id)
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let configured = link.configured().await;
+    let peer = st
+        .peers
+        .peer_config(&peer_id)
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let configured = !peer.node_id.trim().is_empty();
     checks.insert(
         "credential",
         PreflightCheck {
@@ -6129,6 +6238,11 @@ async fn preflight(
             None,
         )
     } else {
+        let link = st
+            .peers
+            .acquire_link(&peer_id)
+            .await
+            .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
         // 预检按映射模式选对应隧道类型：udp 校验 UDP 目标可达，其余（含 http 网关）走 tcp。
         let kind = match mapping.mode {
             config::MappingMode::Udp => proto::TunnelKind::Udp,
@@ -6143,7 +6257,7 @@ async fn preflight(
             preflight: true,
             allow_loopback_target: mapping.allow_loopback_target,
         };
-        match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             Duration::from_secs(8),
             open_preflight_with_retry(&link, &request),
         )
@@ -6164,7 +6278,9 @@ async fn preflight(
                 },
                 None,
             ),
-        }
+        };
+        st.peers.release_link(&peer_id).await;
+        result
     };
     checks.insert("target", target.0);
     let ready = checks.values().all(|check| check.ok);
@@ -6212,26 +6328,37 @@ async fn create(
         }
     }
     let handle = start_mapping_owned(&st, mapping.clone()).await?;
-    {
+    let mut unpublished_handle = Some(handle);
+    let publish_error = {
         let mut g = st.inner.lock().await;
         // 双检：加锁间隙可能被其他请求抢先插入或触达上限。
         if g.mappings.contains_key(&mapping.local) {
-            handle.task.abort();
-            handle.cancel.cancel();
-            return Err((
+            Some((
                 StatusCode::CONFLICT,
                 format!("{} 已存在映射", mapping.local),
-            ));
-        }
-        if st.max_mappings > 0 && g.mappings.len() >= st.max_mappings {
-            handle.task.abort();
-            handle.cancel.cancel();
-            return Err((
+            ))
+        } else if st.max_mappings > 0 && g.mappings.len() >= st.max_mappings {
+            Some((
                 StatusCode::TOO_MANY_REQUESTS,
                 format!("映射数量已达上限 {}", st.max_mappings),
-            ));
+            ))
+        } else {
+            g.mappings.insert(
+                mapping.local.clone(),
+                unpublished_handle
+                    .take()
+                    .expect("unpublished mapping handle is available"),
+            );
+            None
         }
-        g.mappings.insert(mapping.local.clone(), handle);
+    };
+    if let Some(error) = publish_error {
+        stop_mapping(
+            &st,
+            unpublished_handle.expect("unpublished mapping handle is retained on publish failure"),
+        )
+        .await;
+        return Err(error);
     }
     if let Err(error) = persist_config(&st).await {
         let handle = st.inner.lock().await.mappings.remove(&mapping.local);
@@ -7332,18 +7459,19 @@ async fn get_node(State(st): State<AppState>) -> Json<NodeView> {
 
 /// GET /api/credential —— 供网页查看/复制当前凭证。
 async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
-    match st.peers.legacy_default_link().await {
-        Ok(link) => {
-            let c = link.creds.read().await;
-            let relay = link.relay_settings().await;
-            let restart_required = link.relay_restart_required().await;
+    match st.peers.legacy_default_peer_config().await {
+        Ok(peer) => {
+            let restart_required = match st.peers.legacy_default_cached_link().await {
+                Ok(Some(link)) => link.relay_restart_required().await,
+                _ => false,
+            };
             Json(CredentialView {
-                configured: c.target.is_some(),
-                node_id: c.node_id.clone(),
-                token: c.token.clone(),
+                configured: !peer.node_id.trim().is_empty(),
+                node_id: peer.node_id,
+                token: peer.token,
                 token_hidden: false,
-                published_targets: c.published_targets.clone(),
-                relay,
+                published_targets: peer.published_targets,
+                relay: peer.relay,
                 restart_required,
             })
         }
@@ -7361,11 +7489,17 @@ async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
 
 /// GET /api/relay --- the persisted relay configuration and whether an Endpoint restart is due.
 async fn get_relay(State(st): State<AppState>) -> Json<RelaySettingsView> {
-    match st.peers.legacy_default_link().await {
-        Ok(link) => Json(RelaySettingsView {
-            relay: link.relay_settings().await,
-            restart_required: link.relay_restart_required().await,
-        }),
+    match st.peers.legacy_default_peer_config().await {
+        Ok(peer) => {
+            let restart_required = match st.peers.legacy_default_cached_link().await {
+                Ok(Some(link)) => link.relay_restart_required().await,
+                _ => false,
+            };
+            Json(RelaySettingsView {
+                relay: peer.relay,
+                restart_required,
+            })
+        }
         Err(_) => Json(RelaySettingsView {
             relay: config::RelaySettings::default(),
             restart_required: false,
@@ -7395,11 +7529,10 @@ async fn probe_relays(
     ensure_legacy_mapping_mutation_compatible(&st).await?;
     let settings = st
         .peers
-        .legacy_default_link()
+        .legacy_default_peer_config()
         .await
         .map_err(|error| (StatusCode::BAD_REQUEST, error))?
-        .relay_settings()
-        .await;
+        .relay;
     Ok(Json(RelayProbeReport {
         relays: probe_relay_entries(settings.relays).await,
     }))
