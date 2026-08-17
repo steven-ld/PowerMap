@@ -2266,6 +2266,44 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn deleting_reverse_mapping_peer_returns_conflict() {
+        let state = test_state("").await;
+        let app = app(state.clone());
+
+        let configured = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/reverse")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"enabled":true,"peer_id":"default","allow_networks":["10.0.0.0/8"],"allow_ports":[443]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(configured.status(), StatusCode::OK);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/peers/default")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(response_json(response).await["reverse_mapping"], true);
+        assert!(state.peers.peer_config("default").await.is_ok());
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
     async fn mapping_creation_uses_the_requested_peer_id() {
         let state = test_state_with_peers([peer("peer-a", "办公室")]).await;
         let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2838,6 +2876,70 @@ mod integration_tests {
         let saved_access = saved.access.unwrap();
         assert!(saved_access.reverse_enabled);
         assert_eq!(saved_access.reverse_peer_id, "office");
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn merge_import_without_reverse_fields_preserves_active_reverse_mapping() {
+        let state = test_state("").await;
+        let app = app(state.clone());
+
+        let configured = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/reverse")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"enabled":true,"peer_id":"default","allow_networks":["10.0.0.0/8"],"allow_ports":[443]}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(configured.status(), StatusCode::OK);
+
+        let imported = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import?mode=merge")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        serde_json::json!({
+                            "mappings": [{
+                                "local": "127.0.0.1:0",
+                                "host": "10.0.0.8",
+                                "port": 443,
+                                "enabled": false,
+                            }],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(imported.status(), StatusCode::OK);
+
+        let reverse = response_json(
+            app.oneshot(Request::get("/api/reverse").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(reverse["enabled"], true);
+        assert_eq!(reverse["peer_id"], "default");
+
+        let saved = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config
+            .access
+            .unwrap();
+        assert!(saved.reverse_enabled);
+        assert_eq!(saved.reverse_peer_id, "default");
         std::fs::remove_file(&state.config_path).unwrap();
     }
 
@@ -6138,6 +6240,7 @@ struct PeerDeleteConflict {
     peer_id: String,
     mappings: Vec<String>,
     domain_mappings: Vec<String>,
+    reverse_mapping: bool,
 }
 
 #[derive(Serialize)]
@@ -6321,13 +6424,18 @@ async fn delete_peer(State(st): State<AppState>, Path(id): Path<String>) -> Resp
         }
         owners
     };
-    if !mappings.is_empty() || !domain_mappings.is_empty() {
+    let reverse_mapping = {
+        let reverse = st.reverse.read().await;
+        reverse.enabled && reverse.peer_id == previous.id
+    };
+    if !mappings.is_empty() || !domain_mappings.is_empty() || reverse_mapping {
         return (
             StatusCode::CONFLICT,
             Json(PeerDeleteConflict {
                 peer_id: id,
                 mappings,
                 domain_mappings,
+                reverse_mapping,
             }),
         )
             .into_response();
@@ -9469,9 +9577,25 @@ async fn rollback_import_before_commit(
 async fn import_config(
     State(st): State<AppState>,
     Query(query): Query<ImportQuery>,
-    Json(payload): Json<TransferPayload>,
+    Json(payload): Json<serde_json::Value>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
     let _mapping_operation = lock_mapping_operation(&st).await;
+    let reverse_config_supplied = payload.as_object().is_some_and(|object| {
+        [
+            "reverse_enabled",
+            "reverse_peer_id",
+            "reverse_allow_networks",
+            "reverse_allow_ports",
+        ]
+        .iter()
+        .any(|field| object.contains_key(*field))
+    });
+    let payload = serde_json::from_value::<TransferPayload>(payload).map_err(|error| {
+        (
+            StatusCode::BAD_REQUEST,
+            format!("导入配置格式错误: {error}"),
+        )
+    })?;
     let TransferPayload { access, relay } = payload;
     let legacy_payload = access.peers.is_empty();
     let legacy_credentials_omitted =
@@ -9796,11 +9920,15 @@ async fn import_config(
     // 4) Persist the staged peer collection, mappings, and reverse owner as one configuration. The old
     // listeners remain available until this succeeds, allowing a failed disk write to restore
     // both listener ownership and the previous peer relay/credential state.
-    let incoming_reverse = ReverseConfig {
-        enabled: incoming.reverse_enabled,
-        peer_id: incoming.reverse_peer_id.clone(),
-        allow_networks: incoming.reverse_allow_networks.clone(),
-        allow_ports: incoming.reverse_allow_ports.clone(),
+    let incoming_reverse = if reverse_config_supplied {
+        ReverseConfig {
+            enabled: incoming.reverse_enabled,
+            peer_id: incoming.reverse_peer_id.clone(),
+            allow_networks: incoming.reverse_allow_networks.clone(),
+            allow_ports: incoming.reverse_allow_ports.clone(),
+        }
+    } else {
+        st.reverse.read().await.clone()
     };
     let previous_reverse = std::mem::replace(&mut *st.reverse.write().await, incoming_reverse);
     let save = persist_imported_peer_state(&st, relay.as_ref()).await;

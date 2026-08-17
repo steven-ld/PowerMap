@@ -1212,7 +1212,7 @@
         <span id="ioMsg"></span>
       </div>
 
-      <div class="card hidden">
+      <div class="card">
         <div class="card-header">
           <span class="card-title">反向映射（把本机服务暴露给内网）</span>
           <label class="reverse-toggle"><input id="revEnabled" type="checkbox" /> <span>启用</span></label>
@@ -1941,7 +1941,8 @@ async function refreshPeers() {
     if (!response.ok) throw new Error((await response.text()) || '读取对端失败');
     const list = await response.json();
     renderPeers(list);
-    if (!isLegacyPeerCollection(peers)) enterPeerManagedMode({ refreshPeerList: false });
+    if (isLegacyPeerCollection(peers)) leavePeerManagedMode();
+    else enterPeerManagedMode({ refreshPeerList: false });
     return peers;
   } catch (error) {
     if (String(error) !== 'Error: unauthorized') console.warn('读取对端失败', error);
@@ -1983,7 +1984,7 @@ document.getElementById('peerRows').addEventListener('click', async event => {
   if (edit) { editPeer(edit.dataset.peerId); return; }
   const remove = event.target.closest('.peer-delete');
   if (!remove) return;
-  const ok = await confirmModal({ title: '删除对端', danger: true, confirmText: '删除', body: `将删除对端“${remove.dataset.peerName}”。被端口映射或域名映射引用时，系统会拒绝删除。确定继续？` });
+  const ok = await confirmModal({ title: '删除对端', danger: true, confirmText: '删除', body: `将删除对端“${remove.dataset.peerName}”。被端口映射、域名映射或反向映射引用时，系统会拒绝删除。确定继续？` });
   if (!ok) return;
   remove.disabled = true;
   try {
@@ -1993,7 +1994,8 @@ document.getElementById('peerRows').addEventListener('click', async event => {
       try {
         const conflict = JSON.parse(detail);
         const refs = [...(conflict.mappings || []), ...(conflict.domain_mappings || [])];
-        if (refs.length) detail = `该对端正被以下映射使用：${refs.join('、')}`;
+        if (conflict.reverse_mapping) detail = '该对端正被已启用的反向映射使用，请先更换反向映射对端或关闭反向映射。';
+        else if (refs.length) detail = `该对端正被以下映射使用：${refs.join('、')}`;
       } catch { /* plain-text backend errors remain useful. */ }
       toast(detail || '删除对端失败', 'err');
       return;
@@ -2341,6 +2343,21 @@ function enterPeerManagedMode({ refreshPeerList = true } = {}) {
   renderPeerManagedGlobalControls();
   if (location.hash.slice(1) === 'relay') selectTab('peers', { refreshPeerList: false });
   if (refreshPeerList) refreshPeers();
+}
+function leavePeerManagedMode() {
+  if (!peerManagedMode) return;
+  peerManagedMode = false;
+  legacyCredentialReadSucceeded = false;
+  legacyRelayReadSucceeded = false;
+  document.getElementById('remoteNodeTitle').textContent = '远端节点';
+  document.getElementById('remoteNodeCopy').classList.remove('hidden');
+  document.getElementById('peerManagedNotice').classList.add('hidden');
+  document.querySelectorAll('#credForm input, #credForm textarea, #credForm button').forEach(control => { control.disabled = false; });
+  document.getElementById('shareRelayConfig').disabled = false;
+  document.getElementById('shareRelayOption').classList.remove('hidden');
+  document.querySelectorAll('#relayForm input, #relayForm button').forEach(control => { control.disabled = false; });
+  refreshCred().then(refreshTargetCatalog);
+  refreshRelay();
 }
 function setRelayFormError(message = '') {
   const error = document.getElementById('relayFormError');
