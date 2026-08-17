@@ -2789,6 +2789,73 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn import_persists_the_reverse_peer_owner() {
+        let state = test_state("").await;
+        let payload = TransferPayload {
+            access: config::AConfig {
+                peers: vec![default_peer(
+                    "office",
+                    "",
+                    "",
+                    config::RelaySettings::default(),
+                )],
+                reverse_enabled: true,
+                reverse_peer_id: "office".into(),
+                reverse_allow_networks: vec!["10.0.0.0/8".into()],
+                reverse_allow_ports: vec![443],
+                ..Default::default()
+            },
+            relay: None,
+        };
+        let app = app(state.clone());
+
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let reverse = response_json(
+            app.oneshot(Request::get("/api/reverse").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(reverse["enabled"], true);
+        assert_eq!(reverse["peer_id"], "office");
+
+        let saved = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config;
+        let saved_access = saved.access.unwrap();
+        assert!(saved_access.reverse_enabled);
+        assert_eq!(saved_access.reverse_peer_id, "office");
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[test]
+    fn legacy_reverse_import_migrates_to_the_generated_default_peer() {
+        let legacy = config::AConfig {
+            reverse_enabled: true,
+            ..Default::default()
+        };
+
+        let imported = normalize_imported_access(legacy, None).unwrap();
+
+        assert_eq!(imported.peers.len(), 1);
+        assert_eq!(imported.peers[0].name, "默认对端");
+        assert_eq!(imported.reverse_peer_id, imported.peers[0].id);
+    }
+
+    #[tokio::test]
     async fn credential_update_persists_to_the_default_peer_without_overwriting_expose_relay() {
         let state = test_state("").await;
         let expose_relay =
@@ -9299,6 +9366,9 @@ fn normalize_imported_access(
         for mapping in &mut incoming.domain_mappings {
             mapping.peer_id = peer.id.clone();
         }
+        if incoming.reverse_enabled && incoming.reverse_peer_id.trim().is_empty() {
+            incoming.reverse_peer_id = peer.id.clone();
+        }
         incoming.relay = config::RelaySettings::default();
         incoming.peers.push(peer);
     }
@@ -9444,6 +9514,9 @@ async fn import_config(
             if mapping.peer_id == generated_id {
                 mapping.peer_id = effective_id.clone();
             }
+        }
+        if incoming.reverse_peer_id == generated_id {
+            incoming.reverse_peer_id = effective_id;
         }
     }
     if let Some(relay) = relay.as_ref() {
@@ -9720,11 +9793,19 @@ async fn import_config(
         .map(|mapping| (mapping.domain.clone(), mapping.enabled))
         .collect::<HashMap<_, _>>();
 
-    // 4) Persist the staged peer collection and mappings as one configuration. The old
+    // 4) Persist the staged peer collection, mappings, and reverse owner as one configuration. The old
     // listeners remain available until this succeeds, allowing a failed disk write to restore
     // both listener ownership and the previous peer relay/credential state.
+    let incoming_reverse = ReverseConfig {
+        enabled: incoming.reverse_enabled,
+        peer_id: incoming.reverse_peer_id.clone(),
+        allow_networks: incoming.reverse_allow_networks.clone(),
+        allow_ports: incoming.reverse_allow_ports.clone(),
+    };
+    let previous_reverse = std::mem::replace(&mut *st.reverse.write().await, incoming_reverse);
     let save = persist_imported_peer_state(&st, relay.as_ref()).await;
     if let Err(error) = save {
+        *st.reverse.write().await = previous_reverse;
         if let Err(rollback_error) = st.peers.replace_peer_configs(previous_peers.clone()).await {
             tracing::error!(error = %rollback_error, "导入配置保存失败后无法回滚对端配置");
         }
