@@ -400,6 +400,24 @@ impl AConfig {
             .then_some(self.peers[0].id.as_str())
     }
 
+    /// Prepare the legacy single-link runtime without changing the persisted peer model.
+    pub fn legacy_runtime_inputs(
+        &self,
+        root_relay: &RelaySettings,
+    ) -> std::result::Result<(Self, RelaySettings), String> {
+        let mut runtime = self.clone();
+        match self.peers.as_slice() {
+            [] => Ok((runtime, root_relay.clone())),
+            [peer] if peer.name == "默认对端" => {
+                runtime.node_id = peer.node_id.clone();
+                runtime.token = peer.token.clone();
+                runtime.published_targets = peer.published_targets.clone();
+                Ok((runtime, peer.relay.clone()))
+            }
+            _ => Err("当前版本仅支持迁移后的单个默认对端；请等待多对端运行时支持".into()),
+        }
+    }
+
     /// 检查启动前必须明确处理的配置。空凭证仍可用于首次启动，由 Web 管理页完成接入。
     pub fn validate(&self) -> std::result::Result<(), String> {
         let web_bind = self
@@ -1596,6 +1614,51 @@ token = "expose-token"
         assert_eq!(
             config.access.as_ref().unwrap().peers[0].relay.relays[0].auth_token,
             "relay-token"
+        );
+    }
+
+    #[test]
+    fn migrated_default_peer_prepares_legacy_runtime_credentials_and_relay() {
+        let peer_relay = RelaySettings {
+            relays: vec![RelayEntry {
+                url: "https://peer-relay.example.test".into(),
+                auth_token: "peer-relay-token".into(),
+            }],
+            force_relay: true,
+        };
+        let config = AConfig {
+            peers: vec![PeerConfig {
+                id: "peer-default".into(),
+                name: "默认对端".into(),
+                node_id: "peer-node".into(),
+                token: "peer-token".into(),
+                published_targets: vec![PublishedTarget {
+                    host: "10.0.0.8".into(),
+                    port: 443,
+                    label: "HTTPS".into(),
+                }],
+                relay: peer_relay.clone(),
+            }],
+            ..Default::default()
+        };
+        let root_relay = RelaySettings {
+            relays: vec![RelayEntry {
+                url: "https://expose-relay.example.test".into(),
+                auth_token: "expose-relay-token".into(),
+            }],
+            force_relay: false,
+        };
+
+        let (runtime, relay) = config.legacy_runtime_inputs(&root_relay).unwrap();
+
+        assert_eq!(runtime.node_id, "peer-node");
+        assert_eq!(runtime.token, "peer-token");
+        assert_eq!(runtime.published_targets, config.peers[0].published_targets);
+        assert_eq!(runtime.peers, config.peers);
+        assert_eq!(relay, peer_relay);
+        assert_eq!(
+            root_relay.relays[0].url,
+            "https://expose-relay.example.test"
         );
     }
 

@@ -70,7 +70,15 @@ async fn run() -> Result<()> {
         ));
     }
     if let Some(access_cfg) = loaded.config.access {
-        tasks.spawn(access::run(access_cfg, relay, loaded.path, cancel.clone()));
+        let (access_cfg, access_relay) = access_cfg
+            .legacy_runtime_inputs(&relay)
+            .map_err(anyhow::Error::msg)?;
+        tasks.spawn(access::run(
+            access_cfg,
+            access_relay,
+            loaded.path,
+            cancel.clone(),
+        ));
     }
 
     // A freshly exec'd update retains its old binary until the new process has survived its
