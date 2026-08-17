@@ -1363,6 +1363,820 @@ mod integration_tests {
         std::fs::remove_file(&state.config_path).unwrap();
     }
 
+    fn relay_settings(url: &str, auth_token: &str) -> config::RelaySettings {
+        config::RelaySettings {
+            relays: vec![config::RelayEntry {
+                url: url.into(),
+                auth_token: auth_token.into(),
+            }],
+            force_relay: false,
+        }
+    }
+
+    fn default_peer(
+        id: &str,
+        node_id: &str,
+        token: &str,
+        relay: config::RelaySettings,
+    ) -> config::PeerConfig {
+        config::PeerConfig {
+            id: id.into(),
+            name: "默认对端".into(),
+            node_id: node_id.into(),
+            token: token.into(),
+            published_targets: Vec::new(),
+            relay,
+        }
+    }
+
+    fn peer(id: &str, name: &str) -> config::PeerConfig {
+        config::PeerConfig {
+            id: id.into(),
+            name: name.into(),
+            node_id: String::new(),
+            token: String::new(),
+            published_targets: Vec::new(),
+            relay: config::RelaySettings::default(),
+        }
+    }
+
+    #[test]
+    fn legacy_bridge_updates_only_the_default_peer_and_serializes_peer_credentials() {
+        let runtime = config::AConfig {
+            node_id: "new-node".into(),
+            token: "new-token".into(),
+            published_targets: vec![config::PublishedTarget {
+                host: "10.0.0.10".into(),
+                port: 443,
+                label: "HTTPS".into(),
+            }],
+            ..Default::default()
+        };
+        let persisted = config::AConfig {
+            peers: vec![default_peer(
+                "legacy-default",
+                "old-node",
+                "old-token",
+                relay_settings("https://old-relay.example.test", "old-relay-token"),
+            )],
+            ..Default::default()
+        };
+
+        let relay_only = merge_legacy_runtime_access(
+            runtime.clone(),
+            Some(&persisted),
+            &relay_settings("https://new-relay.example.test", "new-relay-token"),
+            LegacyRuntimeSync::RELAY,
+        );
+        assert_eq!(relay_only.peers[0].token, "old-token");
+        assert_eq!(
+            relay_only.peers[0].relay.relays[0].auth_token,
+            "new-relay-token"
+        );
+
+        let merged = merge_legacy_runtime_access(
+            runtime,
+            Some(&persisted),
+            &relay_settings("https://new-relay.example.test", "new-relay-token"),
+            LegacyRuntimeSync {
+                credentials: true,
+                relay: true,
+            },
+        );
+
+        assert!(merged.node_id.is_empty());
+        assert!(merged.token.is_empty());
+        assert_eq!(merged.peers.len(), 1);
+        assert_eq!(merged.peers[0].node_id, "new-node");
+        assert_eq!(merged.peers[0].token, "new-token");
+        assert_eq!(
+            merged.peers[0].relay.relays[0].auth_token,
+            "new-relay-token"
+        );
+        let serialized = serde_json::to_value(&merged).unwrap();
+        assert!(serialized.get("token").is_none());
+        assert_eq!(serialized["peers"][0]["token"], "new-token");
+
+        let redacted = merged.redacted_for_export();
+        let redacted = serde_json::to_value(redacted).unwrap();
+        assert_eq!(redacted["peers"][0]["token"], "");
+        assert!(
+            redacted["peers"][0]["relay"]["relays"][0]
+                .get("auth_token")
+                .is_none()
+        );
+
+        let mut config = config::Config {
+            relay: relay_settings("https://expose-relay.example.test", "expose-relay-token"),
+            expose: Some(config::BConfig::default()),
+            access: Some(merged),
+        };
+        config.normalize_access_peers().unwrap();
+        assert_eq!(config.relay.relays[0].auth_token, "expose-relay-token");
+    }
+
+    #[test]
+    fn legacy_bridge_allows_only_the_migrated_default_peer() {
+        let default = config::AConfig {
+            peers: vec![default_peer(
+                "legacy-default",
+                "node",
+                "token",
+                config::RelaySettings::default(),
+            )],
+            ..Default::default()
+        };
+        assert_eq!(
+            legacy_default_peer_for_route(Some(&default)).unwrap(),
+            Some("legacy-default".into())
+        );
+
+        let multi_peer = config::AConfig {
+            peers: vec![peer("office", "office"), peer("home", "home")],
+            ..Default::default()
+        };
+        assert!(legacy_default_peer_for_route(Some(&multi_peer)).is_err());
+    }
+
+    #[test]
+    fn legacy_bridge_preserves_default_peer_without_an_explicit_runtime_update() {
+        let runtime = config::AConfig {
+            node_id: "runtime-node".into(),
+            token: "runtime-token".into(),
+            ..Default::default()
+        };
+        let persisted = config::AConfig {
+            peers: vec![default_peer(
+                "legacy-default",
+                "stored-node",
+                "stored-token",
+                relay_settings("https://stored-relay.example.test", "stored-relay-token"),
+            )],
+            ..Default::default()
+        };
+
+        let merged = merge_legacy_runtime_access(
+            runtime,
+            Some(&persisted),
+            &relay_settings("https://runtime-relay.example.test", "runtime-relay-token"),
+            LegacyRuntimeSync::NONE,
+        );
+
+        assert_eq!(merged.peers[0].node_id, "stored-node");
+        assert_eq!(merged.peers[0].token, "stored-token");
+        assert_eq!(
+            merged.peers[0].relay.relays[0].auth_token,
+            "stored-relay-token"
+        );
+    }
+
+    #[test]
+    fn peer_aware_import_accepts_only_the_migrated_default_peer() {
+        let mapping = config::Mapping {
+            peer_id: "legacy-default".into(),
+            allow_loopback_target: false,
+            local: "127.0.0.1:0".into(),
+            host: "10.0.0.10".into(),
+            port: 443,
+            enabled: false,
+            name: "HTTPS".into(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        let incoming = config::AConfig {
+            peers: vec![default_peer(
+                "legacy-default",
+                "import-node",
+                "import-token",
+                relay_settings("https://import-relay.example.test", "import-relay-token"),
+            )],
+            mappings: vec![mapping],
+            ..Default::default()
+        };
+
+        let imported = imported_default_peer(&incoming).unwrap().unwrap();
+        assert_eq!(imported.id, "legacy-default");
+        assert_eq!(imported.token, "import-token");
+
+        let multi_peer = config::AConfig {
+            peers: vec![peer("office", "office"), peer("home", "home")],
+            ..Default::default()
+        };
+        assert!(imported_default_peer(&multi_peer).is_err());
+    }
+
+    #[tokio::test]
+    async fn credential_update_persists_to_the_default_peer_without_overwriting_expose_relay() {
+        let state = test_state("").await;
+        let expose_relay =
+            relay_settings("https://expose-relay.example.test", "expose-relay-token");
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: expose_relay.clone(),
+                expose: Some(config::BConfig::default()),
+                access: Some(config::AConfig {
+                    peers: vec![default_peer(
+                        "legacy-default",
+                        "old-node",
+                        "old-token",
+                        relay_settings("https://old-access-relay.example.test", "old-access-token"),
+                    )],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let node_id = state.link.endpoint.id().to_string();
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/credential")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"node_id":"{node_id}","token":"new-access-token","published_targets":[{{"host":"10.0.0.10","port":443,"label":"HTTPS"}}],"relay":{{"relays":[{{"url":"https://access-relay.example.test","auth_token":"access-relay-token"}}],"force_relay":false}}}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let saved = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config;
+        let access = saved.access.unwrap();
+        let peer = access
+            .legacy_default_peer_id()
+            .and_then(|id| access.peer(id))
+            .unwrap();
+        assert_eq!(peer.node_id, node_id);
+        assert_eq!(peer.token, "new-access-token");
+        assert_eq!(peer.published_targets[0].host, "10.0.0.10");
+        assert_eq!(
+            peer.relay.relays[0].url,
+            "https://access-relay.example.test"
+        );
+        assert_eq!(peer.relay.relays[0].auth_token, "access-relay-token");
+        assert_eq!(saved.relay, expose_relay);
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn legacy_credential_route_rejects_a_multi_peer_configuration() {
+        let state = test_state("").await;
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: config::RelaySettings::default(),
+                expose: None,
+                access: Some(config::AConfig {
+                    peers: vec![peer("office", "office"), peer("home", "home")],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let node_id = state.link.endpoint.id().to_string();
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/credential")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"node_id":"{node_id}","token":"new-access-token"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(!state.link.configured().await);
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_aware_export_includes_credentials_only_when_requested() {
+        let state = test_state("").await;
+        let export_node_id = state.link.endpoint.id().to_string();
+        let mapping = config::Mapping {
+            peer_id: "legacy-default".into(),
+            allow_loopback_target: false,
+            local: "127.0.0.1:0".into(),
+            host: "10.0.0.10".into(),
+            port: 443,
+            enabled: false,
+            name: "HTTPS".into(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        let domain_mapping = config::DomainMapping {
+            peer_id: "legacy-default".into(),
+            allow_loopback_target: false,
+            domain: "export.example.test".into(),
+            remote_port: 8443,
+            enabled: false,
+        };
+        let mut export_peer = default_peer(
+            "legacy-default",
+            &export_node_id,
+            "export-access-token",
+            relay_settings(
+                "https://export-access-relay.example.test",
+                "export-access-relay-token",
+            ),
+        );
+        export_peer.published_targets = vec![config::PublishedTarget {
+            host: "10.0.0.10".into(),
+            port: 443,
+            label: "HTTPS".into(),
+        }];
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.local.clone(), disabled_handle(mapping.clone()));
+        state.domains.lock().await.mappings.insert(
+            domain_mapping.domain.clone(),
+            disabled_domain_handle(domain_mapping.clone(), false, None),
+        );
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: relay_settings("https://expose-relay.example.test", "expose-relay-token"),
+                expose: Some(config::BConfig::default()),
+                access: Some(config::AConfig {
+                    peers: vec![export_peer],
+                    mappings: vec![mapping],
+                    domain_mappings: vec![domain_mapping],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let source_app = app(state.clone());
+
+        let redacted = response_json(
+            source_app
+                .clone()
+                .oneshot(Request::get("/api/export").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(redacted["peers"][0]["id"], "legacy-default");
+        assert_eq!(redacted["peers"][0]["token"], "");
+        assert!(
+            redacted["peers"][0]["relay"]["relays"][0]
+                .get("auth_token")
+                .is_none()
+        );
+
+        let full = response_json(
+            source_app
+                .oneshot(
+                    Request::get("/api/export?include_credentials=true")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(full.get("token").is_none());
+        assert_eq!(full["peers"][0]["node_id"], export_node_id);
+        assert_eq!(full["peers"][0]["token"], "export-access-token");
+        assert_eq!(
+            full["peers"][0]["published_targets"][0]["host"],
+            "10.0.0.10"
+        );
+        assert_eq!(
+            full["peers"][0]["relay"]["relays"][0]["auth_token"],
+            "export-access-relay-token"
+        );
+        assert_eq!(full["mappings"][0]["peer_id"], "legacy-default");
+        assert_eq!(full["domain_mappings"][0]["peer_id"], "legacy-default");
+
+        let restored = test_state("").await;
+        let restored_app = app(restored.clone());
+        let imported = restored_app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&full).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(imported.status(), StatusCode::OK);
+        let restored_config = config::load_config(&restored.config_path, None)
+            .unwrap()
+            .config;
+        let restored_access = restored_config.access.unwrap();
+        assert_eq!(restored_access.peers[0].id, "legacy-default");
+        assert_eq!(restored_access.peers[0].token, "export-access-token");
+        assert_eq!(
+            restored_access.peers[0].relay.relays[0].auth_token,
+            "export-access-relay-token"
+        );
+        assert_eq!(restored_access.mappings[0].peer_id, "legacy-default");
+        assert_eq!(
+            restored_access.domain_mappings[0].domain,
+            "export.example.test"
+        );
+        assert_eq!(restored_access.domain_mappings[0].peer_id, "legacy-default");
+        assert_eq!(
+            restored_config.relay.relays[0].auth_token,
+            "expose-relay-token"
+        );
+        assert!(
+            restored
+                .domains
+                .lock()
+                .await
+                .mappings
+                .contains_key("export.example.test")
+        );
+        std::fs::remove_file(&state.config_path).unwrap();
+        std::fs::remove_file(&restored.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn peer_aware_domain_import_rolls_back_runtime_changes_when_persistence_fails() {
+        let mut state = test_state("").await;
+        state.config_path = PathBuf::from("/dev/null/powermap-import-domain.toml");
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let node_id = state.link.endpoint.id().to_string();
+        let domain = "rollback.example.test";
+        let access = config::AConfig {
+            peers: vec![default_peer(
+                "legacy-default",
+                &node_id,
+                "import-token",
+                config::RelaySettings::default(),
+            )],
+            domain_mappings: vec![config::DomainMapping {
+                peer_id: "legacy-default".into(),
+                allow_loopback_target: false,
+                domain: domain.into(),
+                remote_port: 443,
+                enabled: true,
+            }],
+            ..Default::default()
+        };
+        let payload = serde_json::to_string(&TransferPayload {
+            access,
+            relay: Some(relay_settings(
+                "https://root-relay.example.test",
+                "root-relay-token",
+            )),
+        })
+        .unwrap();
+        let hosts = state.hosts.clone();
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(payload))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.domains.lock().await.mappings.is_empty());
+        assert!(state.domains.lock().await.listener.is_none());
+        assert!(!hosts.has_loopback(domain).unwrap());
+    }
+
+    #[tokio::test]
+    async fn legacy_mapping_creation_binds_port_and_domain_mappings_to_the_default_peer() {
+        let state = test_state("").await;
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: config::RelaySettings::default(),
+                expose: None,
+                access: Some(config::AConfig {
+                    peers: vec![default_peer(
+                        "legacy-default",
+                        "node",
+                        "token",
+                        config::RelaySettings::default(),
+                    )],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let app = app(state.clone());
+
+        let port = response_json(
+            app.clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/api/mappings")
+                        .header(header::CONTENT_TYPE, "application/json")
+                        .body(Body::from(
+                            r#"{"local":"127.0.0.1:0","host":"10.0.0.10","port":443,"enabled":false}"#,
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(port["peer_id"], "legacy-default");
+
+        let domain = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/domain-mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"domain":"app.example.test","enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(domain.status(), StatusCode::OK);
+
+        let saved = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config
+            .access
+            .unwrap();
+        assert_eq!(saved.mappings[0].peer_id, "legacy-default");
+        assert_eq!(saved.domain_mappings[0].peer_id, "legacy-default");
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn legacy_mapping_creation_rejects_a_multi_peer_configuration() {
+        let state = test_state("").await;
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: config::RelaySettings::default(),
+                expose: None,
+                access: Some(config::AConfig {
+                    peers: vec![peer("office", "office"), peer("home", "home")],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let app = app(state.clone());
+
+        let port = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:0","host":"10.0.0.10","port":443,"enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(port.status(), StatusCode::BAD_REQUEST);
+
+        let domain = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/domain-mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"domain":"app.example.test","enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(domain.status(), StatusCode::BAD_REQUEST);
+        assert!(state.inner.lock().await.mappings.is_empty());
+        assert!(state.domains.lock().await.mappings.is_empty());
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn legacy_mapping_mutations_reject_multi_peer_before_runtime_changes() {
+        let state = test_state("").await;
+        let port_mapping = config::Mapping {
+            peer_id: "office".into(),
+            allow_loopback_target: false,
+            local: "127.0.0.1:0".into(),
+            host: "10.0.0.10".into(),
+            port: 443,
+            enabled: false,
+            name: "HTTPS".into(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        let bulk_mapping = config::Mapping {
+            local: "127.0.0.1:1".into(),
+            enabled: true,
+            ..port_mapping.clone()
+        };
+        let domain_mapping = config::DomainMapping {
+            peer_id: "office".into(),
+            allow_loopback_target: false,
+            domain: "blocked.example.test".into(),
+            remote_port: 443,
+            enabled: false,
+        };
+        state.inner.lock().await.mappings.insert(
+            port_mapping.local.clone(),
+            disabled_handle(port_mapping.clone()),
+        );
+        state.inner.lock().await.mappings.insert(
+            bulk_mapping.local.clone(),
+            disabled_handle(bulk_mapping.clone()),
+        );
+        state.domains.lock().await.mappings.insert(
+            domain_mapping.domain.clone(),
+            disabled_domain_handle(domain_mapping.clone(), false, None),
+        );
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: config::RelaySettings::default(),
+                expose: None,
+                access: Some(config::AConfig {
+                    peers: vec![peer("office", "office"), peer("home", "home")],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let app = app(state.clone());
+
+        let port_update = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/mappings/127.0.0.1:0")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:0","host":"10.0.0.99","port":8443}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(port_update.status(), StatusCode::BAD_REQUEST);
+
+        let port_toggle = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings/127.0.0.1:0/toggle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(port_toggle.status(), StatusCode::BAD_REQUEST);
+
+        let port_delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/mappings/127.0.0.1:0")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(port_delete.status(), StatusCode::BAD_REQUEST);
+
+        let domain_update = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/domain-mappings/blocked.example.test")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"domain":"blocked.example.test","remote_port":8443}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(domain_update.status(), StatusCode::BAD_REQUEST);
+
+        let domain_toggle = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/domain-mappings/blocked.example.test/toggle")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(domain_toggle.status(), StatusCode::BAD_REQUEST);
+
+        let domain_delete = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/domain-mappings/blocked.example.test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(domain_delete.status(), StatusCode::BAD_REQUEST);
+
+        let bulk_toggle = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings/toggle-all")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"enabled":false}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(bulk_toggle.status(), StatusCode::BAD_REQUEST);
+
+        let mappings = state.inner.lock().await;
+        assert_eq!(
+            *mappings.mappings[&port_mapping.local].mapping.read().await,
+            port_mapping
+        );
+        assert_eq!(
+            *mappings.mappings[&bulk_mapping.local].mapping.read().await,
+            bulk_mapping
+        );
+        drop(mappings);
+        let domains = state.domains.lock().await;
+        assert_eq!(
+            *domains.mappings[&domain_mapping.domain]
+                .mapping
+                .read()
+                .await,
+            domain_mapping
+        );
+        assert!(domains.listener.is_none());
+        drop(domains);
+        assert!(!state.hosts.has_loopback("blocked.example.test").unwrap());
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn mapping_creation_rolls_back_when_persistence_fails() {
+        let mut state = test_state("").await;
+        state.config_path = PathBuf::from("/dev/null/powermap-create-mapping.toml");
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:0","host":"10.0.0.10","port":443,"enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.inner.lock().await.mappings.is_empty());
+    }
+
     async fn response_json(response: Response) -> Value {
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         serde_json::from_slice(&bytes).unwrap()
@@ -2768,12 +3582,16 @@ mod integration_tests {
                 .unwrap(),
         )
         .await;
-        assert_eq!(redacted["token"], "");
         assert_eq!(
-            redacted["relay"]["relays"][0]["url"],
+            redacted["peers"][0]["relay"]["relays"][0]["url"],
             "https://export-relay.example.com"
         );
-        assert!(redacted["relay"]["relays"][0].get("auth_token").is_none());
+        assert_eq!(redacted["peers"][0]["token"], "");
+        assert!(
+            redacted["peers"][0]["relay"]["relays"][0]
+                .get("auth_token")
+                .is_none()
+        );
 
         let full = response_json(
             app.oneshot(
@@ -2785,8 +3603,11 @@ mod integration_tests {
             .unwrap(),
         )
         .await;
-        assert_eq!(full["token"], "private-token");
-        assert_eq!(full["relay"]["relays"][0]["auth_token"], "relay-secret");
+        assert_eq!(full["peers"][0]["token"], "private-token");
+        assert_eq!(
+            full["peers"][0]["relay"]["relays"][0]["auth_token"],
+            "relay-secret"
+        );
     }
 
     #[tokio::test]
@@ -3829,6 +4650,7 @@ async fn create_domain_mapping(
     State(st): State<AppState>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
+    let peer_id = legacy_default_peer_id_for_route(&st).await?;
     let _operation = lock_domain_operation(&st).await;
     let domains = st.domains.lock().await;
     if domains.mappings.contains_key(&body.domain) {
@@ -3848,7 +4670,7 @@ async fn create_domain_mapping(
     }
     drop(domains);
     let mapping = config::DomainMapping {
-        peer_id: String::new(),
+        peer_id: peer_id.unwrap_or_default(),
         allow_loopback_target: false,
         domain: body.domain,
         remote_port: body.remote_port.unwrap_or_else(default_domain_remote_port),
@@ -3870,7 +4692,18 @@ async fn create_domain_mapping(
     }
     domains.mappings.insert(mapping.domain.clone(), handle);
     drop(domains);
-    save_config(&st).await;
+    if let Err(error) = persist_config(&st).await {
+        let handle = st.domains.lock().await.mappings.remove(&mapping.domain);
+        if let Some(handle) = handle
+            && let Err(cleanup_error) = stop_domain_mapping(&st, handle, true).await
+        {
+            tracing::error!(error = %cleanup_error, domain = %mapping.domain, "域名映射保存失败后的回滚不完整");
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存域名映射失败: {error}"),
+        ));
+    }
     Ok(Json(status))
 }
 
@@ -3879,6 +4712,7 @@ async fn update_domain_mapping(
     Path(domain): Path<String>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
+    ensure_legacy_mapping_mutation_compatible(&st).await?;
     if body.domain != domain {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -3948,6 +4782,7 @@ async fn toggle_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
+    ensure_legacy_mapping_mutation_compatible(&st).await?;
     let _operation = lock_domain_operation(&st).await;
     let previous = {
         let domains = st.domains.lock().await;
@@ -3992,6 +4827,9 @@ async fn remove_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> impl IntoResponse {
+    if let Err(error) = ensure_legacy_mapping_mutation_compatible(&st).await {
+        return error.into_response();
+    }
     let _operation = lock_domain_operation(&st).await;
     let handle = st.domains.lock().await.mappings.remove(&domain);
     match handle {
@@ -4226,8 +5064,9 @@ async fn create(
     State(st): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> Result<Json<config::Mapping>, (StatusCode, String)> {
+    let peer_id = legacy_default_peer_id_for_route(&st).await?;
     let mapping = config::Mapping {
-        peer_id: String::new(),
+        peer_id: peer_id.unwrap_or_default(),
         allow_loopback_target: false,
         local: body.local,
         host: body.host,
@@ -4278,7 +5117,16 @@ async fn create(
         }
         g.mappings.insert(mapping.local.clone(), handle);
     }
-    save_config(&st).await;
+    if let Err(error) = persist_config(&st).await {
+        let handle = st.inner.lock().await.mappings.remove(&mapping.local);
+        if let Some(handle) = handle {
+            stop_mapping(handle).await;
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存映射失败: {error}"),
+        ));
+    }
     st.events.push(
         "info",
         "mapping",
@@ -4697,7 +5545,10 @@ async fn handle_udp_session(
     result.map(|_| ())
 }
 
-async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> impl IntoResponse {
+async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    if let Err(error) = ensure_legacy_mapping_mutation_compatible(&st).await {
+        return error.into_response();
+    }
     let mut g = st.inner.lock().await;
     match g.mappings.remove(&id) {
         Some(h) => {
@@ -4708,9 +5559,9 @@ async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> impl Into
             save_config(&st).await;
             st.events
                 .push("info", "mapping", format!("已断开映射 {id}"));
-            StatusCode::NO_CONTENT
+            StatusCode::NO_CONTENT.into_response()
         }
-        None => StatusCode::NOT_FOUND,
+        None => StatusCode::NOT_FOUND.into_response(),
     }
 }
 
@@ -4722,6 +5573,7 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<CreateBody>,
 ) -> Result<Json<config::Mapping>, (StatusCode, String)> {
+    ensure_legacy_mapping_mutation_compatible(&st).await?;
     let mut g = st.inner.lock().await;
     let existing = g
         .mappings
@@ -4787,6 +5639,7 @@ async fn toggle(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<config::Mapping>, (StatusCode, String)> {
+    ensure_legacy_mapping_mutation_compatible(&st).await?;
     let mut g = st.inner.lock().await;
     let existing = g
         .mappings
@@ -4837,7 +5690,8 @@ struct ToggleAllResult {
 async fn toggle_all(
     State(st): State<AppState>,
     Json(body): Json<ToggleAllBody>,
-) -> Json<ToggleAllResult> {
+) -> Result<Json<ToggleAllResult>, (StatusCode, String)> {
+    ensure_legacy_mapping_mutation_compatible(&st).await?;
     let target = body.enabled;
     // 先取出需要切换的 local 列表，避免持锁期间跨 await 重建监听。
     let to_switch: Vec<String> = {
@@ -4895,12 +5749,12 @@ async fn toggle_all(
             ),
         );
     }
-    Json(ToggleAllResult {
+    Ok(Json(ToggleAllResult {
         enabled: target,
         changed,
         unchanged,
         failed,
-    })
+    }))
 }
 
 fn app(state: AppState) -> Router {
@@ -5062,27 +5916,162 @@ async fn build_config(st: &AppState) -> config::AConfig {
     }
 }
 
+/// Copy the state owned by the legacy single-peer runtime into the only peer it can identify.
+/// A persisted peer model with any other shape must remain untouched until the peer-aware runtime
+/// is available.
+#[derive(Clone, Copy)]
+struct LegacyRuntimeSync {
+    credentials: bool,
+    relay: bool,
+}
+
+impl LegacyRuntimeSync {
+    const NONE: Self = Self {
+        credentials: false,
+        relay: false,
+    };
+    const RELAY: Self = Self {
+        credentials: false,
+        relay: true,
+    };
+}
+
+fn merge_legacy_runtime_access(
+    mut runtime: config::AConfig,
+    persisted: Option<&config::AConfig>,
+    runtime_relay: &config::RelaySettings,
+    sync: LegacyRuntimeSync,
+) -> config::AConfig {
+    let Some(persisted) = persisted.filter(|access| !access.peers.is_empty()) else {
+        runtime.relay = runtime_relay.clone();
+        return runtime;
+    };
+
+    runtime.peers = persisted.peers.clone();
+    if let Some(peer_id) = persisted.legacy_default_peer_id() {
+        let peer_id = peer_id.to_owned();
+        // The legacy runtime predates mapping ownership. Once its first save creates the
+        // migrated peer, retain that ownership in subsequent runtime-only saves.
+        for mapping in &mut runtime.mappings {
+            if mapping.peer_id.trim().is_empty() {
+                mapping.peer_id = peer_id.clone();
+            }
+        }
+        for mapping in &mut runtime.domain_mappings {
+            if mapping.peer_id.trim().is_empty() {
+                mapping.peer_id = peer_id.clone();
+            }
+        }
+        if let Some(peer) = runtime.peers.iter_mut().find(|peer| peer.id == peer_id) {
+            if sync.credentials {
+                peer.node_id = runtime.node_id.clone();
+                peer.token = runtime.token.clone();
+                peer.published_targets = runtime.published_targets.clone();
+            }
+            if sync.relay {
+                peer.relay = runtime_relay.clone();
+            }
+        }
+    }
+    runtime.node_id.clear();
+    runtime.token.clear();
+    runtime.published_targets.clear();
+    runtime.relay = config::RelaySettings::default();
+    runtime
+}
+
+/// Legacy routes predate peer selection. They are safe only before migration or when the
+/// migration created the single default peer that represents the former global credential.
+fn legacy_default_peer_for_route(
+    access: Option<&config::AConfig>,
+) -> Result<Option<String>, String> {
+    let Some(access) = access else {
+        return Ok(None);
+    };
+    if access.peers.is_empty() {
+        return Ok(None);
+    }
+    access
+        .legacy_default_peer_id()
+        .map(str::to_owned)
+        .map_or_else(
+            || {
+                Err(
+                    "当前配置不是单一的“默认对端”；旧版接口无法安全选择对端，请使用对端专用 API"
+                        .into(),
+                )
+            },
+            |peer_id| Ok(Some(peer_id)),
+        )
+}
+
+async fn legacy_default_peer_id_for_route(
+    st: &AppState,
+) -> Result<Option<String>, (StatusCode, String)> {
+    let cfg = config::load_config(&st.config_path, None)
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("读取配置失败: {error}"),
+            )
+        })?
+        .config;
+    legacy_default_peer_for_route(cfg.access.as_ref())
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))
+}
+
+/// Mapping routes have no peer selector, so they may operate only before migration or against
+/// the one migrated default peer. Run this before acquiring runtime mapping state.
+async fn ensure_legacy_mapping_mutation_compatible(
+    st: &AppState,
+) -> Result<(), (StatusCode, String)> {
+    legacy_default_peer_id_for_route(st).await.map(|_| ())
+}
+
 async fn persist_config(st: &AppState) -> Result<(), String> {
+    persist_config_with_runtime_sync(st, LegacyRuntimeSync::NONE).await
+}
+
+async fn persist_config_with_runtime_sync(
+    st: &AppState,
+    sync: LegacyRuntimeSync,
+) -> Result<(), String> {
     let _save = st.config_save.lock().await;
-    let relay = st.link.relay_settings().await;
+    let runtime_relay = st.link.relay_settings().await;
+    let mut cfg = config::load_config(&st.config_path, None)
+        .map_err(|error| format!("读取配置失败: {error}"))?
+        .config;
+    let access = merge_legacy_runtime_access(
+        build_config(st).await,
+        cfg.access.as_ref(),
+        &runtime_relay,
+        sync,
+    );
+    cfg.access = Some(access);
+    cfg.normalize_access_peers()?;
+    cfg.validate()?;
+    config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
+}
+
+async fn persist_imported_default_peer(
+    st: &AppState,
+    peer: &config::PeerConfig,
+    root_relay: Option<&config::RelaySettings>,
+) -> Result<(), String> {
+    let _save = st.config_save.lock().await;
     let mut cfg = config::load_config(&st.config_path, None)
         .map_err(|error| format!("读取配置失败: {error}"))?
         .config;
     let mut access = build_config(st).await;
-    if let Some(existing) = &cfg.access
-        && !existing.peers.is_empty()
-    {
-        // The legacy runtime only owns mapping listeners. Preserve the persistent peer model
-        // until the peer-aware runtime replaces it.
-        access.peers = existing.peers.clone();
-        access.relay = existing.relay.clone();
-        access.node_id.clear();
-        access.token.clear();
-        access.published_targets.clear();
-    }
+    access.peers = vec![peer.clone()];
+    access.node_id.clear();
+    access.token.clear();
+    access.published_targets.clear();
+    access.relay = config::RelaySettings::default();
     cfg.access = Some(access);
-    cfg.relay = relay;
-    cfg.normalize_access_peers()?;
+    if let Some(root_relay) = root_relay {
+        cfg.relay = root_relay.clone();
+    }
     cfg.validate()?;
     config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
 }
@@ -5317,6 +6306,7 @@ async fn set_relay(
     State(st): State<AppState>,
     Json(relay): Json<config::RelaySettings>,
 ) -> Result<Json<RelaySettingsView>, (StatusCode, String)> {
+    let _peer_id = legacy_default_peer_id_for_route(&st).await?;
     let _update = st.relay_update.lock().await;
     let previous = st.link.relay_settings().await;
     let apply = st
@@ -5324,7 +6314,7 @@ async fn set_relay(
         .set_relay(relay.clone())
         .await
         .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
-    if let Err(error) = persist_config(&st).await {
+    if let Err(error) = persist_config_with_runtime_sync(&st, LegacyRuntimeSync::RELAY).await {
         if let Err(rollback_error) = st.link.set_relay(previous).await {
             tracing::error!(error = %rollback_error, "relay 配置持久化失败后无法回滚运行时设置");
         }
@@ -5357,6 +6347,7 @@ async fn set_credential(
         return Err((StatusCode::BAD_REQUEST, "node_id 与 token 不能为空".into()));
     }
     let target = parse_target(&cred.node_id).map_err(|m| (StatusCode::BAD_REQUEST, m))?;
+    let _peer_id = legacy_default_peer_id_for_route(&st).await?;
     // A shared credential may replace the relay settings. Keep it, the credential, and
     // persistence as one operation so a write error cannot leave either change memory-only.
     let _relay_update = st.relay_update.lock().await;
@@ -5392,7 +6383,15 @@ async fn set_credential(
             )
             .await;
     }
-    if let Err(error) = persist_config(&st).await {
+    if let Err(error) = persist_config_with_runtime_sync(
+        &st,
+        LegacyRuntimeSync {
+            credentials: true,
+            relay: replaces_relay,
+        },
+    )
+    .await
+    {
         if replaces_relay && let Err(rollback_error) = st.link.set_relay(previous_relay).await {
             tracing::error!(error = %rollback_error, "凭证配置持久化失败后无法回滚 relay 设置");
         }
@@ -5436,14 +6435,44 @@ struct TransferPayload {
     relay: Option<config::RelaySettings>,
 }
 
+async fn build_export_config(
+    st: &AppState,
+) -> Result<(config::AConfig, config::RelaySettings), String> {
+    let runtime_relay = st.link.relay_settings().await;
+    let mut cfg = config::load_config(&st.config_path, None)
+        .map_err(|error| format!("读取配置失败: {error}"))?
+        .config;
+    let access = merge_legacy_runtime_access(
+        build_config(st).await,
+        cfg.access.as_ref(),
+        &runtime_relay,
+        LegacyRuntimeSync::NONE,
+    );
+    cfg.access = Some(access);
+    cfg.normalize_access_peers()?;
+    cfg.validate()?;
+    Ok((
+        cfg.access.expect("export config always has access"),
+        cfg.relay,
+    ))
+}
+
 async fn export_config(State(st): State<AppState>, Query(query): Query<ExportQuery>) -> Response {
-    let access = build_config(&st).await;
+    let (access, mut relay) = match build_export_config(&st).await {
+        Ok(config) => config,
+        Err(error) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("导出配置失败: {error}"),
+            )
+                .into_response();
+        }
+    };
     let access = if query.include_credentials {
         access
     } else {
         access.redacted_for_export()
     };
-    let mut relay = st.link.relay_settings().await;
     if !query.include_credentials {
         for entry in &mut relay.relays {
             entry.auth_token.clear();
@@ -5490,6 +6519,19 @@ struct ImportQuery {
     mode: ImportMode,
 }
 
+/// A peer-aware backup can be applied by the legacy runtime only when it represents the one
+/// migrated default peer. Anything else needs the peer-aware runtime to select a connection.
+fn imported_default_peer(incoming: &config::AConfig) -> Result<Option<config::PeerConfig>, String> {
+    if incoming.peers.is_empty() {
+        return Ok(None);
+    }
+    incoming.validate()?;
+    let peer_id = incoming.legacy_default_peer_id().ok_or_else(|| {
+        "导入配置不是单一的“默认对端”；旧版导入接口无法安全选择对端，请使用对端专用 API".to_string()
+    })?;
+    Ok(incoming.peer(peer_id).cloned())
+}
+
 /// POST /api/import —— 事务式导入配置：应用映射 + 更新凭证 + 存盘。
 /// `?mode=overwrite`（默认）整体替换映射；`?mode=merge` 只叠加，不删除现有其他映射。
 /// 只接受 AConfig 结构；web_bind/TLS 等监听相关设置不热切换（需重启生效），
@@ -5504,13 +6546,30 @@ async fn import_config(
         relay,
     } = payload;
     let merge = query.mode == ImportMode::Merge;
+    let _peer_id = legacy_default_peer_id_for_route(&st).await?;
+    let imported_peer =
+        imported_default_peer(&incoming).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    if imported_peer.is_some() && merge {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "旧版导入接口只能覆盖导入单一的“默认对端”；合并需要对端专用 API".into(),
+        ));
+    }
+    let (node_id, token, published_targets) = match &imported_peer {
+        Some(peer) => (&peer.node_id, &peer.token, &peer.published_targets),
+        None => (
+            &incoming.node_id,
+            &incoming.token,
+            &incoming.published_targets,
+        ),
+    };
     // 1) 先校验凭证（若带了 node_id）
-    let new_target = if incoming.node_id.trim().is_empty() {
+    let new_target = if node_id.trim().is_empty() {
         None
     } else {
-        Some(parse_target(&incoming.node_id).map_err(|m| (StatusCode::BAD_REQUEST, m))?)
+        Some(parse_target(node_id).map_err(|m| (StatusCode::BAD_REQUEST, m))?)
     };
-    if incoming.node_id.trim().is_empty() != incoming.token.trim().is_empty() {
+    if node_id.trim().is_empty() != token.trim().is_empty() {
         return Err((
             StatusCode::BAD_REQUEST,
             "node_id 与 token 必须同时提供或同时留空".into(),
@@ -5537,9 +6596,46 @@ async fn import_config(
             ));
         }
     }
+    let mut domains = HashSet::new();
+    for mapping in &incoming.domain_mappings {
+        if let Err(reason) = mapping.validate() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("域名映射 {} 非法: {reason}", mapping.domain),
+            ));
+        }
+        if !domains.insert(&mapping.domain) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("域名映射 {} 重复", mapping.domain),
+            ));
+        }
+    }
 
-    // 3) 在不触碰现有映射的前提下预启动所有新增监听。相同 local 的监听保持
-    // 原 socket，仅在所有新增监听成功后更新其目标，避免重绑同一端口的竞争窗口。
+    // 3) 在不触碰现有映射的前提下预启动所有端口和域名监听。相同 local 的端口监听
+    // 保持原 socket，仅在所有新增监听成功后更新其目标，避免重绑同一端口的竞争窗口。
+    let _domain_operation = lock_domain_operation(&st).await;
+    let existing_domains = {
+        let domains = st.domains.lock().await;
+        domains.mappings.keys().cloned().collect::<HashSet<_>>()
+    };
+    let merged_domain_total = if merge {
+        existing_domains.len()
+            + incoming
+                .domain_mappings
+                .iter()
+                .filter(|mapping| !existing_domains.contains(&mapping.domain))
+                .count()
+    } else {
+        incoming.domain_mappings.len()
+    };
+    let domain_limit = config::domain_mapping_limit(st.max_mappings);
+    if merged_domain_total > domain_limit {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("域名映射数 {merged_domain_total} 超过上限 {domain_limit}"),
+        ));
+    }
     let mut g = st.inner.lock().await;
     // 上限检查：覆盖模式看导入条数；合并模式看合并后的并集大小（现有 + 导入新增）。
     let merged_total = if merge {
@@ -5571,6 +6667,31 @@ async fn import_config(
                 drop(g);
                 for (_, handle) in started_handles {
                     stop_mapping(handle).await;
+                }
+                return Err(error);
+            }
+        }
+    }
+
+    // Start domain handles before changing either runtime collection. Replacements use a new
+    // handle so the old one remains available until the configuration write commits.
+    let mut started_domain_handles = HashMap::new();
+    for mapping in &incoming.domain_mappings {
+        match start_domain_mapping_owned(&st, mapping.clone()).await {
+            Ok(handle) => {
+                started_domain_handles.insert(mapping.domain.clone(), handle);
+            }
+            Err(error) => {
+                drop(g);
+                for (_, handle) in started_handles {
+                    stop_mapping(handle).await;
+                }
+                for (domain, handle) in started_domain_handles {
+                    let remove_hosts = !existing_domains.contains(&domain);
+                    if let Err(cleanup_error) = stop_domain_mapping(&st, handle, remove_hosts).await
+                    {
+                        tracing::error!(error = %cleanup_error, domain, "域名映射导入预启动回滚不完整");
+                    }
                 }
                 return Err(error);
             }
@@ -5610,14 +6731,53 @@ async fn import_config(
     g.mappings = next;
     drop(g);
 
+    let mut previous_domain_mappings = {
+        let mut domains = st.domains.lock().await;
+        let previous = std::mem::take(&mut domains.mappings);
+        let mut next = HashMap::with_capacity(merged_domain_total);
+        for mapping in &incoming.domain_mappings {
+            let handle = started_domain_handles
+                .remove(&mapping.domain)
+                .expect("预启动的域名监听必须存在");
+            next.insert(mapping.domain.clone(), handle);
+        }
+        if merge {
+            for (domain, handle) in &previous {
+                if !next.contains_key(domain) {
+                    next.insert(domain.clone(), handle.clone());
+                }
+            }
+        }
+        domains.mappings = next;
+        previous
+    };
+    let previous_domain_names = previous_domain_mappings
+        .keys()
+        .cloned()
+        .collect::<HashSet<_>>();
+    let imported_domain_names = incoming
+        .domain_mappings
+        .iter()
+        .map(|mapping| mapping.domain.clone())
+        .collect::<HashSet<_>>();
+    let imported_domain_enabled = incoming
+        .domain_mappings
+        .iter()
+        .map(|mapping| (mapping.domain.clone(), mapping.enabled))
+        .collect::<HashMap<_, _>>();
+
     // 4) 更新 relay/凭证并写盘。覆盖模式下被移除的旧映射暂不停止，只有写盘成功
-    // 才会提交；失败时它们会和复用监听的旧目标一起恢复。
+    // 才会提交；失败时它们会和复用监听的旧目标及域名 handles 一起恢复。
     let _relay_update = st.relay_update.lock().await;
     let previous_relay = st.link.relay_settings().await;
     let previous_creds = st.link.creds.read().await.clone();
+    let access_relay = imported_peer
+        .as_ref()
+        .map(|peer| peer.relay.clone())
+        .or_else(|| relay.clone());
     let mut relay_replaced = false;
     let mut restart_required = st.link.relay_restart_required().await;
-    if let Some(relay) = relay {
+    if let Some(relay) = access_relay {
         let apply = st
             .link
             .set_relay(relay)
@@ -5630,24 +6790,37 @@ async fn import_config(
         if restart_required {
             st.link
                 .set_creds_without_reconnect(
-                    incoming.node_id.trim().to_string(),
-                    incoming.token.trim().to_string(),
+                    node_id.trim().to_string(),
+                    token.trim().to_string(),
                     target,
-                    incoming.published_targets.clone(),
+                    published_targets.clone(),
                 )
                 .await;
         } else {
             st.link
                 .set_creds(
-                    incoming.node_id.trim().to_string(),
-                    incoming.token.trim().to_string(),
+                    node_id.trim().to_string(),
+                    token.trim().to_string(),
                     target,
-                    incoming.published_targets.clone(),
+                    published_targets.clone(),
                 )
                 .await;
         }
     }
-    if let Err(error) = persist_config(&st).await {
+    let save = match imported_peer.as_ref() {
+        Some(peer) => persist_imported_default_peer(&st, peer, relay.as_ref()).await,
+        None => {
+            persist_config_with_runtime_sync(
+                &st,
+                LegacyRuntimeSync {
+                    credentials: new_target.is_some(),
+                    relay: relay_replaced,
+                },
+            )
+            .await
+        }
+    };
+    if let Err(error) = save {
         if relay_replaced && let Err(rollback_error) = st.link.set_relay(previous_relay).await {
             tracing::error!(error = %rollback_error, "导入配置保存失败后无法回滚 relay 设置");
         }
@@ -5676,6 +6849,24 @@ async fn import_config(
         for handle in started_to_stop {
             stop_mapping(handle).await;
         }
+        let domains_to_stop = {
+            let mut domains = st.domains.lock().await;
+            let current = std::mem::take(&mut domains.mappings);
+            domains.mappings = std::mem::take(&mut previous_domain_mappings);
+            current
+                .into_iter()
+                .filter(|(domain, _)| imported_domain_names.contains(domain))
+                .map(|(domain, handle)| {
+                    let remove_hosts = !previous_domain_names.contains(&domain);
+                    (domain, handle, remove_hosts)
+                })
+                .collect::<Vec<_>>()
+        };
+        for (domain, handle, remove_hosts) in domains_to_stop {
+            if let Err(cleanup_error) = stop_domain_mapping(&st, handle, remove_hosts).await {
+                tracing::error!(error = %cleanup_error, domain, "域名映射导入保存失败后的回滚不完整");
+            }
+        }
         return Err((
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("导入配置保存失败: {error}"),
@@ -5685,6 +6876,19 @@ async fn import_config(
     // 覆盖模式下被导入删除的映射到此才停止；合并模式下 previous 已被清空。
     for (_, handle) in previous {
         stop_mapping(handle).await;
+    }
+    for (domain, handle) in previous_domain_mappings {
+        let remove_hosts = match imported_domain_enabled.get(&domain) {
+            Some(enabled) => !enabled,
+            None if !merge => true,
+            None => continue,
+        };
+        if let Err(error) = stop_domain_mapping(&st, handle, remove_hosts).await {
+            tracing::error!(error = %error, domain, "导入提交后清理旧域名映射失败");
+            if remove_hosts && imported_domain_names.contains(&domain) {
+                record_domain_cleanup_failure(&st, &domain, error).await;
+            }
+        }
     }
     let started = incoming.mappings.len();
     tracing::info!(started, reused, kept, merge, "已导入配置");
