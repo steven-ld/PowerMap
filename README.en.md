@@ -268,7 +268,7 @@ Unified service templates, upgrade guidance, and SSH/mTLS Nginx remote administr
 
 Releases include Linux x86_64 / aarch64, macOS Intel / Apple Silicon, and Windows x86_64 archives with SHA-256 checksums.
 
-### v0.4.0 upgrade and compatibility
+### Upgrades and compatibility
 
 Starting with v0.4.0, every Release contains one `powermap` executable. The
 role-specific `powermap-server` and `powermap-client` binaries are no longer
@@ -284,6 +284,13 @@ single-tenant top-level `token` remains compatible as the `default` client.
 > Before rolling back to an old role-specific binary, back up
 > `powermap.toml`, `powermap.key`, and `powermap.credential.json`, as well as
 > any remaining legacy role configs. Older binaries do not read the unified config.
+
+When upgrading from v0.9.0, the original single access credential is migrated to
+**exactly one** `[[access.peers]]` entry named `默认对端` (Default peer). Every existing
+port and domain mapping persistently receives that peer's `peer_id`. New peers need a unique,
+non-empty name. Their `id` is an immutable local identifier; mappings reference it rather than
+the display name, so names can be changed safely. A peer referenced by any port or domain mapping
+cannot be deleted: PowerMap rejects deletion rather than silently rebinding mappings to another peer.
 
 ## Security Model
 
@@ -318,8 +325,6 @@ Default config directories are `~/.config/powermap/` on Linux and `~/Library/App
 
 ```toml
 [access]
-node_id = "a5d40b0a8d24..."
-token = "991fd0a3..."
 web_bind = "127.0.0.1:8088"
 web_token = ""
 web_tls_cert = ""
@@ -332,20 +337,61 @@ reverse_enabled = false
 reverse_allow_networks = []   # empty = deny all
 reverse_allow_ports = []      # empty = deny all
 
-# Domain mapping: access this domain through the remote node (HTTPS 443 by default)
+# Each peer has independent credentials, published targets, and relay settings.
+# id is immutable after creation; name is required and unique.
+[[access.peers]]
+id = "peer-office-7f31"
+name = "Office"
+node_id = "a5d40b0a8d24..."
+token = "office-access-token"
+
+[[access.peers.published_targets]]
+host = "10.20.0.15"
+port = 5432
+label = "PostgreSQL"
+
+[access.peers.relay]
+force_relay = false
+
+[[access.peers.relay.relays]]
+url = "https://office-relay.example.com"
+auth_token = "office-relay-token"
+
+[[access.peers]]
+id = "peer-home-c91b"
+name = "Home"
+node_id = "e41cc92d5b7a..."
+token = "home-access-token"
+
+[[access.peers.published_targets]]
+host = "192.168.50.8"
+port = 8123
+label = "Home Assistant"
+
+[access.peers.relay]
+force_relay = true
+
+[[access.peers.relay.relays]]
+url = "https://home-relay.example.com"
+auth_token = "home-relay-token"
+
+# Domain mapping: access this domain through this peer (HTTPS 443 by default)
 [[access.domain_mappings]]
+peer_id = "peer-home-c91b"
 domain = "ai-router.dl-aiot.com"
 remote_port = 443
 enabled = true
 
 # Plain TCP passthrough (default)
 [[access.mappings]]
+peer_id = "peer-office-7f31"
 local = "127.0.0.1:6379"
 host = "192.168.1.101"
 port = 6379
 
 # UDP passthrough (DNS, WireGuard, game servers, ...)
 [[access.mappings]]
+peer_id = "peer-home-c91b"
 local = "127.0.0.1:53"
 host = "192.168.1.1"
 port = 53
@@ -353,6 +399,7 @@ mode = "udp"
 
 # HTTP gateway: one local port routed to multiple intranet backends by Host header
 [[access.mappings]]
+peer_id = "peer-office-7f31"
 local = "127.0.0.1:8080"
 host = "192.168.1.101"   # fallback backend when no route matches
 port = 80
@@ -364,7 +411,11 @@ routes = [
 
 ```
 
-`web_bind` accepts local loopback addresses only; `web_token` is retained for compatibility and is not read, generated, or validated by this version. Domain mappings are supported on macOS/Linux only and require PowerMap to be started as an administrator. They modify the system hosts file. Multiple domains share local `127.0.0.1:443` and route by TLS SNI, so clients must send SNI. `max_conns_per_mapping = 0` means unlimited. Domain mappings require a lowercase fully qualified DNS name (no wildcards or IP literals); omitted `remote_port` defaults to HTTPS port `443`, and omitted `enabled` defaults to enabled.
+`web_bind` accepts local loopback addresses only; `web_token` is retained for compatibility and is not read, generated, or validated by this version. Every port and domain mapping must name an existing `peer_id`; names are display-only. Each peer's credentials, published targets, relay list, relay tokens, and `force_relay` setting are independent. The root `[relay]` still configures only this machine's expose Endpoint; it is not an access-peer relay setting and does not override one. Default exports redact the access token and relay token for **every** peer; credentials are included only in an explicitly selected full export.
+
+Domain mappings are supported on macOS/Linux only and require PowerMap to be started as an administrator. They modify the system hosts file. Multiple domains share local `127.0.0.1:443` and route by TLS SNI, so clients must send SNI. `max_conns_per_mapping = 0` means unlimited. Domain mappings require a lowercase fully qualified DNS name (no wildcards or IP literals); omitted `remote_port` defaults to HTTPS port `443`, and omitted `enabled` defaults to enabled.
+
+To prevent traffic being sent back to the peer itself, literal loopback targets (such as `127.0.0.1` and `::1`) and hostnames that resolve to loopback on the peer require explicit confirmation in the UI/API. No generic TCP loop detector can reliably infer every combination of two machines, DNS, routing, and proxies, so that confirmation is not a claim of universal loop detection. NAT hairpin access through a public address remains allowed.
 
 A mapping's `mode` defaults to `tcp` (plain passthrough); `udp` tunnels UDP datagrams; `http` enables a single-port HTTP gateway that matches each request's `Host` header against `routes` (up to 32), falling back to the mapping's own `host`/`port` when nothing matches (`routes` only apply in `http` mode).
 

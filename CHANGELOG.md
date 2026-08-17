@@ -4,6 +4,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- access 支持多个独立对端：每个对端必须有唯一名称，并独立保存 access 凭证、推荐目标、
+  relay 条目、relay token 与强制中继策略。端口映射和域名映射持久化 `peer_id`，避免名称
+  修改或相近网络造成流量串台。
+- 新增对端管理 API；被端口或域名映射引用的对端不能删除。默认导出会脱敏每个对端的 access
+  token 与 relay token。
+- 对端 literal loopback 目标及在对端解析为 loopback 的主机名要求显式确认；允许 NAT
+  hairpin，但不宣称能够自动检测所有跨机器 TCP 回环。
+
+### Changed
+
+- 从 v0.9.0 升级时，旧的单一 access 凭证迁移为恰好一个“默认对端”，并为既有端口映射和
+  域名映射写入持久化 `peer_id`。对端名称可安全修改，映射归属保持不变。
+- 根 `[relay]` 保持为本机 expose Endpoint 的配置；access 的 relay 改由各个对端独立管理。
+
 ## [0.9.0] - 2026-07-31
 
 ### Added

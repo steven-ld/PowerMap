@@ -484,6 +484,7 @@ pub struct PeerView {
     name: String,
     configured: bool,
     connected: bool,
+    restart_required: bool,
 }
 
 #[derive(Default)]
@@ -732,6 +733,15 @@ impl PeerManager {
 
     pub async fn upsert_peer(&self, peer: config::PeerConfig) -> Result<(), String> {
         Self::validate_peer(&peer, self.local_expose_id)?;
+        {
+            let peers = self.peers.read().await;
+            if peers
+                .values()
+                .any(|existing| existing.id != peer.id && existing.name.trim() == peer.name.trim())
+            {
+                return Err(format!("对端名称 {} 重复", peer.name));
+            }
+        }
         let existing = self.runtime.lock().await.links.get(&peer.id).cloned();
         if let Some(link) = existing {
             link.apply_peer_config(&peer).await?;
@@ -776,10 +786,34 @@ impl PeerManager {
                     Some(link) => link.is_alive().await,
                     None => false,
                 },
+                restart_required: match link {
+                    Some(link) => link.relay_restart_required().await,
+                    None => false,
+                },
             });
         }
         views.sort_by(|a, b| a.id.cmp(&b.id));
         views
+    }
+
+    /// Return one currently live link for aggregate legacy-compatible status surfaces without
+    /// allocating an endpoint for a dormant peer. Per-peer state remains available from
+    /// `peer_views`; callers use this only for the historical single-path summary fields.
+    async fn first_alive_link(&self) -> Option<Link> {
+        let links = self
+            .runtime
+            .lock()
+            .await
+            .links
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for link in links {
+            if link.is_alive().await {
+                return Some(link);
+            }
+        }
+        None
     }
 
     async fn peer_configs(&self) -> Vec<config::PeerConfig> {
@@ -804,6 +838,78 @@ impl PeerManager {
         }
         peers.sort_by(|a, b| a.id.cmp(&b.id));
         peers
+    }
+
+    /// Atomically replace the configured peer set after validating the full collection. Existing
+    /// links are updated in place so listeners which are still draining keep a valid Link. If a
+    /// link rejects its new relay configuration, every link changed earlier in this call is
+    /// restored from the runtime snapshot.
+    async fn replace_peer_configs(
+        &self,
+        peers: Vec<config::PeerConfig>,
+    ) -> Result<Vec<config::PeerConfig>, String> {
+        let mut replacement = HashMap::with_capacity(peers.len());
+        let mut names = HashSet::with_capacity(peers.len());
+        for peer in peers {
+            Self::validate_peer(&peer, self.local_expose_id)?;
+            if !names.insert(peer.name.trim().to_owned()) {
+                return Err(format!("对端名称 {} 重复", peer.name));
+            }
+            if replacement.insert(peer.id.clone(), peer).is_some() {
+                return Err("peer id 重复".into());
+            }
+        }
+
+        let previous = self.peer_configs().await;
+        let previous_by_id = previous
+            .iter()
+            .map(|peer| (peer.id.clone(), peer.clone()))
+            .collect::<HashMap<_, _>>();
+        let links = self.runtime.lock().await.links.clone();
+        let mut applied = Vec::new();
+        for peer in replacement.values() {
+            let Some(link) = links.get(&peer.id) else {
+                continue;
+            };
+            if let Err(error) = link.apply_peer_config(peer).await {
+                for id in applied {
+                    if let (Some(link), Some(previous)) = (links.get(&id), previous_by_id.get(&id))
+                        && let Err(rollback_error) = link.apply_peer_config(previous).await
+                    {
+                        tracing::error!(peer_id = %id, error = %rollback_error, "导入对端失败后无法回滚运行期配置");
+                    }
+                }
+                return Err(error);
+            }
+            applied.push(peer.id.clone());
+        }
+        *self.peers.write().await = replacement;
+
+        // Links with no listener reference must not survive a peer replacement indefinitely.
+        let stale_links = {
+            let peers = self.peers.read().await;
+            let mut runtime = self.runtime.lock().await;
+            let stale = runtime
+                .links
+                .keys()
+                .filter(|id| {
+                    !peers.contains_key(*id) && !runtime.active_references.contains_key(*id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let mut links = Vec::with_capacity(stale.len());
+            for id in stale {
+                runtime.watchdogs.remove(&id);
+                if let Some(link) = runtime.links.remove(&id) {
+                    links.push(link);
+                }
+            }
+            links
+        };
+        for link in stale_links {
+            link.fallback_cancel.cancel();
+        }
+        Ok(previous)
     }
 
     /// Read the selected default relay without creating an endpoint for an inactive peer.
@@ -1105,6 +1211,8 @@ struct Inner {
 
 type DomainListenerFuture = Pin<Box<dyn Future<Output = io::Result<TcpListener>> + Send>>;
 type DomainListenerFactory = Arc<dyn Fn() -> DomainListenerFuture + Send + Sync>;
+type MappingListenerFuture = Pin<Box<dyn Future<Output = io::Result<TcpListener>> + Send>>;
+type MappingListenerFactory = Arc<dyn Fn(String) -> MappingListenerFuture + Send + Sync>;
 type DomainAdminCheck = Arc<dyn Fn() -> Result<(), DomainAuthorityError> + Send + Sync>;
 type DomainPreflightFuture = Pin<Box<dyn Future<Output = Result<(), (StatusCode, String)>> + Send>>;
 type DomainPreflight = Arc<dyn Fn(&config::DomainMapping) -> DomainPreflightFuture + Send + Sync>;
@@ -1151,6 +1259,10 @@ fn current_process_admin() -> Result<(), DomainAuthorityError> {
 
 fn system_domain_listener() -> DomainListenerFactory {
     Arc::new(|| Box::pin(async { TcpListener::bind("127.0.0.1:443").await }))
+}
+
+fn system_mapping_listener() -> MappingListenerFactory {
+    Arc::new(|local| Box::pin(async move { TcpListener::bind(local).await }))
 }
 
 fn domain_preflight(peers: PeerManager) -> DomainPreflight {
@@ -1209,8 +1321,12 @@ struct AppState {
     /// Domain resource changes touch shared hosts state and loopback port 443.
     /// A single bounded lock avoids an attacker growing a per-domain lock map indefinitely.
     domain_lifecycle: Arc<Mutex<()>>,
+    /// Port mapping changes may replace a listener and need to restore it when persistence
+    /// fails. Serialize that full lifecycle rather than only individual hash-map updates.
+    mapping_lifecycle: Arc<Mutex<()>>,
     hosts: HostsStore,
     domain_listener: DomainListenerFactory,
+    mapping_listener: MappingListenerFactory,
     domain_admin_check: DomainAdminCheck,
     domain_preflight: DomainPreflight,
     config_path: PathBuf,
@@ -1433,12 +1549,16 @@ struct Status {
     connected_since: Option<u64>,
     /// 当前活跃连接中可确认的远端直连 IP；经中继时可能为空。
     connected_ips: Vec<String>,
+    /// Per-peer state is authoritative in a multi-peer configuration; the legacy fields above
+    /// are retained as an aggregate for existing console clients.
+    peers: Vec<PeerView>,
 }
 
 async fn status(State(st): State<AppState>) -> Json<Status> {
     let n = st.inner.lock().await.mappings.len();
-    let peer = st.peers.legacy_default_peer_config().await.ok();
-    let link = st.peers.legacy_default_cached_link().await.ok().flatten();
+    let peers = st.peers.peer_views().await;
+    let configs = st.peers.peer_configs().await;
+    let link = st.peers.first_alive_link().await;
     let path_info = match &link {
         Some(link) => link.transport_path().await,
         None => None,
@@ -1448,10 +1568,7 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
         Some(p) => (Some(p.path), p.rtt_ms, p.relay),
         None => (None, None, None),
     };
-    let connected = match &link {
-        Some(link) => link.is_alive().await,
-        None => false,
-    };
+    let connected = link.is_some();
     let connected_since = if connected {
         match link
             .as_ref()
@@ -1473,9 +1590,15 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
     } else {
         Vec::new()
     };
-    let (configured, node_id) = peer
-        .map(|peer| (!peer.node_id.trim().is_empty(), peer.node_id))
-        .unwrap_or_else(|| (false, String::new()));
+    let configured_peers = configs
+        .iter()
+        .filter(|peer| !peer.node_id.trim().is_empty())
+        .collect::<Vec<_>>();
+    let configured = !configured_peers.is_empty();
+    let node_id = match configured_peers.as_slice() {
+        [peer] => peer.node_id.clone(),
+        _ => String::new(),
+    };
     Json(Status {
         connected,
         configured,
@@ -1492,6 +1615,7 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
         over_limit: m.over_limit.load(Ordering::Relaxed),
         connected_since,
         connected_ips,
+        peers,
     })
 }
 
@@ -1499,15 +1623,12 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
 async fn diagnostics(State(st): State<AppState>) -> Json<DiagnosticSnapshot> {
     let configured = st
         .peers
-        .legacy_default_peer_config()
+        .peer_configs()
         .await
-        .map(|peer| !peer.node_id.trim().is_empty())
-        .unwrap_or(false);
-    let link = st.peers.legacy_default_cached_link().await.ok().flatten();
-    let connected = match &link {
-        Some(link) => link.is_alive().await,
-        None => false,
-    };
+        .iter()
+        .any(|peer| !peer.node_id.trim().is_empty());
+    let link = st.peers.first_alive_link().await;
+    let connected = link.is_some();
     let path_info = match &link {
         Some(link) if connected => link.transport_path().await,
         _ => None,
@@ -1542,10 +1663,10 @@ async fn runtime_info(State(st): State<AppState>) -> Json<runtime::RuntimeInfo> 
 async fn onboarding(State(st): State<AppState>) -> Json<OnboardingStatus> {
     let credential_configured = st
         .peers
-        .legacy_default_peer_config()
+        .peer_configs()
         .await
-        .map(|peer| !peer.node_id.trim().is_empty())
-        .unwrap_or(false);
+        .iter()
+        .any(|peer| !peer.node_id.trim().is_empty());
     let mappings = st.inner.lock().await.mappings.len();
     let domain_mappings = st.domains.lock().await.mappings.len();
     Json(OnboardingStatus {
@@ -1595,11 +1716,8 @@ async fn mapping_health(State(st): State<AppState>) -> Json<mapping_health::Summ
 
 /// GET /api/diagnostic-report --- a downloadable, credential-free support snapshot.
 async fn diagnostic_report(State(st): State<AppState>) -> Json<diagnostic_report::Report> {
-    let link = st.peers.legacy_default_cached_link().await.ok().flatten();
-    let connected = match &link {
-        Some(link) => link.is_alive().await,
-        None => false,
-    };
+    let link = st.peers.first_alive_link().await;
+    let connected = link.is_some();
     let path = match &link {
         Some(link) if connected => link.transport_path().await,
         _ => None,
@@ -1809,6 +1927,7 @@ mod integration_tests {
                 listener: None,
             })),
             domain_lifecycle: Arc::new(Mutex::new(())),
+            mapping_lifecycle: Arc::new(Mutex::new(())),
             hosts: {
                 let path = std::env::temp_dir().join(format!("powermap-hosts-test-{suffix}"));
                 std::fs::write(&path, "").unwrap();
@@ -1817,6 +1936,7 @@ mod integration_tests {
             domain_listener: Arc::new(|| {
                 Box::pin(async { TcpListener::bind("127.0.0.1:0").await })
             }),
+            mapping_listener: system_mapping_listener(),
             domain_admin_check: Arc::new(|| Ok(())),
             domain_preflight: Arc::new(|_| {
                 Box::pin(async {
@@ -1907,6 +2027,40 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn aggregate_status_and_onboarding_include_a_configured_nondefault_peer() {
+        let remote = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let mut office = peer("office", "办公室");
+        office.node_id = remote.id().to_string();
+        office.token = "office-token".into();
+        let state = test_state_with_peers([office]).await;
+        let app = app(state);
+
+        let status = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/status").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status["configured"], true);
+        assert!(
+            status["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|peer| peer["id"] == "office" && peer["configured"] == true)
+        );
+
+        let onboarding = response_json(
+            app.oneshot(Request::get("/api/onboarding").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(onboarding["credential_configured"], true);
+    }
+
+    #[tokio::test]
     async fn mapping_preflight_releases_an_inactive_default_peer() {
         let state = test_state("").await;
         let app = app(state.clone());
@@ -1927,6 +2081,224 @@ mod integration_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(state.peers.link_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn peers_api_creates_and_updates_one_peer_without_changing_another() {
+        let state = test_state("").await;
+        let app = app(state);
+
+        let first = app
+            .clone()
+            .oneshot(authenticated_post("/api/peers", r#"{"name":"办公室"}"#))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first = response_json(first).await;
+        let first_id = first["id"].as_str().unwrap().to_owned();
+
+        let second = app
+            .clone()
+            .oneshot(authenticated_post("/api/peers", r#"{"name":"机房"}"#))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), StatusCode::OK);
+        let second = response_json(second).await;
+        let second_id = second["id"].as_str().unwrap().to_owned();
+
+        let updated = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/peers/{first_id}"))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(r#"{"name":"办公室主节点"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(updated.status(), StatusCode::OK);
+
+        let peers = response_json(
+            app.oneshot(Request::get("/api/peers").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            peers
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|peer| peer["id"] == first_id)
+                .unwrap()["name"],
+            "办公室主节点"
+        );
+        assert_eq!(
+            peers
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|peer| peer["id"] == second_id)
+                .unwrap()["name"],
+            "机房"
+        );
+    }
+
+    #[tokio::test]
+    async fn deleting_referenced_peer_returns_conflict_with_mapping_list() {
+        let state = test_state_with_peers([peer("peer-a", "办公室")]).await;
+        let mapping = config::Mapping {
+            peer_id: "peer-a".into(),
+            allow_loopback_target: false,
+            local: "127.0.0.1:6379".into(),
+            host: "10.0.0.10".into(),
+            port: 6379,
+            enabled: false,
+            name: String::new(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.local.clone(), disabled_handle(mapping));
+        let app = app(state);
+
+        let peers = response_json(
+            app.clone()
+                .oneshot(Request::get("/api/peers").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(peers[0]["mapping_count"], 1);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("DELETE")
+                    .uri("/api/peers/peer-a")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            response_json(response).await["mappings"][0],
+            "127.0.0.1:6379"
+        );
+    }
+
+    #[tokio::test]
+    async fn mapping_creation_uses_the_requested_peer_id() {
+        let state = test_state_with_peers([peer("peer-a", "办公室")]).await;
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let app = app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"peer_id":"peer-a","local":"{local}","host":"10.0.0.10","port":6379,"enabled":false}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response_json(response).await["peer_id"], "peer-a");
+    }
+
+    #[tokio::test]
+    async fn offline_peer_requires_acknowledgement_for_a_literal_loopback_mapping() {
+        let state = test_state_with_peers([peer("peer-a", "办公室")]).await;
+        let app = app(state.clone());
+        let body = r#"{"peer_id":"peer-a","local":"127.0.0.1:0","host":"127.0.0.1","port":6379,"enabled":false}"#;
+
+        let rejected = app
+            .clone()
+            .oneshot(authenticated_post("/api/mappings", body))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::BAD_REQUEST);
+        assert!(state.inner.lock().await.mappings.is_empty());
+
+        let mapped_ipv6 = app
+            .clone()
+            .oneshot(authenticated_post(
+                "/api/mappings",
+                r#"{"peer_id":"peer-a","local":"127.0.0.1:0","host":"::ffff:127.0.0.1","port":6379,"enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(mapped_ipv6.status(), StatusCode::BAD_REQUEST);
+        assert!(state.inner.lock().await.mappings.is_empty());
+
+        let acknowledged = app
+            .oneshot(authenticated_post(
+                "/api/mappings",
+                r#"{"peer_id":"peer-a","local":"127.0.0.1:0","host":"127.0.0.1","port":6379,"enabled":false,"acknowledge_loop_risk":true}"#,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(acknowledged.status(), StatusCode::OK);
+        assert_eq!(
+            response_json(acknowledged).await["allow_loopback_target"],
+            true
+        );
+    }
+
+    #[tokio::test]
+    async fn import_rejects_unacknowledged_literal_loopback_mappings() {
+        let payload = TransferPayload {
+            access: config::AConfig {
+                peers: vec![default_peer(
+                    "default",
+                    "",
+                    "",
+                    config::RelaySettings::default(),
+                )],
+                mappings: vec![config::Mapping {
+                    peer_id: "default".into(),
+                    allow_loopback_target: false,
+                    local: "127.0.0.1:0".into(),
+                    host: "127.0.0.1".into(),
+                    port: 6379,
+                    enabled: false,
+                    name: String::new(),
+                    mode: config::MappingMode::Tcp,
+                    routes: Vec::new(),
+                }],
+                ..Default::default()
+            },
+            relay: None,
+        };
+
+        let response = app(test_state("").await)
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
@@ -2314,38 +2686,36 @@ mod integration_tests {
     }
 
     #[test]
-    fn peer_aware_import_accepts_only_the_migrated_default_peer() {
-        let mapping = config::Mapping {
-            peer_id: "legacy-default".into(),
-            allow_loopback_target: false,
-            local: "127.0.0.1:0".into(),
-            host: "10.0.0.10".into(),
-            port: 443,
-            enabled: false,
-            name: "HTTPS".into(),
-            mode: config::MappingMode::Tcp,
-            routes: Vec::new(),
-        };
-        let incoming = config::AConfig {
-            peers: vec![default_peer(
-                "legacy-default",
-                "import-node",
-                "import-token",
-                relay_settings("https://import-relay.example.test", "import-relay-token"),
-            )],
-            mappings: vec![mapping],
-            ..Default::default()
-        };
-
-        let imported = imported_default_peer(&incoming).unwrap().unwrap();
-        assert_eq!(imported.id, "legacy-default");
-        assert_eq!(imported.token, "import-token");
-
+    fn peer_aware_import_accepts_complete_peer_collection_and_legacy_shape() {
         let multi_peer = config::AConfig {
             peers: vec![peer("office", "office"), peer("home", "home")],
             ..Default::default()
         };
-        assert!(imported_default_peer(&multi_peer).is_err());
+        let imported = normalize_imported_access(multi_peer, None).unwrap();
+        assert_eq!(imported.peers.len(), 2);
+        assert!(imported.peer("office").is_some());
+        assert!(imported.peer("home").is_some());
+
+        let legacy = config::AConfig {
+            node_id: String::new(),
+            token: String::new(),
+            mappings: vec![config::Mapping {
+                peer_id: String::new(),
+                allow_loopback_target: false,
+                local: "127.0.0.1:0".into(),
+                host: "10.0.0.10".into(),
+                port: 443,
+                enabled: false,
+                name: "HTTPS".into(),
+                mode: config::MappingMode::Tcp,
+                routes: Vec::new(),
+            }],
+            ..Default::default()
+        };
+        let imported = normalize_imported_access(legacy, None).unwrap();
+        assert_eq!(imported.peers.len(), 1);
+        assert_eq!(imported.peers[0].name, "默认对端");
+        assert_eq!(imported.mappings[0].peer_id, imported.peers[0].id);
     }
 
     #[tokio::test]
@@ -2599,6 +2969,95 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn multi_peer_backup_import_preserves_all_peer_owners_and_redacts_each_token() {
+        let state = test_state("").await;
+        let office_endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let home_endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
+        let office = config::PeerConfig {
+            id: "office".into(),
+            name: "办公室".into(),
+            node_id: office_endpoint.id().to_string(),
+            token: "office-token".into(),
+            published_targets: Vec::new(),
+            relay: config::RelaySettings::default(),
+        };
+        let home = config::PeerConfig {
+            id: "home".into(),
+            name: "机房".into(),
+            node_id: home_endpoint.id().to_string(),
+            token: "home-token".into(),
+            published_targets: Vec::new(),
+            relay: config::RelaySettings::default(),
+        };
+        let payload = TransferPayload {
+            access: config::AConfig {
+                peers: vec![office.clone(), home.clone()],
+                mappings: vec![config::Mapping {
+                    peer_id: office.id.clone(),
+                    allow_loopback_target: false,
+                    local: "127.0.0.1:0".into(),
+                    host: "10.0.0.10".into(),
+                    port: 443,
+                    enabled: false,
+                    name: "office https".into(),
+                    mode: config::MappingMode::Tcp,
+                    routes: Vec::new(),
+                }],
+                domain_mappings: vec![config::DomainMapping {
+                    peer_id: home.id.clone(),
+                    allow_loopback_target: false,
+                    domain: "home.example.test".into(),
+                    remote_port: 443,
+                    enabled: false,
+                }],
+                ..Default::default()
+            },
+            relay: None,
+        };
+        let app = app(state.clone());
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let persisted = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config
+            .access
+            .unwrap();
+        assert_eq!(persisted.peers.len(), 2);
+        assert_eq!(persisted.peer("office"), Some(&office));
+        assert_eq!(persisted.peer("home"), Some(&home));
+        assert_eq!(persisted.mappings[0].peer_id, "office");
+        assert_eq!(persisted.domain_mappings[0].peer_id, "home");
+
+        let exported = response_json(
+            app.oneshot(Request::get("/api/export").body(Body::empty()).unwrap())
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(exported["peers"].as_array().unwrap().len(), 2);
+        assert!(
+            exported["peers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|peer| peer["token"] == "")
+        );
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
     async fn peer_aware_domain_import_rolls_back_runtime_changes_when_persistence_fails() {
         let mut state = test_state("").await;
         state.config_path = PathBuf::from("/dev/null/powermap-import-domain.toml");
@@ -2650,6 +3109,60 @@ mod integration_tests {
         assert!(state.domains.lock().await.mappings.is_empty());
         assert!(state.domains.lock().await.listener.is_none());
         assert!(!hosts.has_loopback(domain).unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_domain_import_restores_a_disabled_mapping_without_hosts_marker() {
+        let mut state = test_state("").await;
+        state.config_path = PathBuf::from("/dev/null/powermap-import-domain-replace.toml");
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let original = config::DomainMapping {
+            peer_id: "default".into(),
+            allow_loopback_target: false,
+            domain: "rollback.example.test".into(),
+            remote_port: 443,
+            enabled: false,
+        };
+        state.domains.lock().await.mappings.insert(
+            original.domain.clone(),
+            disabled_domain_handle(original.clone(), false, None),
+        );
+        let payload = TransferPayload {
+            access: config::AConfig {
+                peers: vec![default_peer(
+                    "default",
+                    "",
+                    "",
+                    config::RelaySettings::default(),
+                )],
+                domain_mappings: vec![config::DomainMapping {
+                    enabled: true,
+                    ..original.clone()
+                }],
+                ..Default::default()
+            },
+            relay: None,
+        };
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let restored = {
+            let domains = state.domains.lock().await;
+            domains.mappings[&original.domain].mapping.clone()
+        };
+        assert_eq!(*restored.read().await, original);
+        assert!(!state.hosts.has_loopback("rollback.example.test").unwrap());
     }
 
     #[tokio::test]
@@ -2807,7 +3320,7 @@ mod integration_tests {
     }
 
     #[tokio::test]
-    async fn legacy_mapping_mutations_reject_multi_peer_before_runtime_changes() {
+    async fn peer_owned_mapping_mutations_work_in_multi_peer_configuration() {
         let state = test_state("").await;
         let peers = vec![peer("office", "office"), peer("home", "home")];
         let port_mapping = config::Mapping {
@@ -2831,7 +3344,9 @@ mod integration_tests {
             allow_loopback_target: false,
             domain: "blocked.example.test".into(),
             remote_port: 443,
-            enabled: false,
+            // This fixture is intentionally inactive at the handle level. Toggling it off
+            // verifies that an existing owner is sufficient without invoking domain preflight.
+            enabled: true,
         };
         state.inner.lock().await.mappings.insert(
             port_mapping.local.clone(),
@@ -2874,20 +3389,22 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        assert_eq!(port_update.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(port_update.status(), StatusCode::OK);
+        assert_eq!(response_json(port_update).await["peer_id"], "office");
 
         let port_toggle = app
             .clone()
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri("/api/mappings/127.0.0.1:0/toggle")
+                    .uri("/api/mappings/127.0.0.1:1/toggle")
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(port_toggle.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(port_toggle.status(), StatusCode::OK);
+        assert_eq!(response_json(port_toggle).await["peer_id"], "office");
 
         let port_delete = app
             .clone()
@@ -2900,7 +3417,7 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        assert_eq!(port_delete.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(port_delete.status(), StatusCode::NO_CONTENT);
 
         let domain_update = app
             .clone()
@@ -2909,14 +3426,13 @@ mod integration_tests {
                     .method("PUT")
                     .uri("/api/domain-mappings/blocked.example.test")
                     .header(header::CONTENT_TYPE, "application/json")
-                    .body(Body::from(
-                        r#"{"domain":"blocked.example.test","remote_port":8443}"#,
-                    ))
+                    .body(Body::from(r#"{"domain":"blocked.example.test"}"#))
                     .unwrap(),
             )
             .await
             .unwrap();
-        assert_eq!(domain_update.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(domain_update.status(), StatusCode::OK);
+        assert_eq!(response_json(domain_update).await["peer_id"], "office");
 
         let domain_toggle = app
             .clone()
@@ -2929,7 +3445,8 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        assert_eq!(domain_toggle.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(domain_toggle.status(), StatusCode::OK);
+        assert_eq!(response_json(domain_toggle).await["peer_id"], "office");
 
         let domain_delete = app
             .clone()
@@ -2942,7 +3459,7 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        assert_eq!(domain_delete.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(domain_delete.status(), StatusCode::NO_CONTENT);
 
         let bulk_toggle = app
             .oneshot(
@@ -2955,26 +3472,21 @@ mod integration_tests {
             )
             .await
             .unwrap();
-        assert_eq!(bulk_toggle.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(bulk_toggle.status(), StatusCode::OK);
+        assert_eq!(response_json(bulk_toggle).await["changed"], 0);
 
         let mappings = state.inner.lock().await;
-        assert_eq!(
-            *mappings.mappings[&port_mapping.local].mapping.read().await,
-            port_mapping
-        );
+        assert!(!mappings.mappings.contains_key(&port_mapping.local));
         assert_eq!(
             *mappings.mappings[&bulk_mapping.local].mapping.read().await,
-            bulk_mapping
+            config::Mapping {
+                enabled: false,
+                ..bulk_mapping
+            }
         );
         drop(mappings);
         let domains = state.domains.lock().await;
-        assert_eq!(
-            *domains.mappings[&domain_mapping.domain]
-                .mapping
-                .read()
-                .await,
-            domain_mapping
-        );
+        assert!(!domains.mappings.contains_key(&domain_mapping.domain));
         assert!(domains.listener.is_none());
         drop(domains);
         assert!(!state.hosts.has_loopback("blocked.example.test").unwrap());
@@ -3003,6 +3515,110 @@ mod integration_tests {
 
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
         assert!(state.inner.lock().await.mappings.is_empty());
+    }
+
+    #[tokio::test]
+    async fn peer_switch_restores_the_old_listener_when_persistence_fails() {
+        let mut state = test_state("").await;
+        state
+            .peers
+            .upsert_peer(peer("other", "other"))
+            .await
+            .unwrap();
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let original = config::Mapping {
+            peer_id: "default".into(),
+            allow_loopback_target: false,
+            local: local.to_string(),
+            host: "10.0.0.10".into(),
+            port: 443,
+            enabled: true,
+            name: String::new(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        let handle = start_mapping_owned(&state, original.clone()).await.unwrap();
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(original.local.clone(), handle);
+        state.config_path = PathBuf::from("/dev/null/powermap-peer-switch.toml");
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/mappings/{}", original.local))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(format!(
+                        r#"{{"peer_id":"other","local":"{}","host":"10.0.0.11","port":443}}"#,
+                        original.local
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let restored = {
+            let mappings = state.inner.lock().await;
+            mappings.mappings[&original.local].mapping.clone()
+        };
+        assert_eq!(*restored.read().await, original);
+        TcpStream::connect(local).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn toggle_all_restores_all_listeners_when_persistence_fails() {
+        let mut state = test_state("").await;
+        let mut locals = Vec::new();
+        for host in ["10.0.0.10", "10.0.0.11"] {
+            let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let local = reserved.local_addr().unwrap();
+            drop(reserved);
+            let mapping = config::Mapping {
+                peer_id: "default".into(),
+                allow_loopback_target: false,
+                local: local.to_string(),
+                host: host.into(),
+                port: 443,
+                enabled: true,
+                name: String::new(),
+                mode: config::MappingMode::Tcp,
+                routes: Vec::new(),
+            };
+            let handle = start_mapping_owned(&state, mapping.clone()).await.unwrap();
+            state
+                .inner
+                .lock()
+                .await
+                .mappings
+                .insert(mapping.local.clone(), handle);
+            locals.push(mapping.local);
+        }
+        state.config_path = PathBuf::from("/dev/null/powermap-toggle-all.toml");
+
+        let response = app(state.clone())
+            .oneshot(authenticated_post(
+                "/api/mappings/toggle-all",
+                r#"{"enabled":false}"#,
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        for local in locals {
+            let mapping = {
+                let mappings = state.inner.lock().await;
+                mappings.mappings[&local].mapping.clone()
+            };
+            assert!(mapping.read().await.enabled);
+            assert!(TcpListener::bind(&local).await.is_err());
+        }
     }
 
     async fn response_json(response: Response) -> Value {
@@ -3105,6 +3721,86 @@ mod integration_tests {
 
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response_json(response).await["remote_port"], 8443);
+    }
+
+    #[tokio::test]
+    async fn domain_mapping_update_restores_its_old_value_when_persistence_fails() {
+        let mut state = test_state("admin-token").await;
+        let mapping = config::DomainMapping {
+            peer_id: "default".into(),
+            allow_loopback_target: false,
+            domain: "api.example.test".into(),
+            remote_port: 443,
+            enabled: false,
+        };
+        state.domains.lock().await.mappings.insert(
+            mapping.domain.clone(),
+            disabled_domain_handle(mapping.clone(), false, None),
+        );
+        state.config_path = PathBuf::from("/dev/null/powermap-domain-update.toml");
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/domain-mappings/api.example.test")
+                    .header(header::AUTHORIZATION, "Bearer admin-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"domain":"api.example.test","remote_port":8443}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let restored = {
+            let domains = state.domains.lock().await;
+            domains.mappings["api.example.test"].mapping.clone()
+        };
+        assert_eq!(*restored.read().await, mapping);
+    }
+
+    #[tokio::test]
+    async fn failed_domain_enable_does_not_leave_a_hosts_marker() {
+        let mut state = test_state("admin-token").await;
+        state.domain_preflight = Arc::new(|_| Box::pin(async { Ok(()) }));
+        let mapping = config::DomainMapping {
+            peer_id: "default".into(),
+            allow_loopback_target: false,
+            domain: "api.example.test".into(),
+            remote_port: 443,
+            enabled: false,
+        };
+        state.domains.lock().await.mappings.insert(
+            mapping.domain.clone(),
+            disabled_domain_handle(mapping.clone(), false, None),
+        );
+        state.config_path = PathBuf::from("/dev/null/powermap-domain-enable.toml");
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri("/api/domain-mappings/api.example.test")
+                    .header(header::AUTHORIZATION, "Bearer admin-token")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"domain":"api.example.test","enabled":true}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let restored = {
+            let domains = state.domains.lock().await;
+            domains.mappings["api.example.test"].mapping.clone()
+        };
+        assert_eq!(*restored.read().await, mapping);
+        assert!(!state.hosts.has_loopback("api.example.test").unwrap());
     }
 
     #[tokio::test]
@@ -3632,7 +4328,7 @@ mod integration_tests {
             .uri("/api/mappings")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(
-                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                r#"{{"local":"{local}","host":"10.0.0.10","port":6379}}"#
             )))
             .unwrap();
         let response = app.clone().oneshot(create).await.unwrap();
@@ -3673,7 +4369,7 @@ mod integration_tests {
             .uri("/api/mappings")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(
-                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                r#"{{"local":"{local}","host":"10.0.0.10","port":6379}}"#
             )))
             .unwrap();
         assert_eq!(
@@ -3690,7 +4386,7 @@ mod integration_tests {
                     .uri(format!("/api/mappings/{local}"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!(
-                        r#"{{"local":"{local}","host":"127.0.0.1","port":5432}}"#
+                        r#"{{"local":"{local}","host":"10.0.0.11","port":5432}}"#
                     )))
                     .unwrap(),
             )
@@ -3720,7 +4416,7 @@ mod integration_tests {
                     .uri(format!("/api/mappings/{local}"))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!(
-                        r#"{{"local":"{new_local}","host":"127.0.0.1","port":5432}}"#
+                        r#"{{"local":"{new_local}","host":"10.0.0.11","port":5432}}"#
                     )))
                     .unwrap(),
             )
@@ -3807,7 +4503,7 @@ mod integration_tests {
                     .uri("/api/mappings")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!(
-                        r#"{{"local":"127.0.0.1:0","host":"10.0.0.10","port":80,"enabled":false,"mode":"http","routes":{routes}}}"#
+                        r#"{{"local":"127.0.0.1:0","host":"10.0.0.10","port":80,"enabled":false,"mode":"http","routes":{routes},"acknowledge_loop_risk":true}}"#
                     )))
                     .unwrap(),
             )
@@ -3839,7 +4535,7 @@ mod integration_tests {
                     .uri(format!("/api/mappings/{}", existing.local))
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!(
-                        r#"{{"local":"{}","host":"10.0.0.10","port":80,"enabled":false,"mode":"http","routes":{routes}}}"#,
+                        r#"{{"local":"{}","host":"10.0.0.10","port":80,"enabled":false,"mode":"http","routes":{routes},"acknowledge_loop_risk":true}}"#,
                         existing.local
                     )))
                     .unwrap(),
@@ -3865,7 +4561,7 @@ mod integration_tests {
         let (router, requests) = configure_loop_risk_preflight(&state).await;
         let mapping = config::Mapping {
             peer_id: String::new(),
-            allow_loopback_target: false,
+            allow_loopback_target: true,
             local: "127.0.0.1:0".into(),
             host: "127.0.0.1".into(),
             port: 8080,
@@ -3919,7 +4615,7 @@ mod integration_tests {
             .uri("/api/mappings")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(
-                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                r#"{{"local":"{local}","host":"10.0.0.10","port":6379}}"#
             )))
             .unwrap();
         assert_eq!(
@@ -3994,7 +4690,7 @@ mod integration_tests {
             .uri("/api/mappings")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(
-                r#"{{"local":"{local}","host":"127.0.0.1","port":6379,"name":"Redis 主库"}}"#
+                r#"{{"local":"{local}","host":"10.0.0.10","port":6379,"name":"Redis 主库"}}"#
             )))
             .unwrap();
         let created = response_json(app.clone().oneshot(create).await.unwrap()).await;
@@ -4035,7 +4731,7 @@ mod integration_tests {
                 .uri("/api/mappings")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from(format!(
-                    r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                    r#"{{"local":"{local}","host":"10.0.0.10","port":6379}}"#
                 )))
                 .unwrap();
             assert_eq!(
@@ -4101,7 +4797,7 @@ mod integration_tests {
             .uri("/api/mappings")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(
-                r#"{{"local":"{existing_local}","host":"127.0.0.1","port":6379}}"#
+                r#"{{"local":"{existing_local}","host":"10.0.0.10","port":6379}}"#
             )))
             .unwrap();
         assert_eq!(
@@ -4118,7 +4814,7 @@ mod integration_tests {
                 serde_json::json!({
                     "mappings": [{
                         "local": incoming_local.to_string(),
-                        "host": "127.0.0.1",
+                        "host": "10.0.0.10",
                         "port": 5432,
                     }],
                 })
@@ -4181,7 +4877,7 @@ mod integration_tests {
             .uri("/api/mappings")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(
-                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                r#"{{"local":"{local}","host":"10.0.0.10","port":6379}}"#
             )))
             .unwrap();
         assert_eq!(
@@ -4230,7 +4926,7 @@ mod integration_tests {
             .uri("/api/mappings")
             .header(header::CONTENT_TYPE, "application/json")
             .body(Body::from(format!(
-                r#"{{"local":"{local}","host":"127.0.0.1","port":6379}}"#
+                r#"{{"local":"{local}","host":"10.0.0.10","port":6379}}"#
             )))
             .unwrap();
         assert_eq!(
@@ -4292,7 +4988,7 @@ mod integration_tests {
                     .uri("/api/mappings")
                     .header(header::CONTENT_TYPE, "application/json")
                     .body(Body::from(format!(
-                        r#"{{"local":"{local}","host":"127.0.0.1","port":80}}"#
+                        r#"{{"local":"{local}","host":"10.0.0.10","port":80}}"#
                     )))
                     .unwrap(),
             )
@@ -5127,6 +5823,126 @@ mod integration_tests {
         assert_eq!(creds.node_id, old_target.to_string());
         assert_eq!(creds.token, "old-token");
     }
+
+    #[tokio::test]
+    async fn failed_peer_change_rebuild_rolls_back_all_import_staging() {
+        let mut state = test_state("").await;
+        let original_other = peer("other", "原始对端");
+        state
+            .peers
+            .upsert_peer(original_other.clone())
+            .await
+            .unwrap();
+
+        // Fail exactly the replacement bind. The old listener has already been stopped at that
+        // point; the next bind succeeds so rollback can prove it restored that listener.
+        let fail_next_bind = Arc::new(AtomicBool::new(false));
+        let bind_flag = fail_next_bind.clone();
+        state.mapping_listener = Arc::new(move |local| {
+            let bind_flag = bind_flag.clone();
+            Box::pin(async move {
+                if bind_flag.swap(false, Ordering::SeqCst) {
+                    Err(io::Error::new(
+                        io::ErrorKind::AddrInUse,
+                        "forced replacement bind failure",
+                    ))
+                } else {
+                    TcpListener::bind(local).await
+                }
+            })
+        });
+
+        let reserved = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let local = reserved.local_addr().unwrap();
+        drop(reserved);
+        let old_mapping = config::Mapping {
+            peer_id: "default".into(),
+            allow_loopback_target: false,
+            local: local.to_string(),
+            host: "10.0.0.10".into(),
+            port: 443,
+            enabled: true,
+            name: "现有映射".into(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        let old_handle = start_mapping_owned(&state, old_mapping.clone())
+            .await
+            .unwrap();
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(old_mapping.local.clone(), old_handle);
+        assert_eq!(state.peers.link_count().await, 1);
+
+        let imported_other = peer("other", "导入对端");
+        let payload = TransferPayload {
+            access: config::AConfig {
+                peers: vec![
+                    default_peer("default", "", "", config::RelaySettings::default()),
+                    imported_other,
+                ],
+                // This disabled mapping and domain mapping are successfully staged before the
+                // peer-change rebuild below, and must not leak when that rebuild fails.
+                mappings: vec![
+                    config::Mapping {
+                        peer_id: "other".into(),
+                        allow_loopback_target: false,
+                        local: "127.0.0.1:0".into(),
+                        host: "10.0.0.11".into(),
+                        port: 8443,
+                        enabled: false,
+                        name: "暂存映射".into(),
+                        mode: config::MappingMode::Tcp,
+                        routes: Vec::new(),
+                    },
+                    config::Mapping {
+                        peer_id: "other".into(),
+                        ..old_mapping.clone()
+                    },
+                ],
+                domain_mappings: vec![config::DomainMapping {
+                    peer_id: "other".into(),
+                    allow_loopback_target: false,
+                    domain: "staged-rollback.example.test".into(),
+                    remote_port: 443,
+                    enabled: false,
+                }],
+                ..Default::default()
+            },
+            relay: None,
+        };
+        fail_next_bind.store(true, Ordering::SeqCst);
+
+        let response = app(state.clone())
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/import")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(serde_json::to_string(&payload).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let restored = {
+            let mappings = state.inner.lock().await;
+            assert_eq!(mappings.mappings.len(), 1);
+            mappings.mappings[&old_mapping.local].mapping.clone()
+        };
+        assert_eq!(*restored.read().await, old_mapping);
+        TcpStream::connect(local).await.unwrap();
+        assert!(state.domains.lock().await.mappings.is_empty());
+        assert_eq!(state.peers.link_count().await, 1);
+        assert_eq!(
+            state.peers.peer_config("other").await.unwrap().name,
+            original_other.name
+        );
+    }
 }
 
 async fn list(State(st): State<AppState>) -> Json<Vec<config::Mapping>> {
@@ -5145,11 +5961,263 @@ async fn list(State(st): State<AppState>) -> Json<Vec<config::Mapping>> {
     Json(result)
 }
 
+#[derive(Deserialize)]
+struct PeerBody {
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    node_id: Option<String>,
+    #[serde(default)]
+    token: Option<String>,
+    #[serde(default)]
+    published_targets: Option<Vec<config::PublishedTarget>>,
+    #[serde(default)]
+    relay: Option<config::RelaySettings>,
+}
+
+impl PeerBody {
+    fn apply_to(self, mut peer: config::PeerConfig) -> config::PeerConfig {
+        if let Some(name) = self.name {
+            peer.name = name.trim().to_owned();
+        }
+        if let Some(node_id) = self.node_id {
+            peer.node_id = node_id.trim().to_owned();
+        }
+        if let Some(token) = self.token {
+            peer.token = token.trim().to_owned();
+        }
+        if let Some(published_targets) = self.published_targets {
+            peer.published_targets = published_targets;
+        }
+        if let Some(relay) = self.relay {
+            peer.relay = relay;
+        }
+        peer
+    }
+}
+
+#[derive(Serialize)]
+struct PeerDeleteConflict {
+    peer_id: String,
+    mappings: Vec<String>,
+    domain_mappings: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct PeerApiView {
+    #[serde(flatten)]
+    peer: config::PeerConfig,
+    connected: bool,
+    restart_required: bool,
+    mapping_count: usize,
+}
+
+async fn peer_mapping_counts(st: &AppState) -> HashMap<String, usize> {
+    let mappings = st
+        .inner
+        .lock()
+        .await
+        .mappings
+        .values()
+        .map(|handle| handle.mapping.clone())
+        .collect::<Vec<_>>();
+    let domains = st
+        .domains
+        .lock()
+        .await
+        .mappings
+        .values()
+        .map(|handle| handle.mapping.clone())
+        .collect::<Vec<_>>();
+    let mut counts = HashMap::new();
+    for mapping in mappings {
+        let peer_id = mapping.read().await.peer_id.clone();
+        *counts.entry(peer_id).or_default() += 1;
+    }
+    for mapping in domains {
+        let peer_id = mapping.read().await.peer_id.clone();
+        *counts.entry(peer_id).or_default() += 1;
+    }
+    counts
+}
+
+async fn peer_api_views(st: &AppState) -> Vec<PeerApiView> {
+    let views = st.peers.peer_views().await;
+    let counts = peer_mapping_counts(st).await;
+    let mut result = st
+        .peers
+        .peer_configs()
+        .await
+        .into_iter()
+        .map(|peer| {
+            let view = views.iter().find(|view| view.id == peer.id);
+            PeerApiView {
+                connected: view.is_some_and(|view| view.connected),
+                restart_required: view.is_some_and(|view| view.restart_required),
+                mapping_count: counts.get(&peer.id).copied().unwrap_or_default(),
+                peer,
+            }
+        })
+        .collect::<Vec<_>>();
+    result.sort_by(|a, b| a.peer.name.cmp(&b.peer.name));
+    result
+}
+
+async fn peer_api_view(st: &AppState, peer: config::PeerConfig) -> PeerApiView {
+    peer_api_views(st)
+        .await
+        .into_iter()
+        .find(|view| view.peer.id == peer.id)
+        .expect("a configured peer must be visible through PeerManager")
+}
+
+async fn persist_peer_state(st: &AppState) -> Result<(), String> {
+    let _save = st.config_save.lock().await;
+    let mut cfg = config::load_config(&st.config_path, None)
+        .map_err(|error| format!("读取配置失败: {error}"))?
+        .config;
+    cfg.access = Some(build_config(st).await?);
+    cfg.normalize_access_peers()?;
+    cfg.validate()?;
+    config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
+}
+
+async fn list_peers(State(st): State<AppState>) -> Json<Vec<PeerApiView>> {
+    Json(peer_api_views(&st).await)
+}
+
+async fn create_peer(
+    State(st): State<AppState>,
+    Json(body): Json<PeerBody>,
+) -> Result<Json<PeerApiView>, (StatusCode, String)> {
+    let peer = body.apply_to(config::PeerConfig {
+        id: config::new_peer_id(),
+        name: String::new(),
+        node_id: String::new(),
+        token: String::new(),
+        published_targets: Vec::new(),
+        relay: config::RelaySettings::default(),
+    });
+    st.peers
+        .upsert_peer(peer.clone())
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    if let Err(error) = persist_peer_state(&st).await {
+        let _ = st.peers.remove_peer(&peer.id).await;
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存对端失败: {error}"),
+        ));
+    }
+    st.events
+        .push("info", "peer", format!("已创建对端 {}", peer.name));
+    Ok(Json(peer_api_view(&st, peer).await))
+}
+
+async fn update_peer(
+    State(st): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<PeerBody>,
+) -> Result<Json<PeerApiView>, (StatusCode, String)> {
+    let previous = st
+        .peers
+        .peer_config(&id)
+        .await
+        .map_err(|_| (StatusCode::NOT_FOUND, format!("未知 peer_id {id}")))?;
+    let peer = body.apply_to(previous.clone());
+    st.peers
+        .upsert_peer(peer.clone())
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    if let Err(error) = persist_peer_state(&st).await {
+        if let Err(rollback_error) = st.peers.upsert_peer(previous).await {
+            tracing::error!(error = %rollback_error, "保存对端失败后无法恢复运行时配置");
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存对端失败: {error}"),
+        ));
+    }
+    st.events
+        .push("info", "peer", format!("已更新对端 {}", peer.name));
+    Ok(Json(peer_api_view(&st, peer).await))
+}
+
+async fn delete_peer(State(st): State<AppState>, Path(id): Path<String>) -> Response {
+    let previous = match st.peers.peer_config(&id).await {
+        Ok(peer) => peer,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+    let mappings = {
+        let handles = st
+            .inner
+            .lock()
+            .await
+            .mappings
+            .values()
+            .map(|handle| handle.mapping.clone())
+            .collect::<Vec<_>>();
+        let mut owners = Vec::new();
+        for mapping in handles {
+            let mapping = mapping.read().await;
+            if mapping.peer_id == id {
+                owners.push(mapping.local.clone());
+            }
+        }
+        owners
+    };
+    let domain_mappings = {
+        let handles = st
+            .domains
+            .lock()
+            .await
+            .mappings
+            .values()
+            .map(|handle| handle.mapping.clone())
+            .collect::<Vec<_>>();
+        let mut owners = Vec::new();
+        for mapping in handles {
+            let mapping = mapping.read().await;
+            if mapping.peer_id == id {
+                owners.push(mapping.domain.clone());
+            }
+        }
+        owners
+    };
+    if !mappings.is_empty() || !domain_mappings.is_empty() {
+        return (
+            StatusCode::CONFLICT,
+            Json(PeerDeleteConflict {
+                peer_id: id,
+                mappings,
+                domain_mappings,
+            }),
+        )
+            .into_response();
+    }
+    if let Err(error) = st.peers.remove_peer(&previous.id).await {
+        return (StatusCode::CONFLICT, error).into_response();
+    }
+    if let Err(error) = persist_peer_state(&st).await {
+        if let Err(rollback_error) = st.peers.upsert_peer(previous).await {
+            tracing::error!(error = %rollback_error, "删除对端保存失败后无法恢复运行时配置");
+        }
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存对端失败: {error}"),
+        )
+            .into_response();
+    }
+    st.events.push("info", "peer", format!("已删除对端 {id}"));
+    StatusCode::NO_CONTENT.into_response()
+}
+
 /// A domain mapping's public lifecycle state. `local_listener` is true only while the
 /// mapping owns its injected loopback listener; `hosts_managed` refers only to PowerMap's
 /// exact marker, never an unrelated hosts-file entry.
 #[derive(Serialize)]
 pub struct DomainMappingStatus {
+    peer_id: String,
     domain: String,
     remote_port: u16,
     enabled: bool,
@@ -5162,6 +6230,7 @@ async fn domain_status(handle: &DomainMappingHandle) -> DomainMappingStatus {
     let mapping = handle.mapping.read().await;
     let diagnostics = handle.stats.diagnostic_snapshot().await;
     DomainMappingStatus {
+        peer_id: mapping.peer_id.clone(),
         domain: mapping.domain.clone(),
         remote_port: mapping.remote_port,
         enabled: mapping.enabled,
@@ -5183,6 +6252,8 @@ async fn list_domain_mappings(State(st): State<AppState>) -> Json<Vec<DomainMapp
 
 #[derive(Deserialize)]
 struct DomainMappingBody {
+    #[serde(default)]
+    peer_id: Option<String>,
     domain: String,
     /// POST defaults to HTTPS; PUT preserves the existing value when omitted.
     #[serde(default)]
@@ -5191,6 +6262,8 @@ struct DomainMappingBody {
     enabled: Option<bool>,
     #[serde(default)]
     allow_loopback_target: Option<bool>,
+    #[serde(default)]
+    acknowledge_loop_risk: Option<bool>,
 }
 
 fn default_domain_remote_port() -> u16 {
@@ -5721,6 +6794,11 @@ async fn lock_domain_operation(st: &AppState) -> tokio::sync::MutexGuard<'_, ()>
     st.domain_lifecycle.lock().await
 }
 
+/// Serializes port mapping replacement, persistence, and rollback as one operation.
+async fn lock_mapping_operation(st: &AppState) -> tokio::sync::MutexGuard<'_, ()> {
+    st.mapping_lifecycle.lock().await
+}
+
 async fn record_domain_cleanup_failure(st: &AppState, domain: &str, error: String) {
     let domains = st.domains.lock().await;
     if let Some(handle) = domains.mappings.get(domain) {
@@ -5729,11 +6807,19 @@ async fn record_domain_cleanup_failure(st: &AppState, domain: &str, error: Strin
     }
 }
 
+fn domain_handle_owns_hosts_marker(handle: &DomainMappingHandle) -> bool {
+    handle.hosts_managed.load(Ordering::Relaxed)
+}
+
 async fn create_domain_mapping(
     State(st): State<AppState>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
-    let peer_id = legacy_default_peer_id_for_route(&st).await?;
+    let peer_id = st
+        .peers
+        .resolve_mapping_peer_id(body.peer_id.as_deref().unwrap_or_default())
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let _operation = lock_domain_operation(&st).await;
     let domains = st.domains.lock().await;
     if domains.mappings.contains_key(&body.domain) {
@@ -5754,7 +6840,11 @@ async fn create_domain_mapping(
     drop(domains);
     let mapping = config::DomainMapping {
         peer_id,
-        allow_loopback_target: body.allow_loopback_target.unwrap_or(false),
+        allow_loopback_target: loopback_acknowledged(
+            body.acknowledge_loop_risk,
+            body.allow_loopback_target,
+            false,
+        ),
         domain: body.domain,
         remote_port: body.remote_port.unwrap_or_else(default_domain_remote_port),
         enabled: body.enabled.unwrap_or(true),
@@ -5775,7 +6865,7 @@ async fn create_domain_mapping(
     }
     domains.mappings.insert(mapping.domain.clone(), handle);
     drop(domains);
-    if let Err(error) = persist_config(&st).await {
+    if let Err(error) = persist_peer_state(&st).await {
         let handle = st.domains.lock().await.mappings.remove(&mapping.domain);
         if let Some(handle) = handle
             && let Err(cleanup_error) = stop_domain_mapping(&st, handle, true).await
@@ -5795,7 +6885,6 @@ async fn update_domain_mapping(
     Path(domain): Path<String>,
     Json(body): Json<DomainMappingBody>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
-    ensure_legacy_mapping_mutation_compatible(&st).await?;
     if body.domain != domain {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -5813,11 +6902,18 @@ async fn update_domain_mapping(
             .clone()
     };
     let old_mapping = old_handle.read().await.clone();
+    let peer_id = st
+        .peers
+        .resolve_mapping_peer_id(body.peer_id.as_deref().unwrap_or(&old_mapping.peer_id))
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let mapping = config::DomainMapping {
-        peer_id: old_mapping.peer_id.clone(),
-        allow_loopback_target: body
-            .allow_loopback_target
-            .unwrap_or(old_mapping.allow_loopback_target),
+        peer_id,
+        allow_loopback_target: loopback_acknowledged(
+            body.acknowledge_loop_risk,
+            body.allow_loopback_target,
+            old_mapping.allow_loopback_target,
+        ),
         domain: body.domain,
         remote_port: body.remote_port.unwrap_or(old_mapping.remote_port),
         enabled: body.enabled.unwrap_or(old_mapping.enabled),
@@ -5825,7 +6921,7 @@ async fn update_domain_mapping(
     mapping
         .validate()
         .map_err(|reason| (StatusCode::BAD_REQUEST, reason))?;
-    if mapping.enabled == old_mapping.enabled {
+    if mapping.enabled == old_mapping.enabled && mapping.peer_id == old_mapping.peer_id {
         // This changes the remote destination without rebuilding the shared loopback socket.
         // Validate it before exposing the new value to future connections or persistence.
         if mapping.enabled
@@ -5839,7 +6935,13 @@ async fn update_domain_mapping(
         let handle = domains.mappings.get(&domain).expect("域名映射仍存在");
         let status = domain_status(handle).await;
         drop(domains);
-        save_config(&st).await;
+        if let Err(error) = persist_peer_state(&st).await {
+            *old_handle.write().await = old_mapping;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("保存域名映射失败: {error}"),
+            ));
+        }
         return Ok(Json(status));
     }
     let handle = start_domain_mapping_owned(&st, mapping.clone()).await?;
@@ -5849,20 +6951,35 @@ async fn update_domain_mapping(
         .lock()
         .await
         .mappings
-        .insert(domain.clone(), handle);
-    if let Some(old) = old
-        && let Err(error) = stop_domain_mapping(&st, old, !enabled).await
-    {
+        .insert(domain.clone(), handle)
+        .expect("已确认存在域名映射");
+    let remove_replacement_hosts = !domain_handle_owns_hosts_marker(&old);
+    if let Err(error) = persist_peer_state(&st).await {
+        let replacement = st.domains.lock().await.mappings.insert(domain, old);
+        if let Some(replacement) = replacement
+            && let Err(cleanup_error) =
+                stop_domain_mapping(&st, replacement, remove_replacement_hosts).await
+        {
+            tracing::error!(error = %cleanup_error, "域名映射保存失败后回滚新把手不完整");
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存域名映射失败: {error}"),
+        ));
+    }
+    if let Err(error) = stop_domain_mapping(&st, old, !enabled).await {
         tracing::error!(%error, "替换域名映射后清理旧 hosts 条目失败");
         if !enabled {
             record_domain_cleanup_failure(&st, &domain, error).await;
+            if let Err(persist_error) = persist_peer_state(&st).await {
+                tracing::error!(error = %persist_error, "无法保存域名映射 hosts 清理失败状态");
+            }
         }
     }
     let status = {
         let domains = st.domains.lock().await;
         domain_status(domains.mappings.get(&domain).expect("域名映射仍存在")).await
     };
-    save_config(&st).await;
     Ok(Json(status))
 }
 
@@ -5870,7 +6987,6 @@ async fn toggle_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> Result<Json<DomainMappingStatus>, (StatusCode, String)> {
-    ensure_legacy_mapping_mutation_compatible(&st).await?;
     let _operation = lock_domain_operation(&st).await;
     let previous = {
         let domains = st.domains.lock().await;
@@ -5894,20 +7010,35 @@ async fn toggle_domain_mapping(
         .lock()
         .await
         .mappings
-        .insert(domain.clone(), handle);
-    if let Some(old) = old
-        && let Err(error) = stop_domain_mapping(&st, old, !enabled).await
-    {
+        .insert(domain.clone(), handle)
+        .expect("已确认存在域名映射");
+    let remove_replacement_hosts = !domain_handle_owns_hosts_marker(&old);
+    if let Err(error) = persist_peer_state(&st).await {
+        let replacement = st.domains.lock().await.mappings.insert(domain, old);
+        if let Some(replacement) = replacement
+            && let Err(cleanup_error) =
+                stop_domain_mapping(&st, replacement, remove_replacement_hosts).await
+        {
+            tracing::error!(error = %cleanup_error, "域名映射保存失败后回滚新把手不完整");
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存域名映射失败: {error}"),
+        ));
+    }
+    if let Err(error) = stop_domain_mapping(&st, old, !enabled).await {
         tracing::error!(%error, "停用域名映射后清理 hosts 条目失败");
         if !enabled {
             record_domain_cleanup_failure(&st, &domain, error).await;
+            if let Err(persist_error) = persist_peer_state(&st).await {
+                tracing::error!(error = %persist_error, "无法保存域名映射 hosts 清理失败状态");
+            }
         }
     }
     let status = {
         let domains = st.domains.lock().await;
         domain_status(domains.mappings.get(&domain).expect("域名映射仍存在")).await
     };
-    save_config(&st).await;
     Ok(Json(status))
 }
 
@@ -5915,28 +7046,54 @@ async fn remove_domain_mapping(
     State(st): State<AppState>,
     Path(domain): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(error) = ensure_legacy_mapping_mutation_compatible(&st).await {
-        return error.into_response();
-    }
     let _operation = lock_domain_operation(&st).await;
     let handle = st.domains.lock().await.mappings.remove(&domain);
     match handle {
         Some(handle) => {
-            let mut failed_cleanup_mapping = handle.mapping.read().await.clone();
-            failed_cleanup_mapping.enabled = false;
+            // Persist an explicit disabled recovery record before touching hosts or the shared
+            // listener. A write failure can then put the still-live original handle straight
+            // back, and a hosts cleanup failure remains recoverable after restart.
+            let mut recovery_mapping = handle.mapping.read().await.clone();
+            recovery_mapping.enabled = false;
+            st.domains.lock().await.mappings.insert(
+                domain.clone(),
+                disabled_domain_handle(recovery_mapping, true, None),
+            );
+            if let Err(error) = persist_peer_state(&st).await {
+                st.domains
+                    .lock()
+                    .await
+                    .mappings
+                    .insert(domain.clone(), handle);
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("保存域名映射失败: {error}"),
+                )
+                    .into_response();
+            }
             match stop_domain_mapping(&st, handle, true).await {
                 Ok(()) => {
-                    save_config(&st).await;
+                    let recovery = st.domains.lock().await.mappings.remove(&domain);
+                    if let Err(error) = persist_peer_state(&st).await {
+                        if let Some(recovery) = recovery {
+                            st.domains
+                                .lock()
+                                .await
+                                .mappings
+                                .insert(domain.clone(), recovery);
+                        }
+                        return (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("保存域名映射失败: {error}"),
+                        )
+                            .into_response();
+                    }
                     StatusCode::NO_CONTENT.into_response()
                 }
                 Err(error) => {
-                    // Keep an explicitly disabled record when cleanup failed. Deleting the
-                    // persistence first would hide the stale marker and make recovery harder.
-                    st.domains.lock().await.mappings.insert(
-                        domain.clone(),
-                        disabled_domain_handle(failed_cleanup_mapping, true, Some(error.clone())),
-                    );
-                    save_config(&st).await;
+                    if let Some(recovery) = st.domains.lock().await.mappings.get(&domain) {
+                        *recovery.last_error.write().await = Some(error.clone());
+                    }
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         format!("无法清理域名映射 {domain}：{error}"),
@@ -5951,6 +7108,7 @@ async fn remove_domain_mapping(
 
 #[derive(Serialize)]
 struct StatItem {
+    peer_id: String,
     local: String,
     host: String,
     port: u16,
@@ -5981,6 +7139,7 @@ async fn stats(State(st): State<AppState>) -> Json<Vec<StatItem>> {
     for (mapping, stats) in handles {
         let mapping = mapping.read().await;
         result.push(StatItem {
+            peer_id: mapping.peer_id.clone(),
             local: mapping.local.clone(),
             host: mapping.host.clone(),
             port: mapping.port,
@@ -6003,6 +7162,10 @@ async fn events(State(st): State<AppState>) -> Json<Vec<Event>> {
 
 #[derive(Deserialize)]
 struct CreateBody {
+    /// Immutable remote owner. Legacy callers may omit this only while one migrated default peer
+    /// exists; multi-peer callers must choose an explicit ID.
+    #[serde(default)]
+    peer_id: Option<String>,
     local: String,
     host: String,
     port: u16,
@@ -6020,6 +7183,19 @@ struct CreateBody {
     routes: Option<Vec<config::HttpRoute>>,
     #[serde(default)]
     allow_loopback_target: Option<bool>,
+    /// UI-facing spelling for the persisted loopback acknowledgement flag.
+    #[serde(default)]
+    acknowledge_loop_risk: Option<bool>,
+}
+
+fn loopback_acknowledged(
+    acknowledge_loop_risk: Option<bool>,
+    allow_loopback_target: Option<bool>,
+    fallback: bool,
+) -> bool {
+    acknowledge_loop_risk
+        .or(allow_loopback_target)
+        .unwrap_or(fallback)
 }
 
 #[derive(Serialize)]
@@ -6081,10 +7257,35 @@ fn mapping_preflight_targets(mapping: &config::Mapping) -> Vec<(String, u16)> {
     targets.into_iter().collect()
 }
 
+fn is_literal_loopback_target(host: &str) -> bool {
+    let host = host.trim().trim_matches(['[', ']']);
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(tunnel::is_loopback_address)
+}
+
+fn literal_loopback_acknowledgement_error(mapping: &config::Mapping) -> Option<String> {
+    if mapping.allow_loopback_target {
+        return None;
+    }
+    mapping_preflight_targets(mapping)
+        .into_iter()
+        .find(|(host, _)| is_literal_loopback_target(host))
+        .map(|(host, port)| format!("{host}:{port} 是字面 loopback 目标，需要显式确认风险"))
+}
+
 async fn require_mapping_loopback_acknowledgement(
     st: &AppState,
     mapping: &config::Mapping,
 ) -> Result<(), (StatusCode, String)> {
+    // An offline peer cannot resolve names for preflight, but literal loopback targets are
+    // already unambiguous. Enforce their acknowledgement locally before accepting a mapping;
+    // nonliteral host names remain an expose-side resolver decision so NAT hairpin routes stay
+    // valid and arbitrary multi-machine cycles are not misclassified.
+    if let Some(error) = literal_loopback_acknowledgement_error(mapping) {
+        return Err((StatusCode::BAD_REQUEST, error));
+    }
     // Offline configuration remains supported. Once a peer is reachable, its own resolver is
     // authoritative; every live tunnel still enforces the same rule before dialing.
     let peer_id = st
@@ -6145,10 +7346,18 @@ async fn preflight(
     State(st): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> Result<Json<PreflightResult>, (StatusCode, String)> {
-    ensure_legacy_mapping_mutation_compatible(&st).await?;
+    let peer_id = st
+        .peers
+        .resolve_mapping_peer_id(body.peer_id.as_deref().unwrap_or_default())
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let mapping = config::Mapping {
-        peer_id: legacy_default_peer_id_for_route(&st).await?,
-        allow_loopback_target: body.allow_loopback_target.unwrap_or(false),
+        peer_id,
+        allow_loopback_target: loopback_acknowledged(
+            body.acknowledge_loop_risk,
+            body.allow_loopback_target,
+            false,
+        ),
         local: body.local,
         host: body.host,
         port: body.port,
@@ -6295,10 +7504,19 @@ async fn create(
     State(st): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> Result<Json<config::Mapping>, (StatusCode, String)> {
-    let peer_id = legacy_default_peer_id_for_route(&st).await?;
+    let _operation = lock_mapping_operation(&st).await;
+    let peer_id = st
+        .peers
+        .resolve_mapping_peer_id(body.peer_id.as_deref().unwrap_or_default())
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let mapping = config::Mapping {
         peer_id,
-        allow_loopback_target: body.allow_loopback_target.unwrap_or(false),
+        allow_loopback_target: loopback_acknowledged(
+            body.acknowledge_loop_risk,
+            body.allow_loopback_target,
+            false,
+        ),
         local: body.local,
         host: body.host,
         port: body.port,
@@ -6360,7 +7578,7 @@ async fn create(
         .await;
         return Err(error);
     }
-    if let Err(error) = persist_config(&st).await {
+    if let Err(error) = persist_peer_state(&st).await {
         let handle = st.inner.lock().await.mappings.remove(&mapping.local);
         if let Some(handle) = handle {
             stop_mapping(&st, handle).await;
@@ -6524,12 +7742,14 @@ async fn start_tcp_mapping(
     link: Link,
     peer_id: String,
 ) -> Result<MappingHandle, (StatusCode, String)> {
-    let listener = TcpListener::bind(&mapping.local).await.map_err(|e| {
-        (
-            StatusCode::BAD_REQUEST,
-            format!("绑定 {} 失败: {e}", mapping.local),
-        )
-    })?;
+    let listener = (st.mapping_listener)(mapping.local.clone())
+        .await
+        .map_err(|e| {
+            (
+                StatusCode::BAD_REQUEST,
+                format!("绑定 {} 失败: {e}", mapping.local),
+            )
+        })?;
     let metrics = st.metrics.clone();
     let local = mapping.local.clone();
     let runtime_mapping = Arc::new(RwLock::new(mapping));
@@ -6838,22 +8058,25 @@ async fn handle_udp_session(
 }
 
 async fn remove(State(st): State<AppState>, Path(id): Path<String>) -> Response {
-    if let Err(error) = ensure_legacy_mapping_mutation_compatible(&st).await {
-        return error.into_response();
+    let _operation = lock_mapping_operation(&st).await;
+    let handle = st.inner.lock().await.mappings.remove(&id);
+    let Some(handle) = handle else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    // Keep the listener alive until the deletion has reached disk. This makes a failed save a
+    // pure in-memory rollback instead of a best-effort attempt to rebind its address.
+    if let Err(error) = persist_peer_state(&st).await {
+        st.inner.lock().await.mappings.insert(id.clone(), handle);
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存映射失败: {error}"),
+        )
+            .into_response();
     }
-    let mut g = st.inner.lock().await;
-    match g.mappings.remove(&id) {
-        Some(h) => {
-            drop(g);
-            // 先取消（drain 在途连接：停止 accept + 取消所有子隧道），再 abort 监听任务。
-            stop_mapping(&st, h).await;
-            save_config(&st).await;
-            st.events
-                .push("info", "mapping", format!("已断开映射 {id}"));
-            StatusCode::NO_CONTENT.into_response()
-        }
-        None => StatusCode::NOT_FOUND.into_response(),
-    }
+    stop_mapping(&st, handle).await;
+    st.events
+        .push("info", "mapping", format!("已断开映射 {id}"));
+    StatusCode::NO_CONTENT.into_response()
 }
 
 /// PUT /api/mappings/{id} —— 就地编辑一条映射。
@@ -6864,30 +8087,33 @@ async fn update(
     Path(id): Path<String>,
     Json(body): Json<CreateBody>,
 ) -> Result<Json<config::Mapping>, (StatusCode, String)> {
-    ensure_legacy_mapping_mutation_compatible(&st).await?;
-    let mut g = st.inner.lock().await;
+    let _operation = lock_mapping_operation(&st).await;
+    let g = st.inner.lock().await;
     let existing = g
         .mappings
         .get(&id)
         .ok_or((StatusCode::NOT_FOUND, format!("{id} 不存在映射")))?;
     // 编辑表单不改变启用状态：省略 enabled 时沿用原值，启用/停用走专门的 toggle 接口。
     // name 同理：省略时沿用原名称，避免编辑目标时把名称清空。
-    let (was_peer_id, was_allow_loopback_target, was_enabled, was_name, was_mode, was_routes) = {
-        let m = existing.mapping.read().await;
-        (
-            m.peer_id.clone(),
-            m.allow_loopback_target,
-            m.enabled,
-            m.name.clone(),
-            m.mode,
-            m.routes.clone(),
-        )
-    };
+    let old_mapping = existing.mapping.read().await.clone();
+    let was_peer_id = old_mapping.peer_id.clone();
+    let was_allow_loopback_target = old_mapping.allow_loopback_target;
+    let was_enabled = old_mapping.enabled;
+    let was_name = old_mapping.name.clone();
+    let was_mode = old_mapping.mode;
+    let was_routes = old_mapping.routes.clone();
+    let peer_id = st
+        .peers
+        .resolve_mapping_peer_id(body.peer_id.as_deref().unwrap_or(&was_peer_id))
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
     let mapping = config::Mapping {
-        peer_id: was_peer_id,
-        allow_loopback_target: body
-            .allow_loopback_target
-            .unwrap_or(was_allow_loopback_target),
+        peer_id,
+        allow_loopback_target: loopback_acknowledged(
+            body.acknowledge_loop_risk,
+            body.allow_loopback_target,
+            was_allow_loopback_target,
+        ),
         local: body.local,
         host: body.host,
         port: body.port,
@@ -6902,11 +8128,18 @@ async fn update(
     require_mapping_loopback_acknowledgement(&st, &mapping).await?;
 
     // 本地地址与启用状态都没变：复用原把手，原子更新目标，无重绑竞争。
-    if mapping.local == id && mapping.enabled == was_enabled {
+    if mapping.local == id && mapping.enabled == was_enabled && mapping.peer_id == was_peer_id {
         let handle = g.mappings.get(&id).expect("已确认存在");
-        *handle.mapping.write().await = mapping.clone();
+        let mapping_state = handle.mapping.clone();
+        *mapping_state.write().await = mapping.clone();
         drop(g);
-        save_config(&st).await;
+        if let Err(error) = persist_peer_state(&st).await {
+            *mapping_state.write().await = old_mapping;
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("保存映射失败: {error}"),
+            ));
+        }
         return Ok(Json(mapping));
     }
 
@@ -6917,13 +8150,80 @@ async fn update(
             format!("{} 已存在映射", mapping.local),
         ));
     }
+    drop(g);
+
+    // A same-address peer switch must recreate the listener because its task captured the old
+    // peer Link. Rebuild failures must also restore that old listener before returning.
+    if mapping.local == id && mapping.enabled && was_enabled && mapping.peer_id != was_peer_id {
+        let old = st
+            .inner
+            .lock()
+            .await
+            .mappings
+            .remove(&id)
+            .expect("已确认存在");
+        let replacement = match rebuild_mapping_for_peer(&st, old, mapping.clone()).await {
+            Ok(handle) => handle,
+            Err(error) => {
+                match start_mapping_owned(&st, old_mapping.clone()).await {
+                    Ok(restored) => {
+                        st.inner.lock().await.mappings.insert(id, restored);
+                    }
+                    Err((_, rollback_error)) => tracing::error!(
+                        error = %rollback_error,
+                        "对端切换重建失败后无法恢复原映射"
+                    ),
+                }
+                return Err(error);
+            }
+        };
+        st.inner
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.local.clone(), replacement);
+        if let Err(error) = persist_peer_state(&st).await {
+            let replacement = st.inner.lock().await.mappings.remove(&mapping.local);
+            if let Some(replacement) = replacement {
+                stop_mapping(&st, replacement).await;
+            }
+            match start_mapping_owned(&st, old_mapping).await {
+                Ok(restored) => {
+                    st.inner.lock().await.mappings.insert(id, restored);
+                }
+                Err((_, rollback_error)) => tracing::error!(
+                    error = %rollback_error,
+                    "对端切换保存失败后无法恢复原映射"
+                ),
+            }
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("保存映射失败: {error}"),
+            ));
+        }
+        return Ok(Json(mapping));
+    }
+
     // 先按新参数（含启用态）建把手；成功后再停旧的，避免旧地址提前释放又绑不上新地址。
     let handle = start_mapping_owned(&st, mapping.clone()).await?;
-    let old = g.mappings.remove(&id).expect("已确认存在");
-    g.mappings.insert(mapping.local.clone(), handle);
-    drop(g);
+    let old = {
+        let mut g = st.inner.lock().await;
+        let old = g.mappings.remove(&id).expect("已确认存在");
+        g.mappings.insert(mapping.local.clone(), handle);
+        old
+    };
+    if let Err(error) = persist_peer_state(&st).await {
+        let replacement = st.inner.lock().await.mappings.remove(&mapping.local);
+        st.inner.lock().await.mappings.insert(id, old);
+        if let Some(replacement) = replacement {
+            stop_mapping(&st, replacement).await;
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存映射失败: {error}"),
+        ));
+    }
     stop_mapping(&st, old).await;
-    save_config(&st).await;
     Ok(Json(mapping))
 }
 
@@ -6933,7 +8233,7 @@ async fn toggle(
     State(st): State<AppState>,
     Path(id): Path<String>,
 ) -> Result<Json<config::Mapping>, (StatusCode, String)> {
-    ensure_legacy_mapping_mutation_compatible(&st).await?;
+    let _operation = lock_mapping_operation(&st).await;
     let mut g = st.inner.lock().await;
     let existing = g
         .mappings
@@ -6950,8 +8250,18 @@ async fn toggle(
     let old = g.mappings.remove(&id).expect("已确认存在");
     g.mappings.insert(mapping.local.clone(), handle);
     drop(g);
+    if let Err(error) = persist_peer_state(&st).await {
+        let replacement = st.inner.lock().await.mappings.remove(&mapping.local);
+        st.inner.lock().await.mappings.insert(id, old);
+        if let Some(replacement) = replacement {
+            stop_mapping(&st, replacement).await;
+        }
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存映射失败: {error}"),
+        ));
+    }
     stop_mapping(&st, old).await;
-    save_config(&st).await;
     st.events.push(
         "info",
         "mapping",
@@ -6989,7 +8299,7 @@ async fn toggle_all(
     State(st): State<AppState>,
     Json(body): Json<ToggleAllBody>,
 ) -> Result<Json<ToggleAllResult>, (StatusCode, String)> {
-    ensure_legacy_mapping_mutation_compatible(&st).await?;
+    let _operation = lock_mapping_operation(&st).await;
     let target = body.enabled;
     // 先取出需要切换的 local 列表，避免持锁期间跨 await 重建监听。
     let to_switch: Vec<String> = {
@@ -7005,6 +8315,7 @@ async fn toggle_all(
     let unchanged = st.inner.lock().await.mappings.len() - to_switch.len();
     let mut changed = 0usize;
     let mut failed = 0usize;
+    let mut replaced = Vec::new();
     for id in to_switch {
         // 逐条加锁重建：读当前映射、翻转 enabled、建新把手、替换、停旧的。
         let mut g = st.inner.lock().await;
@@ -7032,7 +8343,10 @@ async fn toggle_all(
                 let old = g.mappings.remove(&id).expect("已确认存在");
                 g.mappings.insert(mapping.local.clone(), handle);
                 drop(g);
-                stop_mapping(&st, old).await;
+                // Keep the previous handle alive until the complete batch is durably saved.
+                // In particular, disabling a mapping must not release its listener before a
+                // disk error can restore it.
+                replaced.push((id, mapping.local.clone(), old));
                 changed += 1;
             }
             Err(_) => {
@@ -7042,7 +8356,29 @@ async fn toggle_all(
         }
     }
     if changed > 0 {
-        save_config(&st).await;
+        if let Err(error) = persist_peer_state(&st).await {
+            let replacements = {
+                let mut g = st.inner.lock().await;
+                let mut replacements = Vec::with_capacity(replaced.len());
+                for (old_id, new_id, old) in replaced {
+                    if let Some(new) = g.mappings.remove(&new_id) {
+                        replacements.push(new);
+                    }
+                    g.mappings.insert(old_id, old);
+                }
+                replacements
+            };
+            for replacement in replacements {
+                stop_mapping(&st, replacement).await;
+            }
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("保存映射失败: {error}"),
+            ));
+        }
+        for (_, _, old) in replaced {
+            stop_mapping(&st, old).await;
+        }
         st.events.push(
             "info",
             "mapping",
@@ -7088,6 +8424,8 @@ fn app(state: AppState) -> Router {
         .route("/api/mappings/{id}", put(update).delete(remove))
         .route("/api/mappings/{id}/toggle", post(toggle))
         .route("/api/mappings/toggle-all", post(toggle_all))
+        .route("/api/peers", get(list_peers).post(create_peer))
+        .route("/api/peers/{id}", put(update_peer).delete(delete_peer))
         .route(
             "/api/domain-mappings",
             get(list_domain_mappings).post(create_domain_mapping),
@@ -7160,8 +8498,14 @@ async fn set_reverse(
         &body.allow_ports,
     )
     .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
-    *st.reverse.write().await = body.clone();
-    save_config(&st).await;
+    let previous = std::mem::replace(&mut *st.reverse.write().await, body.clone());
+    if let Err(error) = persist_peer_state(&st).await {
+        *st.reverse.write().await = previous;
+        return Err((
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("保存反向映射策略失败: {error}"),
+        ));
+    }
     st.events.push(
         "info",
         "reverse",
@@ -7336,6 +8680,7 @@ async fn ensure_legacy_mapping_mutation_compatible(
     legacy_default_peer_id_for_route(st).await.map(|_| ())
 }
 
+#[cfg(test)]
 async fn persist_config(st: &AppState) -> Result<(), String> {
     persist_config_with_runtime_sync(st, LegacyRuntimeSync::NONE).await
 }
@@ -7365,31 +8710,11 @@ async fn persist_config_with_runtime_sync(
     config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
 }
 
-async fn persist_imported_default_peer(
-    st: &AppState,
-    peer: &config::PeerConfig,
-    root_relay: Option<&config::RelaySettings>,
-) -> Result<(), String> {
-    let _save = st.config_save.lock().await;
-    let mut cfg = config::load_config(&st.config_path, None)
-        .map_err(|error| format!("读取配置失败: {error}"))?
-        .config;
-    let mut access = build_config(st).await?;
-    access.peers = vec![peer.clone()];
-    access.node_id.clear();
-    access.token.clear();
-    access.published_targets.clear();
-    access.relay = config::RelaySettings::default();
-    cfg.access = Some(access);
-    if let Some(root_relay) = root_relay {
-        cfg.relay = root_relay.clone();
-    }
-    cfg.validate()?;
-    config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
-}
-
+#[cfg(test)]
 async fn save_config(st: &AppState) {
-    if let Err(error) = persist_config(st).await {
+    // Mapping and domain routes may be owned by any peer. Persist the complete runtime peer
+    // model instead of passing through the legacy single-default-peer compatibility bridge.
+    if let Err(error) = persist_peer_state(st).await {
         tracing::error!(error = %error, "保存配置失败");
     }
 }
@@ -7875,17 +9200,125 @@ struct ImportQuery {
     mode: ImportMode,
 }
 
-/// A peer-aware backup can be applied by the legacy runtime only when it represents the one
-/// migrated default peer. Anything else needs the peer-aware runtime to select a connection.
-fn imported_default_peer(incoming: &config::AConfig) -> Result<Option<config::PeerConfig>, String> {
+/// Normalize a v0.9 backup into the persistent peer model before it touches any listener.
+/// New backups must carry complete peer ownership; the only compatibility exception is the
+/// historical single-credential shape, which becomes one named default peer here.
+fn normalize_imported_access(
+    mut incoming: config::AConfig,
+    root_relay: Option<&config::RelaySettings>,
+) -> Result<config::AConfig, String> {
     if incoming.peers.is_empty() {
-        return Ok(None);
+        let relay = if incoming.relay != config::RelaySettings::default() {
+            incoming.relay.clone()
+        } else {
+            root_relay.cloned().unwrap_or_default()
+        };
+        let peer = config::PeerConfig {
+            id: config::new_peer_id(),
+            name: "默认对端".into(),
+            node_id: std::mem::take(&mut incoming.node_id),
+            token: std::mem::take(&mut incoming.token),
+            published_targets: std::mem::take(&mut incoming.published_targets),
+            relay,
+        };
+        peer.validate()?;
+        for mapping in &mut incoming.mappings {
+            mapping.peer_id = peer.id.clone();
+        }
+        for mapping in &mut incoming.domain_mappings {
+            mapping.peer_id = peer.id.clone();
+        }
+        incoming.relay = config::RelaySettings::default();
+        incoming.peers.push(peer);
     }
     incoming.validate()?;
-    let peer_id = incoming.legacy_default_peer_id().ok_or_else(|| {
-        "导入配置不是单一的“默认对端”；旧版导入接口无法安全选择对端，请使用对端专用 API".to_string()
-    })?;
-    Ok(incoming.peer(peer_id).cloned())
+    for peer in &incoming.peers {
+        if !peer.node_id.trim().is_empty() {
+            parse_target(&peer.node_id)?;
+        }
+    }
+    Ok(incoming)
+}
+
+async fn persist_imported_peer_state(
+    st: &AppState,
+    root_relay: Option<&config::RelaySettings>,
+) -> Result<(), String> {
+    let _save = st.config_save.lock().await;
+    let mut cfg = config::load_config(&st.config_path, None)
+        .map_err(|error| format!("读取配置失败: {error}"))?
+        .config;
+    cfg.access = Some(build_config(st).await?);
+    if let Some(root_relay) = root_relay {
+        cfg.relay = root_relay.clone();
+    }
+    cfg.normalize_access_peers()?;
+    cfg.validate()?;
+    config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
+}
+
+/// Undo port and domain handles staged before an import commits. This is also used when a
+/// same-address peer change has already stopped its old listener but the replacement cannot
+/// bind: no staged handle or replacement peer configuration may escape that failure.
+#[allow(clippy::too_many_arguments)]
+async fn rollback_import_before_commit(
+    st: &AppState,
+    previous_peers: Vec<config::PeerConfig>,
+    mut previous_mappings: HashMap<String, MappingHandle>,
+    mut staged_mappings: HashMap<String, MappingHandle>,
+    uncommitted_started_mappings: HashMap<String, MappingHandle>,
+    started_locals: &HashSet<String>,
+    replaced_mappings: Vec<(String, config::Mapping)>,
+    rebuilt_mappings: Vec<(String, config::Mapping)>,
+    started_domain_handles: HashMap<String, Arc<DomainMappingHandle>>,
+    existing_domain_hosts: &HashMap<String, bool>,
+) {
+    if let Err(error) = st.peers.replace_peer_configs(previous_peers).await {
+        tracing::error!(error = %error, "导入提交前回滚时无法恢复对端配置");
+    }
+
+    let mut mappings_to_stop = uncommitted_started_mappings
+        .into_values()
+        .collect::<Vec<_>>();
+    for local in started_locals {
+        if let Some(handle) = staged_mappings.remove(local) {
+            mappings_to_stop.push(handle);
+        }
+    }
+    for (local, _) in &rebuilt_mappings {
+        if let Some(handle) = staged_mappings.remove(local) {
+            mappings_to_stop.push(handle);
+        }
+    }
+    for (local, previous_mapping) in replaced_mappings {
+        if let Some(handle) = staged_mappings.get(&local) {
+            *handle.mapping.write().await = previous_mapping;
+        } else {
+            tracing::error!(local, "导入提交前回滚时找不到已复用的映射");
+        }
+    }
+    staged_mappings.extend(previous_mappings.drain());
+    st.inner.lock().await.mappings = staged_mappings;
+
+    for handle in mappings_to_stop {
+        stop_mapping(st, handle).await;
+    }
+    for (local, previous_mapping) in rebuilt_mappings {
+        match start_mapping_owned(st, previous_mapping).await {
+            Ok(handle) => {
+                st.inner.lock().await.mappings.insert(local, handle);
+            }
+            Err((_, error)) => {
+                tracing::error!(error = %error, "导入提交前回滚时无法恢复对端变更前的映射");
+            }
+        }
+    }
+    for (domain, handle) in started_domain_handles {
+        let remove_hosts = !existing_domain_hosts.get(&domain).copied().unwrap_or(false);
+        if let Err(error) = stop_domain_mapping(st, handle, remove_hosts).await {
+            tracing::error!(error = %error, domain, "导入提交前回滚时无法清理域名映射");
+        }
+    }
 }
 
 /// POST /api/import —— 事务式导入配置：应用映射 + 更新凭证 + 存盘。
@@ -7897,44 +9330,50 @@ async fn import_config(
     Query(query): Query<ImportQuery>,
     Json(payload): Json<TransferPayload>,
 ) -> Result<Json<serde_json::Value>, (StatusCode, String)> {
-    let TransferPayload {
-        access: incoming,
-        relay,
-    } = payload;
+    let _mapping_operation = lock_mapping_operation(&st).await;
+    let TransferPayload { access, relay } = payload;
+    let legacy_payload = access.peers.is_empty();
+    let legacy_credentials_omitted =
+        access.node_id.trim().is_empty() && access.token.trim().is_empty();
+    let legacy_relay_omitted = access.relay == config::RelaySettings::default() && relay.is_none();
+    let mut incoming = normalize_imported_access(access, relay.as_ref())
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     let merge = query.mode == ImportMode::Merge;
-    let _peer_id = legacy_default_peer_id_for_route(&st).await?;
-    let link = st
-        .peers
-        .legacy_default_link()
-        .await
-        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
-    let imported_peer =
-        imported_default_peer(&incoming).map_err(|message| (StatusCode::BAD_REQUEST, message))?;
-    if imported_peer.is_some() && merge {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "旧版导入接口只能覆盖导入单一的“默认对端”；合并需要对端专用 API".into(),
-        ));
-    }
-    let (node_id, token, published_targets) = match &imported_peer {
-        Some(peer) => (&peer.node_id, &peer.token, &peer.published_targets),
-        None => (
-            &incoming.node_id,
-            &incoming.token,
-            &incoming.published_targets,
-        ),
-    };
-    // 1) 先校验凭证（若带了 node_id）
-    let new_target = if node_id.trim().is_empty() {
-        None
-    } else {
-        Some(parse_target(node_id).map_err(|m| (StatusCode::BAD_REQUEST, m))?)
-    };
-    if node_id.trim().is_empty() != token.trim().is_empty() {
-        return Err((
-            StatusCode::BAD_REQUEST,
-            "node_id 与 token 必须同时提供或同时留空".into(),
-        ));
+    if legacy_payload {
+        // An old backup has no stable owner id. It is only compatible with the sole migrated
+        // default peer, and omitted legacy credential/relay fields mean "leave it unchanged".
+        let current = st
+            .peers
+            .legacy_default_peer_config()
+            .await
+            .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+        let generated_id = incoming.peers[0].id.clone();
+        let effective_id = {
+            let peer = incoming
+                .peers
+                .first_mut()
+                .expect("legacy normalization adds one peer");
+            peer.id = current.id.clone();
+            if legacy_credentials_omitted {
+                peer.node_id = current.node_id;
+                peer.token = current.token;
+                peer.published_targets = current.published_targets;
+            }
+            if legacy_relay_omitted {
+                peer.relay = current.relay;
+            }
+            peer.id.clone()
+        };
+        for mapping in &mut incoming.mappings {
+            if mapping.peer_id == generated_id {
+                mapping.peer_id = effective_id.clone();
+            }
+        }
+        for mapping in &mut incoming.domain_mappings {
+            if mapping.peer_id == generated_id {
+                mapping.peer_id = effective_id.clone();
+            }
+        }
     }
     if let Some(relay) = relay.as_ref() {
         relay
@@ -7948,6 +9387,12 @@ async fn import_config(
             return Err((
                 StatusCode::BAD_REQUEST,
                 format!("映射 {} 非法: {reason}", m.local),
+            ));
+        }
+        if let Some(reason) = literal_loopback_acknowledgement_error(m) {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                format!("映射 {} 需要确认 loopback 风险: {reason}", m.local),
             ));
         }
         if !locals.insert(&m.local) {
@@ -7976,9 +9421,16 @@ async fn import_config(
     // 3) 在不触碰现有映射的前提下预启动所有端口和域名监听。相同 local 的端口监听
     // 保持原 socket，仅在所有新增监听成功后更新其目标，避免重绑同一端口的竞争窗口。
     let _domain_operation = lock_domain_operation(&st).await;
-    let existing_domains = {
+    let (existing_domains, existing_domain_hosts) = {
         let domains = st.domains.lock().await;
-        domains.mappings.keys().cloned().collect::<HashSet<_>>()
+        (
+            domains.mappings.keys().cloned().collect::<HashSet<_>>(),
+            domains
+                .mappings
+                .iter()
+                .map(|(domain, handle)| (domain.clone(), domain_handle_owns_hosts_marker(handle)))
+                .collect::<HashMap<_, _>>(),
+        )
     };
     let merged_domain_total = if merge {
         existing_domains.len()
@@ -7997,7 +9449,7 @@ async fn import_config(
             format!("域名映射数 {merged_domain_total} 超过上限 {domain_limit}"),
         ));
     }
-    let mut g = st.inner.lock().await;
+    let g = st.inner.lock().await;
     // 上限检查：覆盖模式看导入条数；合并模式看合并后的并集大小（现有 + 导入新增）。
     let merged_total = if merge {
         let added = incoming
@@ -8015,6 +9467,30 @@ async fn import_config(
             format!("映射数 {merged_total} 超过上限 {}", st.max_mappings),
         ));
     }
+
+    // Validate and install the complete peer collection before allocating any imported
+    // listener. Mapping ownership is resolved against this staged collection, so a malformed
+    // peer id/name/reference fails before it can alter the active listener set.
+    let mut replacement_peers = if merge {
+        st.peers
+            .peer_configs()
+            .await
+            .into_iter()
+            .map(|peer| (peer.id.clone(), peer))
+            .collect::<HashMap<_, _>>()
+    } else {
+        HashMap::new()
+    };
+    for peer in &incoming.peers {
+        replacement_peers.insert(peer.id.clone(), peer.clone());
+    }
+    drop(g);
+    let previous_peers = st
+        .peers
+        .replace_peer_configs(replacement_peers.into_values().collect())
+        .await
+        .map_err(|error| (StatusCode::BAD_REQUEST, error))?;
+    let mut g = st.inner.lock().await;
     let mut started_handles = HashMap::new();
     for mapping in &incoming.mappings {
         if g.mappings.contains_key(&mapping.local) {
@@ -8028,6 +9504,11 @@ async fn import_config(
                 drop(g);
                 for (_, handle) in started_handles {
                     stop_mapping(&st, handle).await;
+                }
+                if let Err(rollback_error) =
+                    st.peers.replace_peer_configs(previous_peers.clone()).await
+                {
+                    tracing::error!(error = %rollback_error, "导入映射预启动失败后无法回滚对端配置");
                 }
                 return Err(error);
             }
@@ -8048,11 +9529,17 @@ async fn import_config(
                     stop_mapping(&st, handle).await;
                 }
                 for (domain, handle) in started_domain_handles {
-                    let remove_hosts = !existing_domains.contains(&domain);
+                    let remove_hosts =
+                        !existing_domain_hosts.get(&domain).copied().unwrap_or(false);
                     if let Err(cleanup_error) = stop_domain_mapping(&st, handle, remove_hosts).await
                     {
                         tracing::error!(error = %cleanup_error, domain, "域名映射导入预启动回滚不完整");
                     }
+                }
+                if let Err(rollback_error) =
+                    st.peers.replace_peer_configs(previous_peers.clone()).await
+                {
+                    tracing::error!(error = %rollback_error, "导入域名映射预启动失败后无法回滚对端配置");
                 }
                 return Err(error);
             }
@@ -8075,9 +9562,32 @@ async fn import_config(
                 && current.enabled
                 && current.peer_id != mapping.peer_id
             {
-                let rebuilt = rebuild_mapping_for_peer(&st, handle, mapping.clone()).await?;
-                rebuilt_mappings.push((mapping.local.clone(), current));
-                next.insert(mapping.local.clone(), rebuilt);
+                match rebuild_mapping_for_peer(&st, handle, mapping.clone()).await {
+                    Ok(rebuilt) => {
+                        rebuilt_mappings.push((mapping.local.clone(), current));
+                        next.insert(mapping.local.clone(), rebuilt);
+                    }
+                    Err(error) => {
+                        // `rebuild_mapping_for_peer` has already released `handle`, so retain
+                        // its previous configuration explicitly and rebuild it during rollback.
+                        rebuilt_mappings.push((mapping.local.clone(), current));
+                        drop(g);
+                        rollback_import_before_commit(
+                            &st,
+                            previous_peers.clone(),
+                            previous,
+                            next,
+                            started_handles,
+                            &started_locals,
+                            replaced_mappings,
+                            rebuilt_mappings,
+                            started_domain_handles,
+                            &existing_domain_hosts,
+                        )
+                        .await;
+                        return Err(error);
+                    }
+                }
             } else {
                 let mut current = handle.mapping.write().await;
                 replaced_mappings.push((mapping.local.clone(), current.clone()));
@@ -8124,10 +9634,10 @@ async fn import_config(
         domains.mappings = next;
         previous
     };
-    let previous_domain_names = previous_domain_mappings
-        .keys()
-        .cloned()
-        .collect::<HashSet<_>>();
+    let previous_domain_hosts = previous_domain_mappings
+        .iter()
+        .map(|(domain, handle)| (domain.clone(), domain_handle_owns_hosts_marker(handle)))
+        .collect::<HashMap<_, _>>();
     let imported_domain_names = incoming
         .domain_mappings
         .iter()
@@ -8139,63 +9649,13 @@ async fn import_config(
         .map(|mapping| (mapping.domain.clone(), mapping.enabled))
         .collect::<HashMap<_, _>>();
 
-    // 4) 更新 relay/凭证并写盘。覆盖模式下被移除的旧映射暂不停止，只有写盘成功
-    // 才会提交；失败时它们会和复用监听的旧目标及域名 handles 一起恢复。
-    let _relay_update = st.relay_update.lock().await;
-    let previous_relay = link.relay_settings().await;
-    let previous_creds = link.creds.read().await.clone();
-    let access_relay = imported_peer
-        .as_ref()
-        .map(|peer| peer.relay.clone())
-        .or_else(|| relay.clone());
-    let mut relay_replaced = false;
-    let mut restart_required = link.relay_restart_required().await;
-    if let Some(relay) = access_relay {
-        let apply = link
-            .set_relay(relay)
-            .await
-            .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
-        restart_required = apply.restart_required;
-        relay_replaced = true;
-    }
-    if let Some(target) = new_target {
-        if restart_required {
-            link.set_creds_without_reconnect(
-                node_id.trim().to_string(),
-                token.trim().to_string(),
-                target,
-                published_targets.clone(),
-            )
-            .await;
-        } else {
-            link.set_creds(
-                node_id.trim().to_string(),
-                token.trim().to_string(),
-                target,
-                published_targets.clone(),
-            )
-            .await;
-        }
-    }
-    let save = match imported_peer.as_ref() {
-        Some(peer) => persist_imported_default_peer(&st, peer, relay.as_ref()).await,
-        None => {
-            persist_config_with_runtime_sync(
-                &st,
-                LegacyRuntimeSync {
-                    credentials: new_target.is_some(),
-                    relay: relay_replaced,
-                },
-            )
-            .await
-        }
-    };
+    // 4) Persist the staged peer collection and mappings as one configuration. The old
+    // listeners remain available until this succeeds, allowing a failed disk write to restore
+    // both listener ownership and the previous peer relay/credential state.
+    let save = persist_imported_peer_state(&st, relay.as_ref()).await;
     if let Err(error) = save {
-        if relay_replaced && let Err(rollback_error) = link.set_relay(previous_relay).await {
-            tracing::error!(error = %rollback_error, "导入配置保存失败后无法回滚 relay 设置");
-        }
-        if new_target.is_some() {
-            link.replace_creds(previous_creds).await;
+        if let Err(rollback_error) = st.peers.replace_peer_configs(previous_peers.clone()).await {
+            tracing::error!(error = %rollback_error, "导入配置保存失败后无法回滚对端配置");
         }
 
         let started_to_stop = {
@@ -8240,7 +9700,8 @@ async fn import_config(
                 .into_iter()
                 .filter(|(domain, _)| imported_domain_names.contains(domain))
                 .map(|(domain, handle)| {
-                    let remove_hosts = !previous_domain_names.contains(&domain);
+                    let remove_hosts =
+                        !previous_domain_hosts.get(&domain).copied().unwrap_or(false);
                     (domain, handle, remove_hosts)
                 })
                 .collect::<Vec<_>>()
@@ -8281,11 +9742,7 @@ async fn import_config(
         format!(
             "已{}配置：{started} 条映射{}",
             if merge { "合并" } else { "导入" },
-            if new_target.is_some() {
-                "，凭证已更新"
-            } else {
-                ""
-            }
+            "，对端配置已更新"
         ),
     );
     Ok(Json(serde_json::json!({
@@ -8294,8 +9751,8 @@ async fn import_config(
         "reused": reused,
         "kept": kept,
         "merged": merge,
-        "credential_updated": new_target.is_some(),
-        "restart_required": restart_required,
+        "credential_updated": !incoming.peers.is_empty(),
+        "restart_required": false,
     })))
 }
 
@@ -8342,11 +9799,13 @@ pub async fn run(
             listener: None,
         })),
         domain_lifecycle: Arc::new(Mutex::new(())),
+        mapping_lifecycle: Arc::new(Mutex::new(())),
         // Unsupported platforms retain ordinary port mappings. Domain operations themselves
         // return a typed unsupported-platform error before this inert path can be used.
         hosts: HostsStore::system()
             .unwrap_or_else(|_| HostsStore::at("/unsupported/powermap-hosts")),
         domain_listener: system_domain_listener(),
+        mapping_listener: system_mapping_listener(),
         domain_admin_check: Arc::new(current_process_admin),
         domain_preflight: domain_preflight(peers),
         config_path: config_path.clone(),

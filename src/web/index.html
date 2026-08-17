@@ -816,7 +816,7 @@
   /* ── 域名映射：域名作为本地回环入口，远端端口由 expose 节点监听 ── */
   .domain-notice { margin: 0 0 1rem; padding: .8rem 1rem; border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border)); border-radius: .5rem; background: color-mix(in srgb, var(--warning) 7%, var(--card)); color: var(--foreground); font-size: .84rem; line-height: 1.55; }
   .domain-notice strong { color: var(--warning); }
-  .domain-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) 10rem auto; gap: .75rem; align-items: end; }
+  .domain-form-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(10rem, .7fr) 10rem auto; gap: .75rem; align-items: end; }
   .domain-advanced { margin-top: 1rem; }
   .domain-advanced summary { width: max-content; color: var(--accent-foreground); font: 700 .8rem/1.4 var(--font-sans); cursor: pointer; }
   .domain-advanced-inner { display: flex; align-items: center; gap: .7rem; margin-top: .8rem; padding: .75rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--muted); color: var(--muted-foreground); font-size: .8rem; }
@@ -830,10 +830,21 @@
   .domain-entry small, .domain-error { color: var(--muted-foreground); font: 500 .76rem/1.4 var(--font-sans); }
   .domain-error { display: block; max-width: 20rem; color: var(--destructive); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #domainEmpty { display: none; }
+  .peer-form-grid { display: grid; grid-template-columns: minmax(12rem, .8fr) minmax(0, 1fr) minmax(0, 1fr); gap: .75rem; align-items: end; }
+  .peer-form-grid .peer-relays { grid-column: 1 / -1; }
+  .peer-form-actions { display: flex; justify-content: flex-end; gap: .5rem; margin-top: 1rem; }
+  .peer-table-name { display: grid; gap: .2rem; }
+  .peer-table-name strong { color: var(--foreground); font: 700 .9rem/1.3 var(--font-sans); }
+  .peer-table-name small, .peer-mapping-label { color: var(--muted-foreground); font: 500 .75rem/1.35 var(--font-sans); }
+  .peer-mapping-label { display: block; margin-top: .22rem; }
+  .peer-help { margin: 0 0 1rem; color: var(--muted-foreground); font-size: .82rem; line-height: 1.55; }
   @media (max-width: 900px) { .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   @media (max-width: 720px) {
-    .domain-form-grid { grid-template-columns: 1fr; }
+    .domain-form-grid, .peer-form-grid { grid-template-columns: 1fr; }
     .domain-form-grid .btn { width: 100%; }
+    .peer-form-grid .peer-relays { grid-column: auto; }
+    .peer-form-actions { justify-content: stretch; }
+    .peer-form-actions .btn { flex: 1; }
     .domain-advanced-inner { align-items: flex-start; }
   }
 
@@ -956,6 +967,7 @@
         <button type="button" class="tab active" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="true" aria-controls="tabDashboard"><span>概览</span></button>
         <button type="button" class="tab" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="false" aria-controls="tabMappings" tabindex="-1"><span>端口映射</span><span id="issueBadge" class="issue-badge hidden" title="存在异常映射">0</span></button>
         <button type="button" class="tab" data-tab="domains" id="tab-domains" role="tab" aria-selected="false" aria-controls="tabDomains" tabindex="-1"><span>域名映射</span></button>
+        <button type="button" class="tab" data-tab="peers" id="tab-peers" role="tab" aria-selected="false" aria-controls="tabPeers" tabindex="-1"><span>对端管理</span></button>
         <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>节点管理</span></button>
         <button type="button" class="tab" data-tab="relay" id="tab-relay" role="tab" aria-selected="false" aria-controls="tabRelay" tabindex="-1"><span>中继配置</span></button>
         <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件日志</span></button>
@@ -1067,6 +1079,7 @@
             <span id="modeHint" class="mode-hint">裸 TCP 透传，适用于数据库、SSH、Web 等大多数服务。</span>
           </div>
           <div class="field mapping-name-field"><label class="lbl" for="mf-name">名称（可选）</label><input id="mf-name" name="name" placeholder="例如 Redis 主库" maxlength="60" autocomplete="off" spellcheck="false" /></div>
+          <div class="field mapping-name-field"><label class="lbl" for="mappingPeer">对端</label><select id="mappingPeer" name="peer_id" required aria-describedby="mappingPeerHint"></select><small id="mappingPeerHint" class="peer-mapping-label">选择此映射访问的远端网络。对端名称仅用于识别，归属由内部 ID 固定保存。</small></div>
           <div class="grid mapping">
             <div class="field"><label class="lbl" for="mf-localAddr">本地地址</label><input id="mf-localAddr" name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" spellcheck="false" autocomplete="off" required /></div>
             <div class="field"><label class="lbl" for="mf-localPort">本地端口</label><input id="mf-localPort" name="localPort" class="mono" type="number" placeholder="8080" required /></div>
@@ -1104,6 +1117,7 @@
         <form id="domainForm">
           <div class="domain-form-grid">
             <div class="field"><label class="lbl" for="domainName">域名</label><input id="domainName" name="domain" class="mono" type="text" placeholder="app.internal.test" autocomplete="off" spellcheck="false" required /></div>
+            <div class="field"><label class="lbl" for="domainPeer">对端</label><select id="domainPeer" name="peer_id" required></select></div>
             <div class="field"><label class="lbl" for="domainRemotePort">远端端口</label><input id="domainRemotePort" name="remote_port" class="mono" type="number" min="1" max="65535" value="443" required /></div>
             <button id="createDomainBtn" class="btn btn-primary" type="submit">创建域名映射</button>
           </div>
@@ -1118,6 +1132,27 @@
         </table>
         <div id="domainEmpty" class="empty"><div class="empty-title">尚未创建域名映射</div><p>创建后可通过域名访问远端服务。本机 hosts 文件和监听器要求 PowerMap 以管理员身份启动。</p><button id="emptyNewDomainBtn" class="btn btn-primary" type="button">创建第一条域名映射</button></div>
       </div>
+    </div>
+
+    <!-- Tab: 对端管理 -->
+    <div id="tabPeers" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-peers" tabindex="0">
+      <div class="card">
+        <div class="card-header"><span id="peerEditorTitle" class="card-title">添加对端</span></div>
+        <p class="peer-help">每个对端都有自己的接入凭证和中继设置。名称必须唯一，用于在映射列表中确认访问的远端网络。</p>
+        <form id="peerForm">
+          <div class="peer-form-grid">
+            <div class="field"><label class="lbl" for="peerName">对端名称</label><input id="peerName" name="name" maxlength="60" placeholder="例如 上海机房" autocomplete="off" required /></div>
+            <div class="field"><label class="lbl" for="peerNodeId">node_id（可选）</label><input id="peerNodeId" name="node_id" class="mono" placeholder="粘贴对方提供的 node_id" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><label class="lbl" for="peerToken">token（可选）</label><input id="peerToken" name="token" class="mono" placeholder="粘贴对方提供的 token" autocomplete="off" spellcheck="false" /></div>
+            <div class="field peer-relays"><label class="lbl" for="peerTargets">已发布目标（可选）</label><input id="peerTargets" name="published_targets" class="mono" placeholder="每项 host:port，以逗号分隔，例如 10.0.0.8:5432, redis.internal:6379" autocomplete="off" spellcheck="false" /></div>
+            <div class="field peer-relays"><label class="lbl" for="peerRelays">专用中继（可选）</label><textarea id="peerRelays" name="relay_entries" class="mono" rows="3" placeholder="每行：https://relay.example.com:18443 [可选 token]"></textarea><small class="peer-mapping-label">每行一条中继，URL 后可用空格填写该条中继的 token。留空时使用默认中继策略。</small></div>
+          </div>
+          <label class="share-relay-option relay-force-option" for="peerForceRelay"><input id="peerForceRelay" name="force_relay" type="checkbox" /><span><strong>此对端强制经中继</strong><small>关闭该对端的 P2P 直连。该对端的 Endpoint 重建后生效。</small></span></label>
+          <div class="peer-form-actions"><button id="cancelPeerEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="savePeerBtn" class="btn btn-primary" type="submit">添加对端</button></div>
+        </form>
+      </div>
+      <div class="mapping-list-head"><h2>已配置对端</h2><span id="peerCount">0 个对端</span></div>
+      <div class="table-wrap"><table><thead><tr><th>对端</th><th>连接凭证</th><th>中继</th><th></th></tr></thead><tbody id="peerRows"></tbody></table><div id="peerEmpty" class="empty"><div class="empty-title">尚未添加对端</div><p>先添加一个具名对端，再为端口映射或域名映射选择它。</p></div></div>
     </div>
 
     <!-- Tab: 连接 -->
@@ -1476,11 +1511,12 @@ const TAB_KEY = 'powermap_tab';
 let localRelay = { relays: [], force_relay: false, restart_required: false };
 let relayDirty = false;
 let relayProbeByUrl = new Map();
-const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', connection: 'tabConnection', relay: 'tabRelay', events: 'tabEvents', about: 'tabAbout' };
+const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', peers: 'tabPeers', connection: 'tabConnection', relay: 'tabRelay', events: 'tabEvents', about: 'tabAbout' };
 const TAB_META = {
   dashboard: { title: '概览', subtitle: '查看节点连接、映射隧道和实时流量。' },
   mappings: { title: '端口映射', subtitle: '将本地端口安全地映射至内网服务。' },
   domains: { title: '域名映射', subtitle: '将域名解析到本机回环入口，并安全转发到远端服务。' },
+  peers: { title: '对端管理', subtitle: '为每个远端网络维护独立的名称、凭证和中继配置。' },
   connection: { title: '节点', subtitle: '分享本机身份，或连接到其他节点。' },
   relay: { title: '中继', subtitle: '管理自定义中继、独立 token 与控制平面延迟测试。' },
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
@@ -1509,6 +1545,7 @@ function selectTab(name) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
   if (name === 'domains') refreshDomains();
+  if (name === 'peers') refreshPeers();
   if (name === 'relay' && !relayDirty) refreshRelay();
   if (name === 'about') setTimeout(() => {
     if (!checkedUpdate) checkUpdate({ silent: true });
@@ -1569,6 +1606,8 @@ function openEditorForCreate() {
   const form = document.getElementById('f');
   editMode = null;
   form.elements.name.value = '';
+  form.elements.peer_id.dataset.legacy = '';
+  populatePeerSelect(form.elements.peer_id);
   document.getElementById('routeRows').innerHTML = '';
   setMode('tcp');
   setAdvancedModes(false);
@@ -1576,6 +1615,7 @@ function openEditorForCreate() {
   editor.classList.remove('hidden');
   editor.classList.add('open');
   refreshMappingTemplates();
+  refreshTargetCatalog();
   refreshPortSuggestions();
   editor.querySelector('[name=localPort]').focus();
 }
@@ -1633,12 +1673,14 @@ async function refreshMappingTemplates() {
     container.textContent = '模板暂不可用，可直接填写目标端口。';
   }
 }
-function openEditorForEdit(local, host, port, name, mode, routes) {
+function openEditorForEdit(local, host, port, name, mode, routes, peerId) {
   const editor = document.getElementById('mappingEditor');
   const form = document.getElementById('f');
   const [addr, lport] = splitLocal(local);
   editMode = local;
   form.elements.name.value = name || '';
+  form.elements.peer_id.dataset.legacy = peerId ? '' : '1';
+  populatePeerSelect(form.elements.peer_id, peerId || '', !peerId);
   form.elements.localAddr.value = addr;
   form.elements.localPort.value = lport;
   form.elements.host.value = host;
@@ -1656,12 +1698,14 @@ function openEditorForEdit(local, host, port, name, mode, routes) {
 }
 // 克隆：以某条映射为模板新建。沿用目标 host/port、本地地址与名称，但清空本地端口——
 // 本地端口不能重复，必须由用户填一个新的，因此聚焦到该字段。
-function openEditorForClone(local, host, port, name) {
+function openEditorForClone(local, host, port, name, peerId) {
   const editor = document.getElementById('mappingEditor');
   const form = document.getElementById('f');
   const [addr] = splitLocal(local);
   editMode = null;
   form.elements.name.value = name || '';
+  form.elements.peer_id.dataset.legacy = '';
+  populatePeerSelect(form.elements.peer_id, peerId || '');
   form.elements.localAddr.value = addr || '127.0.0.1';
   form.elements.localPort.value = '';
   form.elements.host.value = host;
@@ -1681,6 +1725,8 @@ function closeEditor() {
   const form = document.getElementById('f');
   form.reset();
   form.elements.localAddr.value = '127.0.0.1';
+  form.elements.peer_id.dataset.legacy = '';
+  populatePeerSelect(form.elements.peer_id);
   document.getElementById('routeRows').innerHTML = '';
   setMode('tcp');
   editMode = null;
@@ -1779,6 +1825,176 @@ async function api(path, opts) {
   return fetch(path, opts);
 }
 
+// ── 对端管理：名称是展示标识；映射始终保存 peer_id，改名不会改变归属。 ──
+let peers = [];
+let peerEditId = null;
+function peerName(peerId) {
+  const peer = peers.find(item => item.id === peerId);
+  return peer ? peer.name : '';
+}
+function peerLabel(peerId) {
+  return peerName(peerId) || (peerId ? '未知对端' : '未指定对端（旧配置）');
+}
+function populatePeerSelect(select, selectedId = '', allowLegacyBlank = false) {
+  if (!select) return;
+  const prior = selectedId || select.value;
+  select.replaceChildren();
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = allowLegacyBlank ? '未指定对端（保持旧配置）' : peers.length ? '请选择对端' : '请先添加对端';
+  select.append(placeholder);
+  for (const peer of peers) {
+    const option = document.createElement('option');
+    option.value = peer.id;
+    option.textContent = peer.name;
+    select.append(option);
+  }
+  const known = peers.some(peer => peer.id === prior);
+  if (known) select.value = prior;
+  else if (!allowLegacyBlank && peers.length === 1) select.value = peers[0].id;
+  else select.value = '';
+  select.required = !allowLegacyBlank;
+}
+function refreshPeerSelects() {
+  const mapping = document.getElementById('mappingPeer');
+  const domains = document.getElementById('domainPeer');
+  if (mapping) populatePeerSelect(mapping, mapping.value, mapping.dataset.legacy === '1');
+  if (domains) populatePeerSelect(domains, domains.value, false);
+}
+function relayEntriesText(relay) {
+  return (relay?.relays || []).map(entry => [entry.url, entry.auth_token].filter(Boolean).join(' ')).join('\n');
+}
+function targetsText(targets) {
+  return (targets || []).map(target => `${target.host}:${target.port}`).join(', ');
+}
+function parseTargets(text) {
+  const items = text.split(',').map(item => item.trim()).filter(Boolean);
+  return items.map(item => {
+    const pivot = item.lastIndexOf(':');
+    if (pivot < 1) throw new Error(`目标格式错误：${item}`);
+    const host = item.slice(0, pivot).trim();
+    const port = Number(item.slice(pivot + 1));
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`目标格式错误：${item}`);
+    return { host, port };
+  });
+}
+function parsePeerRelays(text) {
+  return text.split('\n').map(line => line.trim()).filter(Boolean).map(line => {
+    const [url, ...token] = line.split(/\s+/);
+    if (!url) throw new Error('中继地址不能为空');
+    return { url, auth_token: token.join(' ') };
+  });
+}
+function resetPeerForm() {
+  peerEditId = null;
+  const form = document.getElementById('peerForm');
+  form.reset();
+  document.getElementById('peerEditorTitle').textContent = '添加对端';
+  document.getElementById('savePeerBtn').textContent = '添加对端';
+  document.getElementById('cancelPeerEditBtn').style.display = 'none';
+}
+function editPeer(id) {
+  const peer = peers.find(item => item.id === id);
+  if (!peer) return;
+  peerEditId = id;
+  const form = document.getElementById('peerForm');
+  form.elements.name.value = peer.name || '';
+  form.elements.node_id.value = peer.node_id || '';
+  form.elements.token.value = peer.token || '';
+  form.elements.published_targets.value = targetsText(peer.published_targets);
+  form.elements.relay_entries.value = relayEntriesText(peer.relay);
+  form.elements.force_relay.checked = Boolean(peer.relay?.force_relay);
+  document.getElementById('peerEditorTitle').textContent = `编辑对端：${peer.name}`;
+  document.getElementById('savePeerBtn').textContent = '保存对端';
+  document.getElementById('cancelPeerEditBtn').style.display = '';
+  form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  form.elements.name.focus();
+}
+function renderPeers(list) {
+  peers = Array.isArray(list) ? list.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))) : [];
+  const rows = document.getElementById('peerRows');
+  rows.replaceChildren();
+  document.getElementById('peerCount').textContent = `${peers.length} 个对端`;
+  document.getElementById('peerEmpty').style.display = peers.length ? 'none' : 'block';
+  for (const peer of peers) {
+    const relayCount = peer.relay?.relays?.length || 0;
+    const row = document.createElement('tr');
+    row.innerHTML = `<td><div class="peer-table-name"><strong>${esc(peer.name)}</strong><small class="mono">${esc(peer.id)}</small></div></td>` +
+      `<td>${peer.node_id ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'}</td>` +
+      `<td>${relayCount ? `${relayCount} 条专用中继${peer.relay?.force_relay ? ' · 强制' : ''}` : (peer.relay?.force_relay ? '强制中继' : '默认策略')}</td>` +
+      `<td class="act"><span class="btn-row"><button class="btn-quiet peer-edit" type="button" data-peer-id="${esc(peer.id)}">编辑</button><button class="btn-del peer-delete" type="button" data-peer-id="${esc(peer.id)}" data-peer-name="${esc(peer.name)}">删除</button></span></td>`;
+    rows.append(row);
+  }
+  refreshPeerSelects();
+}
+async function refreshPeers() {
+  try {
+    const response = await api('/api/peers');
+    if (!response.ok) throw new Error((await response.text()) || '读取对端失败');
+    const list = await response.json();
+    renderPeers(list);
+    return peers;
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') console.warn('读取对端失败', error);
+    return peers;
+  }
+}
+document.getElementById('peerForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const name = form.elements.name.value.trim();
+  const nodeId = form.elements.node_id.value.trim();
+  const token = form.elements.token.value.trim();
+  if (!name) { toast('请填写对端名称', 'err'); form.elements.name.focus(); return; }
+  if (peers.some(peer => peer.id !== peerEditId && peer.name === name)) { toast('对端名称已存在，请使用不同名称', 'err'); form.elements.name.focus(); return; }
+  if (Boolean(nodeId) !== Boolean(token)) { toast('node_id 与 token 必须同时填写', 'err'); return; }
+  let publishedTargets, relays;
+  try {
+    publishedTargets = parseTargets(form.elements.published_targets.value);
+    relays = parsePeerRelays(form.elements.relay_entries.value);
+  } catch (error) { toast(error.message || '对端配置格式错误', 'err'); return; }
+  const body = { name, node_id: nodeId, token, published_targets: publishedTargets, relay: { relays, force_relay: form.elements.force_relay.checked } };
+  const button = document.getElementById('savePeerBtn');
+  button.disabled = true;
+  try {
+    const response = await api(peerEditId ? '/api/peers/' + encodeURIComponent(peerEditId) : '/api/peers', {
+      method: peerEditId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    if (!response.ok) { toast((await response.text()) || '保存对端失败', 'err'); return; }
+    toast(peerEditId ? `已更新对端 ${name}` : `已添加对端 ${name}`);
+    resetPeerForm();
+    await refreshPeers();
+    refresh(); refreshDomains();
+  } catch (error) { toast('保存对端失败', 'err'); }
+  finally { button.disabled = false; }
+});
+document.getElementById('cancelPeerEditBtn').addEventListener('click', resetPeerForm);
+document.getElementById('peerRows').addEventListener('click', async event => {
+  const edit = event.target.closest('.peer-edit');
+  if (edit) { editPeer(edit.dataset.peerId); return; }
+  const remove = event.target.closest('.peer-delete');
+  if (!remove) return;
+  const ok = await confirmModal({ title: '删除对端', danger: true, confirmText: '删除', body: `将删除对端“${remove.dataset.peerName}”。被端口映射或域名映射引用时，系统会拒绝删除。确定继续？` });
+  if (!ok) return;
+  remove.disabled = true;
+  try {
+    const response = await api('/api/peers/' + encodeURIComponent(remove.dataset.peerId), { method: 'DELETE' });
+    if (!response.ok) {
+      let detail = await response.text();
+      try {
+        const conflict = JSON.parse(detail);
+        const refs = [...(conflict.mappings || []), ...(conflict.domain_mappings || [])];
+        if (refs.length) detail = `该对端正被以下映射使用：${refs.join('、')}`;
+      } catch { /* plain-text backend errors remain useful. */ }
+      toast(detail || '删除对端失败', 'err');
+      return;
+    }
+    toast(`已删除对端 ${remove.dataset.peerName}`);
+    if (peerEditId === remove.dataset.peerId) resetPeerForm();
+    await refreshPeers();
+  } finally { remove.disabled = false; }
+});
+
 function fmtBytes(n) {
   if (!n) return '0';
   const u = ['B','KB','MB','GB','TB'];
@@ -1812,7 +2028,7 @@ function renderDomains(list) {
     const status = !enabled ? '已停用' : hasListener ? '监听中' : '等待监听';
     const entry = document.createElement('tr');
     entry.className = enabled ? '' : 'is-disabled';
-    entry.innerHTML = `<td><div class="domain-entry"><strong>${esc(domain)}</strong><small>${esc(domainLocalLabel(mapping))} · ${mapping.hosts_managed ? 'hosts 已托管' : 'hosts 未托管'}</small></div></td>` +
+    entry.innerHTML = `<td><div class="domain-entry"><strong>${esc(domain)}</strong><small>${esc(domainLocalLabel(mapping))} · ${mapping.hosts_managed ? 'hosts 已托管' : 'hosts 未托管'}</small><span class="peer-mapping-label">对端：${esc(peerLabel(mapping.peer_id))}</span></div></td>` +
       `<td class="mono">${Number(mapping.remote_port) || '—'}</td>` +
       `<td><span class="domain-state ${enabled ? 'enabled' : 'disabled'}">${status}</span></td>` +
       `<td>${mapping.last_error ? `<span class="domain-error" title="${esc(mapping.last_error)}">${esc(mapping.last_error)}</span>` : '<span class="domain-error" style="color:var(--muted-foreground)">—</span>'}</td>` +
@@ -1833,15 +2049,24 @@ document.getElementById('domainForm').addEventListener('submit', async (e) => {
   if (!form.reportValidity()) return;
   const domain = form.elements.domain.value.trim();
   const body = { domain, remote_port: Number(form.elements.remote_port.value), enabled: form.elements.enabled.checked };
+  if (form.elements.peer_id.value) body.peer_id = form.elements.peer_id.value;
+  if (!await ensureLoopbackAcknowledged(body)) return;
   const button = document.getElementById('createDomainBtn');
   button.disabled = true;
   try {
-    const response = await api('/api/domain-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-    if (!response.ok) { toast((await response.text()) || '创建域名映射失败', 'err'); return; }
+    let response = await api('/api/domain-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (!response.ok) {
+      const detail = (await response.text()) || '创建域名映射失败';
+      if (/loopback|回环/i.test(detail) && await acknowledgeReportedLoopRisk(body, detail)) {
+        response = await api('/api/domain-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+      }
+      if (!response.ok) { toast((await response.text()) || detail, 'err'); return; }
+    }
     toast(`已创建域名映射 ${domain}`);
     form.reset();
     form.elements.remote_port.value = '443';
     form.elements.enabled.checked = true;
+    populatePeerSelect(form.elements.peer_id);
     refreshDomains();
   } catch (err) { if (String(err) !== 'Error: unauthorized') toast('创建域名映射失败', 'err'); }
   finally { button.disabled = false; }
@@ -1881,12 +2106,50 @@ function mappingState(s) {
 }
 const PRECHECK_LABELS = { local_listener: '本地监听', credential: '接入凭证', target: '目标服务' };
 let latestPreflight = { key: '', ready: false };
-function mappingKey(body) { return [body.local, body.host, body.port].join('|'); }
+const loopRiskAcknowledgements = new Set();
+function loopRiskKey(body) {
+  return `${body.peer_id || ''}|${body.host || body.domain || ''}|${body.port || body.remote_port || ''}`;
+}
+function literalLoopbackTarget(value) {
+  const host = String(value || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return host === 'localhost' || host === '::1' || /^127(?:\.\d{1,3}){3}$/.test(host);
+}
+async function ensureLoopbackAcknowledged(body) {
+  const target = body.host || body.domain;
+  if (!literalLoopbackTarget(target)) return true;
+  const key = loopRiskKey(body);
+  if (!loopRiskAcknowledgements.has(key)) {
+    const ok = await confirmModal({
+      title: '确认对端回环目标', danger: true, confirmText: '我已确认',
+      body: `目标 ${target}:${body.port || body.remote_port} 是字面回环地址。它将在所选对端机器上解析，可能形成访问回环或连接到非预期服务。请仅在确认这是对端本机服务时继续。`,
+    });
+    if (!ok) return false;
+    loopRiskAcknowledgements.add(key);
+  }
+  body.acknowledge_loop_risk = true;
+  return true;
+}
+async function acknowledgeReportedLoopRisk(body, detail) {
+  if (body.acknowledge_loop_risk) return false;
+  const ok = await confirmModal({
+    title: '确认对端回环目标', danger: true, confirmText: '我已确认',
+    body: `${detail}\n\n该地址由所选对端机器解析，可能形成访问回环或连接到非预期服务。请仅在确认这是对端本机服务时继续。`,
+  });
+  if (!ok) return false;
+  loopRiskAcknowledgements.add(loopRiskKey(body));
+  body.acknowledge_loop_risk = true;
+  return true;
+}
+function mappingKey(body) { return [body.local, body.host, body.port, body.peer_id || '', body.acknowledge_loop_risk ? 'loop-ok' : ''].join('|'); }
 function collectMapping(form) {
   const fd = new FormData(form);
   const addr = (fd.get('localAddr') || '127.0.0.1').trim() || '127.0.0.1';
   const mode = String(fd.get('mode') || 'tcp');
   const body = { local: addr + ':' + Number(fd.get('localPort')), host: String(fd.get('host') || '').trim(), port: Number(fd.get('port')), name: String(fd.get('name') || '').trim(), mode };
+  const peerId = String(fd.get('peer_id') || '').trim();
+  if (peerId) body.peer_id = peerId;
+  const loopKey = loopRiskKey(body);
+  if (literalLoopbackTarget(body.host) && loopRiskAcknowledgements.has(loopKey)) body.acknowledge_loop_risk = true;
   if (mode === 'http') body.routes = collectRoutes();
   return body;
 }
@@ -1917,6 +2180,10 @@ async function runPreflight(body, display = true) {
       return null;
     }
     const result = await r.json();
+    if (result.loop_risk && !body.acknowledge_loop_risk && display) {
+      const acknowledged = await acknowledgeReportedLoopRisk(body, result.loop_risk.message || '目标解析为回环地址');
+      if (acknowledged) return runPreflight(body, display);
+    }
     latestPreflight = { key: mappingKey(body), ready: Boolean(result.ready) };
     if (display) renderPreflight(result);
     if (!result.ready && !display) toast('目标验证未通过，请查看映射诊断建议', 'err');
@@ -1970,8 +2237,10 @@ function renderTargetCatalog(targets, state, visible = false) {
 }
 async function refreshTargetCatalog() {
   const requestId = ++targetCatalogRequest;
-  const candidates = Array.isArray(curCred.published_targets) ? curCred.published_targets : [];
-  if (!curCred.configured || !candidates.length) {
+  const selectedPeerId = document.getElementById('mappingPeer')?.value || '';
+  const selectedPeer = peers.find(peer => peer.id === selectedPeerId);
+  const candidates = Array.isArray(selectedPeer?.published_targets) ? selectedPeer.published_targets : [];
+  if (!selectedPeerId || !selectedPeer?.node_id || !selectedPeer?.token || !candidates.length) {
     renderTargetCatalog([], '等待连接');
     return;
   }
@@ -1980,7 +2249,7 @@ async function refreshTargetCatalog() {
     try {
       const r = await api('/api/mappings/preflight', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ local: '127.0.0.1:0', host: target.host, port: Number(target.port) }),
+        body: JSON.stringify({ local: '127.0.0.1:0', host: target.host, port: Number(target.port), peer_id: selectedPeerId }),
       });
       if (!r.ok) return null;
       const result = await r.json();
@@ -2785,9 +3054,10 @@ async function refresh() {
     const modeBadge = m.mode && m.mode !== 'tcp'
       ? `<span class="map-mode map-mode-${esc(m.mode)}">${esc(m.mode.toUpperCase())}</span>`
       : '';
+    const peerLine = `<span class="peer-mapping-label">对端：${esc(peerLabel(m.peer_id))}</span>`;
     const nameCell = m.name
-      ? `<span class="map-name">${esc(m.name)}${modeBadge}</span><span class="map-local mono">${esc(m.local)}</span>`
-      : `<span class="map-local mono only">${esc(m.local)}${modeBadge}</span>`;
+      ? `<span class="map-name">${esc(m.name)}${modeBadge}</span><span class="map-local mono">${esc(m.local)}</span>${peerLine}`
+      : `<span class="map-local mono only">${esc(m.local)}${modeBadge}</span>${peerLine}`;
     tr.innerHTML = `<td class="mapcol">${nameCell}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
                    `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span class="status-line"><span>${esc(label)}</span>${connToggle}</span><span class="status-detail">${esc(health.detail)}</span></td>` +
@@ -2958,7 +3228,8 @@ $rows.addEventListener('click', async (e) => {
   const clone = e.target.closest('button.btn-clone');
   if (clone) {
     // 克隆：以此条为模板打开新建编辑器，预填目标、清空本地端口，等待用户改地址。
-    openEditorForClone(clone.dataset.local, clone.dataset.host, Number(clone.dataset.port), clone.dataset.name || '');
+    const m = mappingByLocal[clone.dataset.local] || {};
+    openEditorForClone(clone.dataset.local, clone.dataset.host, Number(clone.dataset.port), clone.dataset.name || '', m.peer_id || '');
     return;
   }
   const cmd = e.target.closest('button.btn-cmd');
@@ -2970,7 +3241,9 @@ $rows.addEventListener('click', async (e) => {
   }
   const recover = e.target.closest('button.btn-recover');
   if (recover) {
+    const mapped = mappingByLocal[recover.dataset.local] || {};
     const body = { local: recover.dataset.local, host: recover.dataset.host, port: Number(recover.dataset.port) };
+    if (mapped.peer_id) body.peer_id = mapped.peer_id;
     const action = await openModal({
       title: '映射诊断', confirmText: '重新检测', cancelText: '关闭',
       body: recoveryAdvice(recover.dataset.state, recover.dataset.reason) + (recover.dataset.reason ? `\n\n最近错误：${recover.dataset.reason}` : ''),
@@ -2990,7 +3263,7 @@ $rows.addEventListener('click', async (e) => {
   const edit = e.target.closest('button.btn-edit');
   if (edit) {
     const m = mappingByLocal[edit.dataset.local] || {};
-    openEditorForEdit(edit.dataset.local, edit.dataset.host, Number(edit.dataset.port), edit.dataset.name || '', m.mode || 'tcp', m.routes || []);
+    openEditorForEdit(edit.dataset.local, edit.dataset.host, Number(edit.dataset.port), edit.dataset.name || '', m.mode || 'tcp', m.routes || [], m.peer_id || '');
     return;
   }
   const btn = e.target.closest('button.btn-del');
@@ -3009,6 +3282,7 @@ $rows.addEventListener('click', async (e) => {
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = collectMapping(e.target);
+  if (!await ensureLoopbackAcknowledged(body)) return;
   if (!latestPreflight.ready || latestPreflight.key !== mappingKey(body)) {
     const result = await runPreflight(body, true);
     if (!result || !result.ready) return;
@@ -3026,9 +3300,15 @@ document.getElementById('f').addEventListener('submit', async (e) => {
   closeEditor();
   refresh();
 });
-document.getElementById('preflightBtn').addEventListener('click', () => {
+document.getElementById('preflightBtn').addEventListener('click', async () => {
   const form = document.getElementById('f');
-  if (form.reportValidity()) runPreflight(collectMapping(form), true);
+  const body = collectMapping(form);
+  if (form.reportValidity() && await ensureLoopbackAcknowledged(body)) runPreflight(body, true);
+});
+document.getElementById('mappingPeer').addEventListener('change', () => {
+  latestPreflight = { key: '', ready: false };
+  document.getElementById('preflightResult').classList.add('hidden');
+  refreshTargetCatalog();
 });
 function setOnboardingStep(id, done) { document.getElementById(id).classList.toggle('is-done', done); }
 async function updateOnboarding(list) {
@@ -3455,6 +3735,7 @@ function showShortcutHelp() {
 }
 
 refreshCred().then(refreshTargetCatalog);
+refreshPeers().then(() => { refresh(); refreshDomains(); });
 refreshOwnNode();
 refreshRelay();
 refresh();
@@ -3470,6 +3751,7 @@ let pollTimer = null;
 let pollInterval = Math.max(0, Number(localStorage.getItem(POLL_KEY) ?? 2000) || 0);
 let pollPaused = localStorage.getItem(POLL_PAUSE_KEY) === '1';
 function poll() {
+  refreshPeers();
   refreshStatus();
   refresh();
   refreshDomains();

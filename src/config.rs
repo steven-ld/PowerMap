@@ -1169,7 +1169,7 @@ fn migrate_legacy_files(
     })
 }
 
-fn new_peer_id() -> String {
+pub fn new_peer_id() -> String {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()

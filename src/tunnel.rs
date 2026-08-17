@@ -566,21 +566,21 @@ where
     // A loopback result can reconnect a mapping to the expose process itself. This check is
     // intentionally limited to literal loopback addresses: NAT hairpin routes and generic
     // multi-machine TCP cycles cannot be inferred reliably from a single resolved destination.
-    if let Some(reason) = loopback_target_risk(&allowed) {
-        if !req.allow_loopback_target {
-            Metrics::inc(&m.target_denied);
-            Metrics::inc(&m.tunnels_failed);
-            ctx.audit.record(&AuditEvent {
-                ts_ms: now_ms(),
-                client_id: &client.id,
-                peer: &ctx.peer,
-                target: &target,
-                result: "loop_risk",
-                detail: &reason,
-            });
-            proto::write_status(&mut send, proto::STATUS_LOOP_RISK, &reason).await?;
-            bail!(reason);
-        }
+    if let Some(reason) = loopback_target_risk(&allowed)
+        && !req.allow_loopback_target
+    {
+        Metrics::inc(&m.target_denied);
+        Metrics::inc(&m.tunnels_failed);
+        ctx.audit.record(&AuditEvent {
+            ts_ms: now_ms(),
+            client_id: &client.id,
+            peer: &ctx.peer,
+            target: &target,
+            result: "loop_risk",
+            detail: &reason,
+        });
+        proto::write_status(&mut send, proto::STATUS_LOOP_RISK, &reason).await?;
+        bail!(reason);
     }
 
     // Preflight validates the same authentication and target policy as a real tunnel, but must
@@ -606,10 +606,24 @@ where
     }
 }
 
+/// Treat IPv4-mapped IPv6 addresses as their IPv4 value. Some stacks use mapped IPv6 loopback
+/// addresses, but IpAddr::is_loopback alone does not recognize them.
+pub(crate) fn is_loopback_address(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => address.is_loopback(),
+        IpAddr::V6(address) => {
+            address.is_loopback()
+                || address
+                    .to_ipv4_mapped()
+                    .is_some_and(|mapped| mapped.is_loopback())
+        }
+    }
+}
+
 fn loopback_target_risk(allowed: &[SocketAddr]) -> Option<String> {
     let loopbacks = allowed
         .iter()
-        .filter(|address| address.ip().is_loopback())
+        .filter(|address| is_loopback_address(address.ip()))
         .map(ToString::to_string)
         .collect::<Vec<_>>();
     (!loopbacks.is_empty()).then(|| {
@@ -925,6 +939,16 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[test]
+    fn ipv4_mapped_ipv6_loopback_is_treated_as_loopback() {
+        let mapped = "::ffff:127.0.0.1".parse::<IpAddr>().unwrap();
+        assert!(is_loopback_address(mapped));
+        assert!(loopback_target_risk(&[SocketAddr::new(mapped, 443)]).is_some());
+
+        let public = "::ffff:10.0.0.1".parse::<IpAddr>().unwrap();
+        assert!(!is_loopback_address(public));
     }
 
     #[test]

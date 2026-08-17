@@ -264,7 +264,7 @@ Endpoint 才会切换。relay token 只用于自定义中继准入，和 `node_i
 
 Release 提供 Linux x86_64 / aarch64、macOS Intel / Apple Silicon 与 Windows x86_64 的预编译包，并附带 SHA-256 校验文件。
 
-### v0.4.0 升级与兼容性
+### 升级与兼容性
 
 v0.4.0 起，Release 只包含一个 `powermap` 可执行文件：不再需要、也不再发布
 `powermap-server` 与 `powermap-client`。直接启动 `powermap`；同一份
@@ -277,6 +277,11 @@ v0.4.0 起，Release 只包含一个 `powermap` 可执行文件：不再需要�
 
 > 如需回退到旧版二进制，请先备份 `powermap.toml`、`powermap.key`、
 > `powermap.credential.json`，以及尚存的旧 role 配置。旧二进制不会读取统一配置。
+
+从 v0.9.0 升级时，原有单个 access 凭证会迁移为**恰好一个**名为“默认对端”的
+`[[access.peers]]`。所有已有端口映射和域名映射都会持久化该对端的 `peer_id`。新建对端
+必须有唯一的非空名称；`id` 是不可变的本地标识，映射始终引用它而非名称，因此可安全重命名。
+被任一端口映射或域名映射引用的对端不能删除，系统会拒绝删除而不会把映射静默改绑到其他对端。
 
 ## 安全模型
 
@@ -311,8 +316,6 @@ curl http://127.0.0.1:8088/api/health
 
 ```toml
 [access]
-node_id = "a5d40b0a8d24..."
-token = "991fd0a3..."
 web_bind = "127.0.0.1:8088"
 web_token = ""
 web_tls_cert = ""
@@ -325,20 +328,60 @@ reverse_enabled = false
 reverse_allow_networks = []   # 留空 = 全部拒绝
 reverse_allow_ports = []      # 留空 = 全部拒绝
 
-# 域名映射：通过远端节点访问此域名（默认 HTTPS 443）
+# 每个对端独立保存凭证、推荐目标和 relay 设置。id 一旦创建不可修改；name 必填且唯一。
+[[access.peers]]
+id = "peer-office-7f31"
+name = "办公室"
+node_id = "a5d40b0a8d24..."
+token = "office-access-token"
+
+[[access.peers.published_targets]]
+host = "10.20.0.15"
+port = 5432
+label = "PostgreSQL"
+
+[access.peers.relay]
+force_relay = false
+
+[[access.peers.relay.relays]]
+url = "https://office-relay.example.com"
+auth_token = "office-relay-token"
+
+[[access.peers]]
+id = "peer-home-c91b"
+name = "家里"
+node_id = "e41cc92d5b7a..."
+token = "home-access-token"
+
+[[access.peers.published_targets]]
+host = "192.168.50.8"
+port = 8123
+label = "Home Assistant"
+
+[access.peers.relay]
+force_relay = true
+
+[[access.peers.relay.relays]]
+url = "https://home-relay.example.com"
+auth_token = "home-relay-token"
+
+# 域名映射：通过指定对端访问此域名（默认 HTTPS 443）
 [[access.domain_mappings]]
+peer_id = "peer-home-c91b"
 domain = "ai-router.dl-aiot.com"
 remote_port = 443
 enabled = true
 
 # 默认 TCP 透传
 [[access.mappings]]
+peer_id = "peer-office-7f31"
 local = "127.0.0.1:6379"
 host = "192.168.1.101"
 port = 6379
 
 # UDP 透传（DNS、WireGuard、游戏服务器等）
 [[access.mappings]]
+peer_id = "peer-home-c91b"
 local = "127.0.0.1:53"
 host = "192.168.1.1"
 port = 53
@@ -346,6 +389,7 @@ mode = "udp"
 
 # HTTP 网关：单端口按 Host 头分流到多个内网后端
 [[access.mappings]]
+peer_id = "peer-office-7f31"
 local = "127.0.0.1:8080"
 host = "192.168.1.101"   # 未命中任何路由时的兜底后端
 port = 80
@@ -357,7 +401,11 @@ routes = [
 
 ```
 
-`web_bind` 仅接受本机回环地址；`web_token` 是保留字段，当前版本不读取、不生成、不校验它。域名映射仅支持 macOS/Linux，必须以管理员身份启动 PowerMap；它会修改系统 hosts 文件。多个域名共享本机 `127.0.0.1:443`，按 TLS SNI 分流，客户端必须发送 SNI。`max_conns_per_mapping = 0` 表示不限制。域名映射要求小写的完整 DNS 域名（不接受通配符或 IP 地址）；省略 `remote_port` 时默认使用 HTTPS 的 `443`，省略 `enabled` 时默认启用。
+`web_bind` 仅接受本机回环地址；`web_token` 是保留字段，当前版本不读取、不生成、不校验它。每条端口映射和域名映射都必须指定现存的 `peer_id`；名称只用于显示。每个 peer 的凭证、推荐目标、relay 列表、relay token 和 `force_relay` 都彼此独立。根 `[relay]` 仍只配置本机 expose Endpoint，不能作为 access 对端的 relay 配置，也不会覆盖它们。默认导出会脱敏**每个**对端的 access token 和 relay token；仅在明确选择完整导出时才包含这些凭证。
+
+域名映射仅支持 macOS/Linux，必须以管理员身份启动 PowerMap；它会修改系统 hosts 文件。多个域名共享本机 `127.0.0.1:443`，按 TLS SNI 分流，客户端必须发送 SNI。`max_conns_per_mapping = 0` 表示不限制。域名映射要求小写的完整 DNS 域名（不接受通配符或 IP 地址）；省略 `remote_port` 时默认使用 HTTPS 的 `443`，省略 `enabled` 时默认启用。
+
+为避免把流量误送回对端自身，literal loopback（如 `127.0.0.1`、`::1`）和由对端解析后指向 loopback 的主机名都要求在管理页/API 中显式确认。无法可靠地自动判断任意两台机器、任意 DNS、路由和代理组合形成的 TCP 回环；因此不要把该确认理解为通用环路检测。允许 NAT hairpin（通过公网地址回到同一网络）这一正常场景。
 
 映射的 `mode` 省略时为 `tcp`（裸透传）；`udp` 走 UDP 数据报隧道；`http` 启用单端口 HTTP 网关，按请求 `Host` 头匹配 `routes`（最多 32 条），未命中则回落到该映射的 `host`/`port` 兜底后端（`routes` 仅在 `http` 模式有效）。
 
