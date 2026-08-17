@@ -16,7 +16,7 @@ cd powermap-relay
 cp /path/to/PowerMap/relay/relay.toml.example relay.toml
 # Edit relay.toml: set tls.hostname, tls.contact, and access.shared_token.
 sudo chown -R 10001:10001 state
-POWERMAP_RELAY_TAG=v0.9.0 \
+POWERMAP_RELAY_TAG=v1.0.0 \
 POWERMAP_RELAY_CONFIG="$(pwd)/relay.toml" \
 POWERMAP_RELAY_STATE_DIR="$(pwd)/state" \
 docker compose -f /path/to/PowerMap/relay/docker-compose.yml up -d

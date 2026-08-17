@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-17
+
 ### Added
 
 - access 支持多个独立对端：每个对端必须有唯一名称，并独立保存 access 凭证、推荐目标、
@@ -167,7 +169,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v1.0.0...HEAD
+[1.0.0]: https://github.com/steven-ld/PowerMap/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/steven-ld/PowerMap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/steven-ld/PowerMap/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/steven-ld/PowerMap/compare/v0.6.0...v0.7.0

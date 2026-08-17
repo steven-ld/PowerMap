@@ -217,9 +217,9 @@
   .hint kbd { padding: 3px 6px; border-radius: .35rem; }
   .field { gap: .5rem; }
   .field > .lbl { color: var(--foreground); font: 700 .78rem/1 var(--font-sans); }
-  input, textarea { min-height: 2.75rem; border-radius: .625rem; background: var(--background); padding: .65rem .8rem; transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
+  input, textarea, select { min-height: 2.75rem; border-radius: .625rem; background: var(--background); padding: .65rem .8rem; transition: border-color .18s ease, box-shadow .18s ease, background .18s ease; }
   textarea { min-height: 6.5rem; }
-  input:focus, textarea:focus { border-color: var(--primary); background: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent) !important; }
+  input:focus, textarea:focus, select:focus { border-color: var(--primary); background: var(--card); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent) !important; }
   .grid.mapping { gap: .75rem; grid-template-columns: 1.2fr .82fr 26px 1.4fr .82fr auto; }
   .grid.mapping .arrow { padding-bottom: 13px; color: var(--primary); font-size: 1.1rem; opacity: 1; }
   .mapping-actions { display: flex; align-items: flex-end; gap: .5rem; }
@@ -537,14 +537,15 @@
   /* ── 表单 ── */
   .field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
   .field > .lbl { font: 500 0.8125rem/1 var(--font-sans); color: var(--foreground); }
-  input, textarea {
+  input, textarea, select {
     font: 0.875rem/1.5 var(--font-sans); background: var(--background); color: var(--foreground);
     border: 1px solid var(--input); border-radius: var(--radius-md); padding: 0.5rem 0.75rem;
     height: 2.25rem; width: 100%; outline: none; transition: border-color .15s;
   }
   input.mono, textarea { font-family: var(--font-mono); font-size: 0.8125rem; }
   textarea { height: auto; min-height: 5rem; resize: vertical; line-height: 1.5; }
-  input:focus, textarea:focus { border-color: var(--border-focus); }
+  select { cursor: pointer; }
+  input:focus, textarea:focus, select:focus { border-color: var(--border-focus); }
   input::placeholder, textarea::placeholder { color: var(--muted-foreground); opacity: .8; }
 
   .grid { display: grid; gap: 12px; align-items: end; }
@@ -802,7 +803,10 @@
   .row-spark { display: block; width: 4.5rem; height: 1.25rem; margin-top: .3rem; opacity: .9; }
 
   /* ── 映射名称：列表主标识，地址降为副信息 ── */
-  .mapping-name-field { margin-bottom: .75rem; }
+  .mapping-identity-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(15rem, .72fr); gap: .75rem; margin-bottom: 1rem; align-items: start; }
+  .mapping-identity-grid .mapping-name-field { margin-bottom: 0; }
+  .mapping-peer-field small { min-height: 2.7em; }
+  @media (max-width: 720px) { .mapping-identity-grid { grid-template-columns: 1fr; } .mapping-peer-field small { min-height: 0; } }
   td.mapcol { color: var(--foreground); }
   td.mapcol .map-name { display: block; color: var(--foreground); font: 700 .9rem/1.3 var(--font-sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 18rem; }
   td.mapcol .map-local { display: block; margin-top: .15rem; color: var(--muted-foreground); font: 500 .78rem/1.3 var(--font-mono); }
@@ -967,9 +971,7 @@
         <button type="button" class="tab active" data-tab="dashboard" id="tab-dashboard" role="tab" aria-selected="true" aria-controls="tabDashboard"><span>概览</span></button>
         <button type="button" class="tab" data-tab="mappings" id="tab-mappings" role="tab" aria-selected="false" aria-controls="tabMappings" tabindex="-1"><span>端口映射</span><span id="issueBadge" class="issue-badge hidden" title="存在异常映射">0</span></button>
         <button type="button" class="tab" data-tab="domains" id="tab-domains" role="tab" aria-selected="false" aria-controls="tabDomains" tabindex="-1"><span>域名映射</span></button>
-        <button type="button" class="tab" data-tab="peers" id="tab-peers" role="tab" aria-selected="false" aria-controls="tabPeers" tabindex="-1"><span>对端管理</span></button>
-        <button type="button" class="tab" data-tab="connection" id="tab-connection" role="tab" aria-selected="false" aria-controls="tabConnection" tabindex="-1"><span>节点管理</span></button>
-        <button type="button" class="tab" data-tab="relay" id="tab-relay" role="tab" aria-selected="false" aria-controls="tabRelay" tabindex="-1"><span>中继配置</span></button>
+        <button type="button" class="tab" data-tab="peers" id="tab-peers" role="tab" aria-selected="false" aria-controls="tabPeers" tabindex="-1"><span>节点</span></button>
         <button type="button" class="tab" data-tab="events" id="tab-events" role="tab" aria-selected="false" aria-controls="tabEvents" tabindex="-1"><span>事件日志</span></button>
         <button type="button" class="tab" data-tab="about" id="tab-about" role="tab" aria-selected="false" aria-controls="tabAbout" tabindex="-1"><span>关于</span></button>
       </div></nav>
@@ -1049,7 +1051,7 @@
           <div><h2 id="onboardingTitle" class="onboarding-title">接入远端内网</h2><p class="onboarding-copy">此设备已处于 access 场景。粘贴对方提供的凭证，再验证并创建本地入口。</p></div>
         </div>
         <div class="onboarding-steps">
-          <div id="onboardingCredential" class="onboarding-step"><span class="onboarding-step-no">01 / 接入</span><strong>添加远端凭证</strong><p>粘贴 expose 设备提供的凭证。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="connection">添加凭证</button></div>
+          <div id="onboardingCredential" class="onboarding-step"><span class="onboarding-step-no">01 / 接入</span><strong>添加远端节点</strong><p>粘贴 expose 设备提供的凭证。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="peers">添加节点</button></div>
           <div id="onboardingPreflight" class="onboarding-step"><span class="onboarding-step-no">02 / 验证</span><strong>检查目标服务</strong><p>由 expose 设备实际校验策略和拨号。</p><button class="btn btn-outline btn-sm" type="button" data-onboarding="mapping">去填写</button></div>
           <div id="onboardingMapping" class="onboarding-step"><span class="onboarding-step-no">03 / 创建</span><strong>添加本地入口</strong><p>通过验证后保存第一条映射。</p><button class="btn btn-primary btn-sm" type="button" data-onboarding="mapping">创建映射</button></div>
         </div>
@@ -1078,8 +1080,10 @@
             </span>
             <span id="modeHint" class="mode-hint">裸 TCP 透传，适用于数据库、SSH、Web 等大多数服务。</span>
           </div>
-          <div class="field mapping-name-field"><label class="lbl" for="mf-name">名称（可选）</label><input id="mf-name" name="name" placeholder="例如 Redis 主库" maxlength="60" autocomplete="off" spellcheck="false" /></div>
-          <div class="field mapping-name-field"><label class="lbl" for="mappingPeer">对端</label><select id="mappingPeer" name="peer_id" required aria-describedby="mappingPeerHint"></select><small id="mappingPeerHint" class="peer-mapping-label">选择此映射访问的远端网络。对端名称仅用于识别，归属由内部 ID 固定保存。</small></div>
+          <div class="mapping-identity-grid">
+            <div class="field mapping-name-field"><label class="lbl" for="mf-name">映射名称（可选）</label><input id="mf-name" name="name" placeholder="例如 Redis 主库" maxlength="60" autocomplete="off" spellcheck="false" /></div>
+            <div class="field mapping-peer-field"><label class="lbl" for="mappingPeer">远端节点</label><select id="mappingPeer" name="peer_id" required aria-describedby="mappingPeerHint"></select><small id="mappingPeerHint" class="peer-mapping-label">归属按内部 ID 保存，改名不会影响映射。</small></div>
+          </div>
           <div class="grid mapping">
             <div class="field"><label class="lbl" for="mf-localAddr">本地地址</label><input id="mf-localAddr" name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" spellcheck="false" autocomplete="off" required /></div>
             <div class="field"><label class="lbl" for="mf-localPort">本地端口</label><input id="mf-localPort" name="localPort" class="mono" type="number" placeholder="8080" required /></div>
@@ -1134,32 +1138,11 @@
       </div>
     </div>
 
-    <!-- Tab: 对端管理 -->
+    <!-- Tab: 节点 -->
     <div id="tabPeers" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-peers" tabindex="0">
-      <div class="card">
-        <div class="card-header"><span id="peerEditorTitle" class="card-title">添加对端</span></div>
-        <p class="peer-help">每个对端都有自己的接入凭证和中继设置。名称必须唯一，用于在映射列表中确认访问的远端网络。</p>
-        <form id="peerForm">
-          <div class="peer-form-grid">
-            <div class="field"><label class="lbl" for="peerName">对端名称</label><input id="peerName" name="name" maxlength="60" placeholder="例如 上海机房" autocomplete="off" required /></div>
-            <div class="field"><label class="lbl" for="peerNodeId">node_id（可选）</label><input id="peerNodeId" name="node_id" class="mono" placeholder="粘贴对方提供的 node_id" autocomplete="off" spellcheck="false" /></div>
-            <div class="field"><label class="lbl" for="peerToken">token（可选）</label><input id="peerToken" name="token" class="mono" placeholder="粘贴对方提供的 token" autocomplete="off" spellcheck="false" /></div>
-            <div class="field peer-relays"><label class="lbl" for="peerTargets">已发布目标（可选）</label><input id="peerTargets" name="published_targets" class="mono" placeholder="每项 host:port，以逗号分隔，例如 10.0.0.8:5432, redis.internal:6379" autocomplete="off" spellcheck="false" /></div>
-            <div class="field peer-relays"><label class="lbl" for="peerRelays">专用中继（可选）</label><textarea id="peerRelays" name="relay_entries" class="mono" rows="3" placeholder="每行：https://relay.example.com:18443 [可选 token]"></textarea><small class="peer-mapping-label">每行一条中继，URL 后可用空格填写该条中继的 token。留空时使用默认中继策略。</small></div>
-          </div>
-          <label class="share-relay-option relay-force-option" for="peerForceRelay"><input id="peerForceRelay" name="force_relay" type="checkbox" /><span><strong>此对端强制经中继</strong><small>关闭该对端的 P2P 直连。该对端的 Endpoint 重建后生效。</small></span></label>
-          <div class="peer-form-actions"><button id="cancelPeerEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="savePeerBtn" class="btn btn-primary" type="submit">添加对端</button></div>
-        </form>
-      </div>
-      <div class="mapping-list-head"><h2>已配置对端</h2><span id="peerCount">0 个对端</span></div>
-      <div class="table-wrap"><table><thead><tr><th>对端</th><th>连接凭证</th><th>中继</th><th></th></tr></thead><tbody id="peerRows"></tbody></table><div id="peerEmpty" class="empty"><div class="empty-title">尚未添加对端</div><p>先添加一个具名对端，再为端口映射或域名映射选择它。</p></div></div>
-    </div>
-
-    <!-- Tab: 连接 -->
-    <div id="tabConnection" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-connection" tabindex="0">
-      <div class="card">
+      <div class="card node-workspace-card">
         <div class="card-header">
-          <h2 class="card-title">节点</h2>
+          <span class="card-title">节点</span>
           <div class="card-actions">
             <button id="exportBtn" class="btn btn-outline btn-sm" type="button">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1178,38 +1161,29 @@
           <button class="node-tab" type="button" role="tab" id="node-tab-remote" aria-controls="nodeRemotePanel" aria-selected="true">远端节点</button>
           <button class="node-tab" type="button" role="tab" id="node-tab-local" aria-controls="nodeLocalPanel" aria-selected="false" tabindex="-1">本机节点</button>
         </div>
-        <section id="nodeRemotePanel" class="node-panel node-table" role="tabpanel" aria-labelledby="node-tab-remote">
-          <div class="node-table-head"><span id="remoteNodeTitle" class="node-table-title">远端节点</span></div>
-          <p id="remoteNodeCopy" class="node-table-copy">粘贴对方 expose 设备生成的 <kbd>powermap.credential.json</kbd> 内容，接入后立即切换连接目标并重连。</p>
-          <p id="peerManagedNotice" class="hint hidden">当前配置由“对端管理”维护。请在那里编辑每个对端的凭证和专用中继。</p>
-          <div class="cred-status">
-            <span id="credBadge" class="badge no">未配置</span>
-            <span id="credNode" class="node-id"></span>
-            <button id="copyNode" class="btn btn-outline btn-sm" type="button" style="display:none">复制 node_id</button>
-            <button id="copyToken" class="btn btn-outline btn-sm" type="button" style="display:none">复制 token</button>
+        <section id="nodeRemotePanel" class="node-panel" role="tabpanel" aria-labelledby="node-tab-remote">
+        <div class="card-header"><span id="peerEditorTitle" class="card-title">添加远端节点</span></div>
+        <p class="peer-help">每个远端节点都有自己的接入凭证和中继设置。名称必须唯一，用于在映射列表中确认访问的远端网络。</p>
+        <form id="peerForm">
+          <div class="peer-form-grid">
+            <div class="field"><label class="lbl" for="peerName">节点名称</label><input id="peerName" name="name" maxlength="60" placeholder="例如 上海机房" autocomplete="off" required /></div>
+            <div class="field"><label class="lbl" for="peerNodeId">node_id（可选）</label><input id="peerNodeId" name="node_id" class="mono" placeholder="粘贴对方提供的 node_id" autocomplete="off" spellcheck="false" /></div>
+            <div class="field"><label class="lbl" for="peerToken">token（可选）</label><input id="peerToken" name="token" class="mono" placeholder="粘贴对方提供的 token" autocomplete="off" spellcheck="false" /></div>
+            <div class="field peer-relays"><label class="lbl" for="peerCredentialJson">凭证 JSON（可选）</label><textarea id="peerCredentialJson" name="credential_json" class="mono" rows="3" placeholder='粘贴 {"node_id":"...","token":"..."}' autocomplete="off" spellcheck="false"></textarea><small class="peer-mapping-label">粘贴完整凭证后会填入 node_id、token、已发布目标和该节点的中继设置；节点名称仍需单独填写。</small></div>
+            <div class="field peer-relays"><label class="lbl" for="peerTargets">已发布目标（可选）</label><input id="peerTargets" name="published_targets" class="mono" placeholder="每项 host:port，以逗号分隔，例如 10.0.0.8:5432, redis.internal:6379" autocomplete="off" spellcheck="false" /></div>
+            <div class="field peer-relays"><label class="lbl" for="peerRelays">专用中继（可选）</label><textarea id="peerRelays" name="relay_entries" class="mono" rows="3" placeholder="每行：https://relay.example.com:18443 [可选 token]"></textarea><small class="peer-mapping-label">每行一条中继，URL 后可用空格填写该条中继的 token。留空时使用默认中继策略。</small></div>
           </div>
-          <form id="credForm">
-          <div class="field" style="margin-bottom:12px">
-            <label class="lbl" for="credJson">凭证 JSON</label>
-            <textarea id="credJson" placeholder='{"node_id":"3b23...","token":"991f..."}' spellcheck="false" autocomplete="off"></textarea>
-          </div>
-          <div class="grid cred">
-            <div class="field"><label class="lbl" for="credNodeIn">node_id</label><input id="credNodeIn" class="mono" placeholder="3b2302e0..." spellcheck="false" autocomplete="off" /></div>
-            <div class="field"><label class="lbl" for="credTokenIn">token</label><input id="credTokenIn" class="mono" placeholder="991fd0a3..." spellcheck="false" autocomplete="off" /></div>
-            <button type="submit" class="btn btn-primary">接入 / 更新</button>
-          </div>
-          </form>
+          <label class="share-relay-option relay-force-option" for="peerForceRelay"><input id="peerForceRelay" name="force_relay" type="checkbox" /><span><strong>此节点强制经中继</strong><small>关闭该节点的 P2P 直连。该节点的 Endpoint 重建后生效。</small></span></label>
+          <div class="peer-form-actions"><button id="cancelPeerEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="savePeerBtn" class="btn btn-primary" type="submit">添加远端节点</button></div>
+        </form>
+        <div class="mapping-list-head"><h2>已配置远端节点</h2><span id="peerCount">0 个节点</span></div>
+        <div class="table-wrap"><table><thead><tr><th>节点</th><th>连接凭证</th><th>中继</th><th></th></tr></thead><tbody id="peerRows"></tbody></table><div id="peerEmpty" class="empty"><div class="empty-title">尚未添加远端节点</div><p>先添加一个具名远端节点，再为端口映射或域名映射选择它。</p></div></div>
         </section>
         <section id="nodeLocalPanel" class="node-panel node-table hidden" role="tabpanel" aria-labelledby="node-tab-local">
           <div class="node-table-head"><span id="ownNodeTitle" class="node-table-title">本机节点</span><button id="copyOwnCredential" class="btn btn-outline btn-sm" type="button" style="display:none">复制分享凭证</button></div>
           <p class="node-table-copy">把本机凭证交给对方，对方即可在自己的“远端节点”中接入。</p>
           <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
-          <label id="shareRelayOption" class="share-relay-option" for="shareRelayConfig">
-            <input id="shareRelayConfig" name="share_relay_config" type="checkbox" />
-            <span><strong>同时分享中继配置</strong><small>复制的 JSON 将包含自定义中继地址、Relay token 和强制中继开关；接收方导入后会应用这些设置。未勾选时，对方保留自己的中继配置。</small></span>
-          </label>
         </section>
-        <span id="ioMsg"></span>
       </div>
 
       <div class="card">
@@ -1232,32 +1206,6 @@
         </form>
       </div>
 
-    </div>
-
-    <!-- Tab: 中继 -->
-    <div id="tabRelay" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-relay" tabindex="0">
-      <div class="card relay-card">
-        <div class="card-header">
-          <div><h2 class="card-title">中继</h2><p class="relay-header-copy">默认优先 P2P 直连；无法直连时使用内置官方中继，官方中继不可用才回退到 iroh 默认中继。</p></div>
-          <span id="relayModeStatus" class="relay-mode-status" role="status" aria-live="polite">正在读取</span>
-        </div>
-        <form id="relayForm" class="relay-form">
-          <section class="relay-section" aria-labelledby="relayEntriesTitle">
-            <div class="relay-section-head"><div><span id="relayEntriesTitle" class="relay-section-title">自定义中继</span><p class="relay-field-hint">每条中继独立使用自己的 token。配置后会替换官方中继，且不会自动切换至 iroh；测速仅检查可达性与延迟，不验证 token。</p></div><div class="relay-actions"><span id="relayUrlCount" class="relay-url-count">0 / 8</span><button id="probeRelaysBtn" class="btn btn-outline btn-sm" type="button">测试全部</button><button id="addRelayBtn" class="btn btn-outline btn-sm" type="button">添加中继</button></div></div>
-            <div id="relayRows" class="relay-rows" aria-live="polite"></div>
-            <p id="relayEmpty" class="relay-empty">未配置自定义中继。连接在需要中继时会使用官方中继。</p>
-          </section>
-          <section class="relay-section" aria-labelledby="forceRelayTitle">
-            <div class="relay-section-head"><span id="forceRelayTitle" class="relay-section-title">连接路径</span></div>
-            <label class="share-relay-option relay-force-option" for="forceRelay">
-              <input id="forceRelay" name="force_relay" type="checkbox" aria-describedby="forceRelayHint" />
-              <span><strong>强制经中继</strong><small id="forceRelayHint">关闭 P2P 直连，只允许经中继建立连接。保存后必须重启 PowerMap，access 和 expose 才会生效。</small></span>
-            </label>
-          </section>
-          <p id="relayFormError" class="form-error hidden" role="alert"></p>
-          <div class="relay-footer"><p class="relay-runtime-note"><strong>生效范围</strong><span id="relayRuntimeNote">自定义中继会用于 access 的后续连接；强制中继必须重启 PowerMap 后才会作用于两端 Endpoint。</span></p><button id="saveRelayBtn" type="submit" class="btn btn-primary">保存中继配置</button></div>
-        </form>
-      </div>
     </div>
 
     <div id="tabAbout" class="tab-content hidden" role="tabpanel" aria-labelledby="tab-about" tabindex="0">
@@ -1509,24 +1457,17 @@ document.getElementById('themeToggle').addEventListener('click', () => {
 
 // ── 标签页切换 ──
 const TAB_KEY = 'powermap_tab';
-// These values are read while resolving the initial URL hash, before the relay form helpers.
-let localRelay = { relays: [], force_relay: false, restart_required: false };
-let relayDirty = false;
-let relayProbeByUrl = new Map();
-let peerManagedMode = false;
-const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', peers: 'tabPeers', connection: 'tabConnection', relay: 'tabRelay', events: 'tabEvents', about: 'tabAbout' };
+const tabViews = { dashboard: 'tabDashboard', mappings: 'tabMappings', domains: 'tabDomains', peers: 'tabPeers', events: 'tabEvents', about: 'tabAbout' };
 const TAB_META = {
   dashboard: { title: '概览', subtitle: '查看节点连接、映射隧道和实时流量。' },
   mappings: { title: '端口映射', subtitle: '将本地端口安全地映射至内网服务。' },
   domains: { title: '域名映射', subtitle: '将域名解析到本机回环入口，并安全转发到远端服务。' },
-  peers: { title: '对端管理', subtitle: '为每个远端网络维护独立的名称、凭证和中继配置。' },
-  connection: { title: '节点', subtitle: '分享本机身份，或连接到其他节点。' },
-  relay: { title: '中继', subtitle: '管理自定义中继、独立 token 与控制平面延迟测试。' },
+  peers: { title: '节点', subtitle: '管理远端节点、本机身份与反向映射。' },
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
   about: { title: '关于', subtitle: '查看当前版本、发布说明与 PowerMap 功能。' },
 };
 function selectTab(name, { refreshPeerList = true } = {}) {
-  if (name === 'relay' && peerManagedMode) name = 'peers';
+  if (name === 'connection' || name === 'relay') name = 'peers';
   if (!tabViews[name]) name = 'dashboard';
   document.getElementById('mainPage').dataset.activeTab = name;
   for (const [k, id] of Object.entries(tabViews)) {
@@ -1549,8 +1490,11 @@ function selectTab(name, { refreshPeerList = true } = {}) {
   if (location.hash.slice(1) !== name) history.replaceState(null, '', '#' + name);
   if (name === 'events') refreshEvents();
   if (name === 'domains') refreshDomains();
-  if (name === 'peers' && refreshPeerList) refreshPeers();
-  if (name === 'relay' && !relayDirty) refreshRelay();
+  if (name === 'peers') {
+    if (refreshPeerList) refreshPeers();
+    refreshOwnNode();
+    refreshReverse();
+  }
   if (name === 'about') setTimeout(() => {
     if (!checkedUpdate) checkUpdate({ silent: true });
   }, 0);
@@ -1829,12 +1773,9 @@ async function api(path, opts) {
   return fetch(path, opts);
 }
 
-// ── 对端管理：名称是展示标识；映射始终保存 peer_id，改名不会改变归属。 ──
+// ── 远端节点管理：名称是展示标识；映射始终保存 peer_id，改名不会改变归属。 ──
 let peers = [];
 let peerEditId = null;
-function isLegacyPeerCollection(list) {
-  return Array.isArray(list) && list.length === 1 && String(list[0]?.name || '') === '默认对端';
-}
 function peerName(peerId) {
   const peer = peers.find(item => item.id === peerId);
   return peer ? peer.name : '';
@@ -1870,7 +1811,12 @@ function refreshPeerSelects() {
   populateReversePeerSelect();
 }
 function relayEntriesText(relay) {
-  return (relay?.relays || []).map(entry => [entry.url, entry.auth_token].filter(Boolean).join(' ')).join('\n');
+  const entries = Array.isArray(relay?.relays)
+    ? relay.relays
+    : Array.isArray(relay?.urls)
+      ? relay.urls.map(url => ({ url, auth_token: relay.auth_token || '' }))
+      : [];
+  return entries.map(entry => [entry.url, entry.auth_token].filter(Boolean).join(' ')).join('\n');
 }
 function targetsText(targets) {
   return (targets || []).map(target => `${target.host}:${target.port}`).join(', ');
@@ -1893,12 +1839,45 @@ function parsePeerRelays(text) {
     return { url, auth_token: token.join(' ') };
   });
 }
+function applyPeerCredentialJson(form, { announce = false } = {}) {
+  const raw = form.elements.credential_json.value.trim();
+  if (!raw) {
+    delete form.dataset.parsedCredentialJson;
+    return true;
+  }
+  if (form.dataset.parsedCredentialJson === raw) return true;
+  let credential;
+  try { credential = JSON.parse(raw); }
+  catch {
+    if (announce) toast('凭证 JSON 解析失败，请检查格式', 'err');
+    return false;
+  }
+  const nodeId = typeof credential?.node_id === 'string' ? credential.node_id.trim() : '';
+  const token = typeof credential?.token === 'string' ? credential.token.trim() : '';
+  if (!nodeId || !token) {
+    if (announce) toast('凭证 JSON 必须包含 node_id 和 token', 'err');
+    return false;
+  }
+  form.elements.node_id.value = nodeId;
+  form.elements.token.value = token;
+  if (Array.isArray(credential.published_targets)) {
+    form.elements.published_targets.value = targetsText(credential.published_targets);
+  }
+  if (credential.relay && typeof credential.relay === 'object') {
+    form.elements.relay_entries.value = relayEntriesText(credential.relay);
+    form.elements.force_relay.checked = credential.relay.force_relay === true;
+  }
+  form.dataset.parsedCredentialJson = raw;
+  if (announce) toast('凭证 JSON 已填充当前节点');
+  return true;
+}
 function resetPeerForm() {
   peerEditId = null;
   const form = document.getElementById('peerForm');
   form.reset();
-  document.getElementById('peerEditorTitle').textContent = '添加对端';
-  document.getElementById('savePeerBtn').textContent = '添加对端';
+  delete form.dataset.parsedCredentialJson;
+  document.getElementById('peerEditorTitle').textContent = '添加远端节点';
+  document.getElementById('savePeerBtn').textContent = '添加远端节点';
   document.getElementById('cancelPeerEditBtn').style.display = 'none';
 }
 function editPeer(id) {
@@ -1912,8 +1891,10 @@ function editPeer(id) {
   form.elements.published_targets.value = targetsText(peer.published_targets);
   form.elements.relay_entries.value = relayEntriesText(peer.relay);
   form.elements.force_relay.checked = Boolean(peer.relay?.force_relay);
-  document.getElementById('peerEditorTitle').textContent = `编辑对端：${peer.name}`;
-  document.getElementById('savePeerBtn').textContent = '保存对端';
+  form.elements.credential_json.value = '';
+  delete form.dataset.parsedCredentialJson;
+  document.getElementById('peerEditorTitle').textContent = `编辑远端节点：${peer.name}`;
+  document.getElementById('savePeerBtn').textContent = '保存远端节点';
   document.getElementById('cancelPeerEditBtn').style.display = '';
   form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   form.elements.name.focus();
@@ -1922,7 +1903,7 @@ function renderPeers(list) {
   peers = Array.isArray(list) ? list.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))) : [];
   const rows = document.getElementById('peerRows');
   rows.replaceChildren();
-  document.getElementById('peerCount').textContent = `${peers.length} 个对端`;
+  document.getElementById('peerCount').textContent = `${peers.length} 个节点`;
   document.getElementById('peerEmpty').style.display = peers.length ? 'none' : 'block';
   for (const peer of peers) {
     const relayCount = peer.relay?.relays?.length || 0;
@@ -1941,8 +1922,6 @@ async function refreshPeers() {
     if (!response.ok) throw new Error((await response.text()) || '读取对端失败');
     const list = await response.json();
     renderPeers(list);
-    if (isLegacyPeerCollection(peers)) leavePeerManagedMode();
-    else enterPeerManagedMode({ refreshPeerList: false });
     return peers;
   } catch (error) {
     if (String(error) !== 'Error: unauthorized') console.warn('读取对端失败', error);
@@ -1952,6 +1931,10 @@ async function refreshPeers() {
 document.getElementById('peerForm').addEventListener('submit', async event => {
   event.preventDefault();
   const form = event.currentTarget;
+  if (!applyPeerCredentialJson(form, { announce: true })) {
+    form.elements.credential_json.focus();
+    return;
+  }
   const name = form.elements.name.value.trim();
   const nodeId = form.elements.node_id.value.trim();
   const token = form.elements.token.value.trim();
@@ -1977,6 +1960,11 @@ document.getElementById('peerForm').addEventListener('submit', async event => {
     refresh(); refreshDomains();
   } catch (error) { toast('保存对端失败', 'err'); }
   finally { button.disabled = false; }
+});
+document.getElementById('peerCredentialJson').addEventListener('input', event => {
+  const form = document.getElementById('peerForm');
+  if (!event.currentTarget.value.trim() || form.dataset.parsedCredentialJson === event.currentTarget.value.trim()) return;
+  applyPeerCredentialJson(form);
 });
 document.getElementById('cancelPeerEditBtn').addEventListener('click', resetPeerForm);
 document.getElementById('peerRows').addEventListener('click', async event => {
@@ -2291,7 +2279,7 @@ document.getElementById('targetOptions').addEventListener('click', (event) => {
 function recoveryAdvice(state, reason) {
   const text = String(reason || '');
   if (state === 'stopped') return '本地监听已经停止。删除这条映射后按原参数重新创建，可重新绑定本地端口。';
-  if (/尚未配置凭证|凭证/.test(text)) return '先前往“连接”页更新 server 凭证，然后重新检测目标服务。';
+  if (/尚未配置凭证|凭证/.test(text)) return '先前往“节点”页更新远端节点凭证，然后重新检测目标服务。';
   if (/允许列表|策略拒绝|B 拒绝/.test(text)) return 'server 端拒绝了目标。请确认 allow_networks 和 allow_ports 已包含该地址与端口。';
   if (/解析/.test(text)) return 'server 端无法解析目标主机。请检查主机名，或改用 server 所在内网可访问的 IP。';
   if (/超时|连接 B|打开隧道/.test(text)) return '检查 client 与 server 的网络连通性，再重新检测目标服务。';
@@ -2302,332 +2290,8 @@ async function copyText(t) {
   catch { return false; }
 }
 
-// ── 连接设置：凭证状态 / 复制 / 接入 ──
-let curCred = { node_id: '', token: '', configured: false, token_hidden: false, published_targets: [] };
 let ownCredential = null;
-let legacyCredentialReadSucceeded = false;
-let legacyRelayReadSucceeded = false;
 let reversePeerId = '';
-function isLegacyGlobalConflict(response) {
-  return response && response.status === 409;
-}
-function renderPeerManagedGlobalControls() {
-  curCred = { node_id: '', token: '', configured: false, token_hidden: false, published_targets: [] };
-  localRelay = { relays: [], force_relay: false, restart_required: false };
-  relayDirty = false;
-  relayProbeByUrl = new Map();
-  document.getElementById('remoteNodeTitle').textContent = '远端节点（由对端管理）';
-  document.getElementById('remoteNodeCopy').classList.add('hidden');
-  document.getElementById('peerManagedNotice').classList.remove('hidden');
-  document.getElementById('credBadge').textContent = '由对端管理';
-  document.getElementById('credBadge').className = 'badge no';
-  document.getElementById('credNode').textContent = '';
-  document.getElementById('copyNode').style.display = 'none';
-  document.getElementById('copyToken').style.display = 'none';
-  document.querySelectorAll('#credForm input, #credForm textarea, #credForm button').forEach(control => { control.disabled = true; });
-  document.getElementById('shareRelayConfig').checked = false;
-  document.getElementById('shareRelayConfig').disabled = true;
-  document.getElementById('shareRelayOption').classList.add('hidden');
-  document.getElementById('forceRelay').checked = false;
-  document.getElementById('relayRows').replaceChildren();
-  document.getElementById('relayEmpty').classList.add('hidden');
-  document.getElementById('relayModeStatus').textContent = '由对端管理';
-  document.getElementById('relayModeStatus').classList.remove('custom');
-  document.getElementById('relayRuntimeNote').textContent = '请在“对端管理”中为每个对端维护专用中继和连接路径。';
-  document.querySelectorAll('#relayForm input, #relayForm button').forEach(control => { control.disabled = true; });
-  document.getElementById('saveRelayBtn').removeAttribute('aria-busy');
-}
-function enterPeerManagedMode({ refreshPeerList = true } = {}) {
-  if (peerManagedMode) return;
-  peerManagedMode = true;
-  renderPeerManagedGlobalControls();
-  if (location.hash.slice(1) === 'relay') selectTab('peers', { refreshPeerList: false });
-  if (refreshPeerList) refreshPeers();
-}
-function leavePeerManagedMode() {
-  if (!peerManagedMode) return;
-  peerManagedMode = false;
-  legacyCredentialReadSucceeded = false;
-  legacyRelayReadSucceeded = false;
-  document.getElementById('remoteNodeTitle').textContent = '远端节点';
-  document.getElementById('remoteNodeCopy').classList.remove('hidden');
-  document.getElementById('peerManagedNotice').classList.add('hidden');
-  document.querySelectorAll('#credForm input, #credForm textarea, #credForm button').forEach(control => { control.disabled = false; });
-  document.getElementById('shareRelayConfig').disabled = false;
-  document.getElementById('shareRelayOption').classList.remove('hidden');
-  document.querySelectorAll('#relayForm input, #relayForm button').forEach(control => { control.disabled = false; });
-  refreshCred().then(refreshTargetCatalog);
-  refreshRelay();
-}
-function setRelayFormError(message = '') {
-  const error = document.getElementById('relayFormError');
-  error.textContent = message;
-  error.classList.toggle('hidden', !message);
-  document.querySelectorAll('.relay-url, .relay-token').forEach(input => input.toggleAttribute('aria-invalid', !!message));
-}
-function relayEntriesFromForm() {
-  return [...document.querySelectorAll('#relayRows .relay-row')].map(row => ({
-    url: row.querySelector('.relay-url').value.trim(),
-    auth_token: row.querySelector('.relay-token').value,
-  }));
-}
-function relayEntriesForSave() {
-  return relayEntriesFromForm().filter(entry => entry.url || entry.auth_token);
-}
-function relayProbeText(probe) {
-  if (!probe) return '未测试';
-  if (probe.testing) return '检测中…';
-  const latency = Number.isFinite(probe.latency_ms) ? `${probe.latency_ms} ms` : '';
-  if (probe.reachable) return latency || '可达';
-  const status = probe.http_status ? `HTTP ${probe.http_status}` : '';
-  return [status, latency, probe.error || '不可达'].filter(Boolean).join(' · ');
-}
-function renderRelayRows(entries) {
-  const rows = document.getElementById('relayRows');
-  rows.replaceChildren();
-  entries.forEach((entry, index) => {
-    const row = document.createElement('div');
-    row.className = 'relay-row';
-    row.dataset.index = String(index);
-
-    const indexLabel = document.createElement('span');
-    indexLabel.className = 'relay-row-index';
-    indexLabel.textContent = String(index + 1).padStart(2, '0');
-
-    const urlField = document.createElement('label');
-    urlField.className = 'field relay-row-field';
-    urlField.innerHTML = '<span class="relay-row-label">中继地址</span>';
-    const url = document.createElement('input');
-    url.className = 'mono relay-url';
-    url.name = `relay_url_${index + 1}`;
-    url.type = 'url';
-    url.placeholder = 'https://relay.example.com';
-    url.autocomplete = 'off';
-    url.autocapitalize = 'off';
-    url.spellcheck = false;
-    url.value = entry.url || '';
-    urlField.append(url);
-
-    const tokenField = document.createElement('label');
-    tokenField.className = 'field relay-row-field';
-    tokenField.innerHTML = '<span class="relay-row-label">Token（可选）</span>';
-    const token = document.createElement('input');
-    token.className = 'mono relay-token';
-    token.name = `relay_auth_token_${index + 1}`;
-    token.type = 'password';
-    token.placeholder = '此中继的准入 token';
-    token.autocomplete = 'off';
-    token.spellcheck = false;
-    token.value = entry.auth_token || '';
-    tokenField.append(token);
-
-    const probe = relayProbeByUrl.get((entry.url || '').trim());
-    const probeState = document.createElement('span');
-    probeState.className = `relay-probe${probe?.reachable ? ' ok' : probe && !probe.testing ? ' error' : ''}`;
-    probeState.setAttribute('role', 'status');
-    probeState.textContent = relayProbeText(probe);
-
-    const remove = document.createElement('button');
-    remove.className = 'relay-icon-btn';
-    remove.type = 'button';
-    remove.dataset.relayRemove = String(index);
-    remove.setAttribute('aria-label', `移除第 ${index + 1} 个中继`);
-    remove.title = '移除中继';
-    remove.textContent = 'x';
-
-    row.append(indexLabel, urlField, tokenField, probeState, remove);
-    rows.append(row);
-  });
-  document.getElementById('relayEmpty').classList.toggle('hidden', entries.length > 0);
-}
-function renderRelaySummary(entries, { draft = false, restartRequired = localRelay.restart_required } = {}) {
-  const count = entries.filter(entry => entry.url.trim()).length;
-  const forced = document.getElementById('forceRelay').checked;
-  const mode = document.getElementById('relayModeStatus');
-  document.getElementById('relayUrlCount').textContent = `${count} / 8`;
-  document.getElementById('relayRuntimeNote').textContent = restartRequired && !draft
-    ? '强制中继配置已保存，但当前 Endpoint 仍使用启动时的传输策略。请重启 PowerMap 后再建立连接。'
-    : forced
-    ? '强制中继已启用：保存后必须重启 PowerMap，access 和 expose 都将禁用 P2P 直连。'
-    : count
-      ? '自定义中继会替换官方中继作为主中继；access 的后续连接立即使用新地址，expose 在重启后更新。'
-      : 'P2P 直连优先；无法直连时使用官方中继，官方中继不可用时自动回退 iroh 默认中继。';
-  const primary = count ? `自建 ${count} 个` : '官方中继';
-  const suffix = restartRequired && !draft ? ' · 需要重启' : forced ? ' · 强制中继' : '';
-  mode.textContent = draft ? `待保存 · ${primary}${suffix}` : `${primary}${suffix}`;
-  mode.classList.toggle('custom', count > 0 || forced);
-}
-function renderRelayUnavailable() {
-  const mode = document.getElementById('relayModeStatus');
-  mode.textContent = '读取失败';
-  mode.classList.remove('custom');
-  document.getElementById('relayRuntimeNote').textContent = '未能读取当前中继配置。请检查管理页连接后重试，保存不会使用未知的本机配置。';
-}
-function renderRelay(relay) {
-  const raw = relay && typeof relay === 'object' ? relay : {};
-  const relays = Array.isArray(raw.relays)
-    ? raw.relays.map(entry => ({ url: String(entry?.url || ''), auth_token: String(entry?.auth_token || '') }))
-    : Array.isArray(raw.urls)
-      ? raw.urls.map(url => ({ url: String(url || ''), auth_token: String(raw.auth_token || '') }))
-      : [];
-  localRelay = {
-    relays,
-    force_relay: raw.force_relay === true,
-    restart_required: raw.restart_required === true,
-  };
-  relayDirty = false;
-  relayProbeByUrl = new Map();
-  document.getElementById('forceRelay').checked = localRelay.force_relay === true;
-  setRelayFormError();
-  renderRelayRows(localRelay.relays);
-  renderRelaySummary(localRelay.relays);
-}
-function markRelayDirty() {
-  relayDirty = true;
-  relayProbeByUrl = new Map();
-  renderRelaySummary(relayEntriesForSave(), { draft: true });
-  setRelayFormError();
-}
-document.getElementById('relayRows').addEventListener('input', markRelayDirty);
-document.getElementById('relayRows').addEventListener('click', event => {
-  const button = event.target.closest('[data-relay-remove]');
-  if (!button) return;
-  const entries = relayEntriesFromForm();
-  entries.splice(Number(button.dataset.relayRemove), 1);
-  relayProbeByUrl = new Map();
-  relayDirty = true;
-  renderRelayRows(entries);
-  renderRelaySummary(entries, { draft: true });
-});
-document.getElementById('forceRelay').addEventListener('change', () => {
-  markRelayDirty();
-});
-document.getElementById('addRelayBtn').addEventListener('click', () => {
-  const entries = relayEntriesFromForm();
-  if (entries.length >= 8) { toast('最多可配置 8 个中继', 'err'); return; }
-  entries.push({ url: '', auth_token: '' });
-  relayProbeByUrl = new Map();
-  relayDirty = true;
-  renderRelayRows(entries);
-  renderRelaySummary(entries, { draft: true });
-  document.querySelector('#relayRows .relay-row:last-child .relay-url').focus();
-});
-async function refreshRelay() {
-  if (peerManagedMode || relayDirty) return localRelay;
-  try {
-    const response = await api('/api/relay');
-    if (isLegacyGlobalConflict(response)) {
-      enterPeerManagedMode();
-      return null;
-    }
-    if (!response.ok) throw new Error((await response.text()) || '读取中继配置失败');
-    const relay = await response.json();
-    // A slow initial/tab refresh must never replace text the operator started entering.
-    if (peerManagedMode || relayDirty) return localRelay;
-    legacyRelayReadSucceeded = true;
-    renderRelay(relay);
-    return relay;
-  } catch (error) {
-    renderRelayUnavailable();
-    if (String(error) !== 'Error: unauthorized') toast(String(error.message || error), 'err');
-    return null;
-  }
-}
-document.getElementById('probeRelaysBtn').addEventListener('click', async () => {
-  if (peerManagedMode) { selectTab('peers'); return; }
-  if (!legacyRelayReadSucceeded) { toast('正在确认旧版中继配置，请稍后重试', 'err'); return; }
-  const button = document.getElementById('probeRelaysBtn');
-  if (relayDirty) {
-    const message = '请先保存中继配置，再测试已保存的中继。';
-    setRelayFormError(message);
-    toast(message, 'err');
-    return;
-  }
-  if (localRelay.relays.length === 0) {
-    toast('尚未配置自定义中继', 'err');
-    return;
-  }
-  relayProbeByUrl = new Map(localRelay.relays.map(entry => [entry.url.trim(), { testing: true }]));
-  renderRelayRows(localRelay.relays);
-  button.disabled = true;
-  button.textContent = '测试中…';
-  try {
-    const response = await api('/api/relay/probe');
-    if (isLegacyGlobalConflict(response)) {
-      enterPeerManagedMode();
-      selectTab('peers');
-      return;
-    }
-    if (!response.ok) throw new Error((await response.text()) || '中继测速失败');
-    const report = await response.json();
-    if (peerManagedMode) return;
-    relayProbeByUrl = new Map((report.relays || []).map(result => [String(result.url || '').trim(), result]));
-    renderRelayRows(localRelay.relays);
-  } catch (error) {
-    relayProbeByUrl = new Map(localRelay.relays.map(entry => [entry.url.trim(), { error: '测速请求失败' }]));
-    renderRelayRows(localRelay.relays);
-    toast(String(error.message || error), 'err');
-  } finally {
-    if (!peerManagedMode) {
-      button.disabled = false;
-      button.textContent = '测试全部';
-    }
-  }
-});
-document.getElementById('relayForm').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (peerManagedMode) { selectTab('peers'); return; }
-  if (!legacyRelayReadSucceeded) { toast('正在确认旧版中继配置，请稍后重试', 'err'); return; }
-  const button = document.getElementById('saveRelayBtn');
-  const relays = relayEntriesForSave();
-  if (relays.length > 8) {
-    setRelayFormError('最多可配置 8 个中继');
-    return;
-  }
-  const relay = {
-    relays,
-    force_relay: document.getElementById('forceRelay').checked,
-  };
-  const defaultLabel = '保存中继策略';
-  button.disabled = true;
-  button.textContent = '保存中…';
-  button.setAttribute('aria-busy', 'true');
-  setRelayFormError();
-  try {
-    const response = await api('/api/relay', {
-      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(relay),
-    });
-    if (isLegacyGlobalConflict(response)) {
-      enterPeerManagedMode();
-      selectTab('peers');
-      return;
-    }
-    if (!response.ok) throw new Error((await response.text()) || '保存中继配置失败');
-    const saved = await response.json();
-    if (peerManagedMode) return;
-    renderRelay(saved);
-    toast(saved.restart_required
-      ? '强制中继配置已保存；请重启 PowerMap 后生效'
-      : relay.force_relay
-      ? '强制中继已保存；重启 PowerMap 后生效'
-      : relay.relays.length
-        ? '自定义中继配置已保存'
-        : '已恢复官方中继；不可用时自动回退 iroh');
-  } catch (error) {
-    if (String(error) !== 'Error: unauthorized') {
-      const message = String(error.message || error);
-      setRelayFormError(message);
-      document.querySelector(/(auth_token|token)/i.test(message) ? '.relay-token' : '.relay-url')?.focus();
-      toast(message, 'err');
-    }
-  } finally {
-    if (!peerManagedMode) {
-      button.disabled = false;
-      button.textContent = defaultLabel;
-      button.removeAttribute('aria-busy');
-    }
-  }
-});
 async function refreshOwnNode() {
   try {
     const node = await (await api('/api/node')).json();
@@ -2638,28 +2302,6 @@ async function refreshOwnNode() {
     document.getElementById('ownNodeId').innerHTML = node.node_id ? ('<b>node_id</b> ' + esc(node.node_id)) : '正在初始化本机身份…';
     document.getElementById('copyOwnCredential').style.display = ownCredential ? '' : 'none';
   } catch (e) { if (String(e) === 'Error: unauthorized') return; }
-}
-async function refreshCred() {
-  try {
-    const response = await api('/api/credential');
-    if (isLegacyGlobalConflict(response)) {
-      enterPeerManagedMode();
-      return null;
-    }
-    if (!response.ok) throw new Error((await response.text()) || '读取凭证失败');
-    const c = await response.json();
-    if (peerManagedMode) return null;
-    legacyCredentialReadSucceeded = true;
-    curCred = c;
-    const badge = document.getElementById('credBadge');
-    badge.textContent = c.configured ? '已配置' : '未配置';
-    badge.className = 'badge ' + (c.configured ? 'ok' : 'no');
-    document.getElementById('credNode').innerHTML =
-      c.node_id ? ('<b>node_id</b> ' + esc(c.node_id)) : '';
-    document.getElementById('copyNode').style.display = c.node_id ? '' : 'none';
-    document.getElementById('copyToken').style.display = (c.token && !c.token_hidden) ? '' : 'none';
-    return c;
-  } catch (e) { if (String(e) === 'Error: unauthorized') return null; }
 }
 let checkedUpdate = false;
 let updateCommand = '';
@@ -2783,94 +2425,17 @@ function renderConnectedPeers(connected, ips) {
     list.appendChild(item);
   }
 }
-document.getElementById('copyNode').addEventListener('click', async () => {
-  const ok = await copyText(curCred.node_id || '');
-  ioMsg(ok ? 'node_id 已复制' : '复制失败，请手动选取');
-});
-document.getElementById('copyToken').addEventListener('click', async () => {
-  const ok = await copyText(curCred.token || '');
-  ioMsg(ok ? 'token 已复制' : '复制失败，请手动选取');
-});
 document.getElementById('copyOwnCredential').addEventListener('click', async () => {
   const button = document.getElementById('copyOwnCredential');
-  if (!ownCredential) { ioMsg('复制失败，请稍后重试'); return; }
+  if (!ownCredential) { toast('复制失败，请稍后重试', 'err'); return; }
   button.disabled = true;
   try {
     const credential = Object.assign({}, ownCredential);
     delete credential.relay;
-    if (!peerManagedMode && document.getElementById('shareRelayConfig').checked) {
-      if (!legacyRelayReadSucceeded) {
-        ioMsg('正在确认旧版中继配置，请稍后重试', 'err');
-        return;
-      }
-      const response = await api('/api/relay');
-      if (isLegacyGlobalConflict(response)) {
-        enterPeerManagedMode();
-        return;
-      }
-      if (!response.ok) throw new Error((await response.text()) || '读取本机中继配置失败');
-      const relay = await response.json();
-      if (peerManagedMode) return;
-      delete relay.restart_required;
-      credential.relay = relay;
-    }
     const ok = await copyText(JSON.stringify(credential, null, 2));
-    ioMsg(ok ? '本机分享凭证已复制' : '复制失败，请稍后重试');
-  } catch (error) {
-    if (String(error) !== 'Error: unauthorized') toast(String(error.message || error), 'err');
+    toast(ok ? '本机分享凭证已复制' : '复制失败，请稍后重试', ok ? 'success' : 'err');
   } finally { button.disabled = false; }
 });
-document.getElementById('credForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  if (peerManagedMode) { selectTab('peers'); return; }
-  if (!legacyCredentialReadSucceeded) { toast('正在确认旧版连接配置，请稍后重试', 'err'); return; }
-  let node_id = document.getElementById('credNodeIn').value.trim();
-  let tok = document.getElementById('credTokenIn').value.trim();
-  let published_targets = [];
-  let relay;
-  const raw = document.getElementById('credJson').value.trim();
-  if (raw) {
-    try {
-      const j = JSON.parse(raw);
-      node_id = (j.node_id || '').trim();
-      tok = (j.token || '').trim();
-      published_targets = Array.isArray(j.published_targets) ? j.published_targets : [];
-      if (Object.prototype.hasOwnProperty.call(j, 'relay')) relay = j.relay;
-    } catch { toast('凭证 JSON 解析失败，请检查格式', 'err'); return; }
-  }
-  if (!node_id || !tok) { toast('请提供 node_id 与 token（粘贴 JSON 或分栏填写）', 'err'); return; }
-  // 覆盖确认：已接入且换成不同的 node_id 时二次确认——更新凭证会立即断开当前连接并重连。
-  // 仅重填相同 node_id（比如换 token）不算切换目标，不打断。
-  if (curCred.configured && curCred.node_id && curCred.node_id !== node_id) {
-    const ok = await confirmModal({
-      title: '更换连接目标', danger: true, confirmText: '更新并重连',
-      body: `当前已接入 ${curCred.node_id}。更新为新的 node_id 会立即断开现有连接并用新凭证重连，进行中的隧道会中断。确定继续？`,
-    });
-    if (!ok) return;
-  }
-  const credential = { node_id, token: tok, published_targets };
-  if (relay !== undefined) credential.relay = relay;
-  const r = await api('/api/credential', {
-    method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(credential),
-  });
-  if (isLegacyGlobalConflict(r)) {
-    enterPeerManagedMode();
-    selectTab('peers');
-    return;
-  }
-  if (!r.ok) { toast((await r.text()) || '接入失败', 'err'); return; }
-  const updated = await r.json();
-  if (peerManagedMode) return;
-  document.getElementById('credJson').value = '';
-  document.getElementById('credNodeIn').value = '';
-  document.getElementById('credTokenIn').value = '';
-  ioMsg(updated.restart_required
-    ? '凭证和强制中继配置已保存；请重启 PowerMap 后生效'
-    : '凭证已更新，正在用新凭证重连…');
-  await refreshCred(); refreshTargetCatalog(); refreshStatus();
-});
-
 // ── 反向映射策略：读取并回填当前 deny-all 白名单，保存时解析逗号分隔的网段/端口。 ──
 function legacyDefaultPeer() {
   return peers.length === 1 && peers[0].name === '默认对端' ? peers[0] : null;
@@ -3008,7 +2573,8 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
     : `已导入 ${res.started} 条映射`;
   if (res.credential_updated) msg += '，凭证已更新';
   ioMsg(msg);
-  refreshCred(); refreshStatus(); refresh();
+  await refreshPeers();
+  refreshStatus(); refresh(); refreshDomains(); refreshReverse();
 });
 
 // ── 映射列表 ──
@@ -3463,7 +3029,7 @@ document.getElementById('mappingPeer').addEventListener('change', () => {
 function setOnboardingStep(id, done) { document.getElementById(id).classList.toggle('is-done', done); }
 async function updateOnboarding(list) {
   const mappingDone = list.length > 0;
-  setOnboardingStep('onboardingCredential', curCred.configured);
+  setOnboardingStep('onboardingCredential', peers.some(peer => peer.node_id && peer.token));
   setOnboardingStep('onboardingPreflight', latestPreflight.ready);
   setOnboardingStep('onboardingMapping', mappingDone);
   try {
@@ -3475,9 +3041,10 @@ async function updateOnboarding(list) {
 }
 document.querySelectorAll('[data-onboarding]').forEach(button => button.addEventListener('click', () => {
   const target = button.dataset.onboarding;
-  if (target === 'connection') {
-    selectTab('connection');
-    requestAnimationFrame(() => document.getElementById('credJson').focus());
+  if (target === 'peers') {
+    selectTab('peers');
+    selectNodeTab('remote');
+    requestAnimationFrame(() => document.getElementById('peerName').focus());
     return;
   }
   selectTab('mappings');
@@ -3764,8 +3331,7 @@ function paletteCommands() {
     { title: '前往端口映射', hint: '切换到映射页', keys: 'mappings tab duankou', run: () => selectTab('mappings') },
     { title: '新建域名映射', hint: '将域名映射到远端端口', keys: 'new domain mapping yuming', run: () => { selectTab('domains'); document.getElementById('domainName').focus(); } },
     { title: '前往域名映射', hint: '查看域名入口与 hosts 状态', keys: 'domains tab yuming', run: () => selectTab('domains') },
-    { title: '前往连接设置', hint: '切换到连接页', keys: 'connection credential lianjie', run: () => selectTab('connection') },
-    { title: '前往中继配置', hint: '管理中继地址、token 与延迟测试', keys: 'relay zhongji token latency', run: () => selectTab('relay') },
+    { title: '前往节点', hint: '管理远端节点、本机身份与反向映射', keys: 'node peer relay credential jiedian duiduan zhongji', run: () => selectTab('peers') },
     { title: '前往事件', hint: '查看近期事件', keys: 'events shijian log', run: () => selectTab('events') },
     { title: '立即刷新', hint: '手动刷新状态与列表', keys: 'refresh reload shuaxin', run: () => poll() },
     { title: '导出配置', hint: '下载完整配置 JSON', keys: 'export daochu backup', run: () => document.getElementById('exportBtn').click() },
@@ -3866,9 +3432,8 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === '?') { e.preventDefault(); showShortcutHelp(); }
   else if (e.key === '1') { e.preventDefault(); selectTab('mappings'); }
   else if (e.key === '2') { e.preventDefault(); selectTab('domains'); }
-  else if (e.key === '3') { e.preventDefault(); selectTab('connection'); }
-  else if (e.key === '4') { e.preventDefault(); selectTab('relay'); }
-  else if (e.key === '5') { e.preventDefault(); selectTab('events'); }
+  else if (e.key === '3') { e.preventDefault(); selectTab('peers'); }
+  else if (e.key === '4') { e.preventDefault(); selectTab('events'); }
 });
 function showShortcutHelp() {
   openModal({
@@ -3878,16 +3443,14 @@ function showShortcutHelp() {
       '⌘/Ctrl + K　打开命令面板',
       'N　新建映射',
       'R　立即刷新',
-      '1 / 2 / 3 / 4　切换到 映射 / 域名 / 连接 / 事件',
+      '1 / 2 / 3 / 4　切换到 映射 / 域名 / 节点 / 事件',
       '?　显示本说明',
     ].join('\n'),
   });
 }
 
-refreshCred().then(refreshTargetCatalog);
-refreshPeers().then(() => { refresh(); refreshDomains(); });
+refreshPeers().then(() => { refreshTargetCatalog(); refresh(); refreshDomains(); });
 refreshOwnNode();
-refreshRelay();
 refresh();
 refreshDomains();
 refreshStatus();
@@ -3947,11 +3510,6 @@ refreshPauseEl.addEventListener('click', () => {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) { stopPolling(); }
   else { if (pollInterval > 0 && !pollPaused) poll(); startPolling(); }
-});
-window.addEventListener('beforeunload', event => {
-  if (!relayDirty) return;
-  event.preventDefault();
-  event.returnValue = '';
 });
 syncRefreshControls();
 if (!document.hidden) startPolling();
