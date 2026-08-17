@@ -363,6 +363,9 @@ impl PeerConfig {
         if self.name.trim().is_empty() || self.name.chars().count() > 60 {
             return Err("peer name must contain 1-60 characters".into());
         }
+        if self.name != self.name.trim() {
+            return Err("peer name cannot have leading or trailing whitespace".into());
+        }
         if self.node_id.trim().is_empty() != self.token.trim().is_empty() {
             return Err("peer node_id and token must both be set or both be empty".into());
         }
@@ -1450,6 +1453,19 @@ peers = [
     }
 
     #[test]
+    fn access_rejects_peer_names_with_surrounding_whitespace() {
+        let config: Config = toml::from_str(
+            r#"
+[access]
+peers = [{ id = "one", name = " office " }]
+"#,
+        )
+        .unwrap();
+
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
     fn access_rejects_mappings_without_valid_peer_ownership() {
         let missing: Config = toml::from_str(
             r#"
@@ -1604,7 +1620,13 @@ token = "expose-token"
                 mode: MappingMode::Tcp,
                 routes: Vec::new(),
             }],
-            domain_mappings: vec![DomainMapping::new("ai-router.dl-aiot.com")],
+            domain_mappings: vec![DomainMapping {
+                peer_id: "peer-one".into(),
+                allow_loopback_target: false,
+                domain: "ai-router.dl-aiot.com".into(),
+                remote_port: 443,
+                enabled: true,
+            }],
             ..Default::default()
         };
         let s = toml::to_string(&cfg).unwrap();

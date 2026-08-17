@@ -1276,14 +1276,90 @@ mod integration_tests {
             disabled_domain_handle(domain_mappings[0].clone(), false, None),
         );
 
-        save_config(&state).await;
+        persist_config(&state).await.unwrap();
 
         let saved = config::load_config(&state.config_path, None)
             .unwrap()
             .config
             .access
             .unwrap();
-        assert_eq!(saved.domain_mappings, domain_mappings);
+        assert_eq!(saved.domain_mappings.len(), 1);
+        assert_eq!(saved.domain_mappings[0].domain, domain_mappings[0].domain);
+        assert_eq!(saved.domain_mappings[0].peer_id, saved.peers[0].id);
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
+    async fn save_config_preserves_existing_peer_model() {
+        let state = test_state("").await;
+        let mapping = config::Mapping {
+            peer_id: "peer-b".into(),
+            allow_loopback_target: true,
+            local: "127.0.0.1:0".into(),
+            host: "10.0.0.8".into(),
+            port: 8080,
+            enabled: false,
+            name: "application".into(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.local.clone(), disabled_handle(mapping.clone()));
+        let peers = vec![
+            config::PeerConfig {
+                id: "peer-a".into(),
+                name: "office".into(),
+                node_id: "node-a".into(),
+                token: "token-a".into(),
+                published_targets: vec![config::PublishedTarget {
+                    host: "10.0.0.10".into(),
+                    port: 443,
+                    label: "HTTPS".into(),
+                }],
+                relay: config::RelaySettings::default(),
+            },
+            config::PeerConfig {
+                id: "peer-b".into(),
+                name: "home".into(),
+                node_id: "node-b".into(),
+                token: "token-b".into(),
+                published_targets: Vec::new(),
+                relay: config::RelaySettings {
+                    relays: vec![config::RelayEntry {
+                        url: "https://relay.example.test".into(),
+                        auth_token: "relay-token".into(),
+                    }],
+                    force_relay: true,
+                },
+            },
+        ];
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: config::RelaySettings::default(),
+                expose: None,
+                access: Some(config::AConfig {
+                    peers: peers.clone(),
+                    mappings: vec![mapping.clone()],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+
+        persist_config(&state).await.unwrap();
+
+        let saved = config::load_config(&state.config_path, None)
+            .unwrap()
+            .config
+            .access
+            .unwrap();
+        assert_eq!(saved.peers, peers);
+        assert_eq!(saved.mappings, vec![mapping]);
         std::fs::remove_file(&state.config_path).unwrap();
     }
 
@@ -2020,6 +2096,48 @@ mod integration_tests {
         assert_eq!(listed[0]["local"], new_local.to_string());
         // 旧地址已释放，可以重新绑定。
         TcpListener::bind(local).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn update_preserves_mapping_peer_ownership_and_loopback_acknowledgement() {
+        let state = test_state("").await;
+        let mapping = config::Mapping {
+            peer_id: "peer-one".into(),
+            allow_loopback_target: true,
+            local: "127.0.0.1:0".into(),
+            host: "10.0.0.8".into(),
+            port: 8080,
+            enabled: false,
+            name: "application".into(),
+            mode: config::MappingMode::Tcp,
+            routes: Vec::new(),
+        };
+        state
+            .inner
+            .lock()
+            .await
+            .mappings
+            .insert(mapping.local.clone(), disabled_handle(mapping.clone()));
+        let app = app(state);
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("PUT")
+                    .uri(format!("/api/mappings/{}", mapping.local))
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:0","host":"10.0.0.9","port":9090,"enabled":false}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let updated = response_json(response).await;
+        assert_eq!(updated["peer_id"], "peer-one");
+        assert_eq!(updated["allow_loopback_target"], true);
     }
 
     #[tokio::test]
@@ -4611,13 +4729,20 @@ async fn update(
         .ok_or((StatusCode::NOT_FOUND, format!("{id} 不存在映射")))?;
     // 编辑表单不改变启用状态：省略 enabled 时沿用原值，启用/停用走专门的 toggle 接口。
     // name 同理：省略时沿用原名称，避免编辑目标时把名称清空。
-    let (was_enabled, was_name, was_mode, was_routes) = {
+    let (was_peer_id, was_allow_loopback_target, was_enabled, was_name, was_mode, was_routes) = {
         let m = existing.mapping.read().await;
-        (m.enabled, m.name.clone(), m.mode, m.routes.clone())
+        (
+            m.peer_id.clone(),
+            m.allow_loopback_target,
+            m.enabled,
+            m.name.clone(),
+            m.mode,
+            m.routes.clone(),
+        )
     };
     let mapping = config::Mapping {
-        peer_id: String::new(),
-        allow_loopback_target: false,
+        peer_id: was_peer_id,
+        allow_loopback_target: was_allow_loopback_target,
         local: body.local,
         host: body.host,
         port: body.port,
@@ -4939,13 +5064,25 @@ async fn build_config(st: &AppState) -> config::AConfig {
 
 async fn persist_config(st: &AppState) -> Result<(), String> {
     let _save = st.config_save.lock().await;
-    let access = build_config(st).await;
     let relay = st.link.relay_settings().await;
     let mut cfg = config::load_config(&st.config_path, None)
         .map_err(|error| format!("读取配置失败: {error}"))?
         .config;
+    let mut access = build_config(st).await;
+    if let Some(existing) = &cfg.access
+        && !existing.peers.is_empty()
+    {
+        // The legacy runtime only owns mapping listeners. Preserve the persistent peer model
+        // until the peer-aware runtime replaces it.
+        access.peers = existing.peers.clone();
+        access.relay = existing.relay.clone();
+        access.node_id.clear();
+        access.token.clear();
+        access.published_targets.clear();
+    }
     cfg.access = Some(access);
     cfg.relay = relay;
+    cfg.normalize_access_peers()?;
     cfg.validate()?;
     config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
 }
