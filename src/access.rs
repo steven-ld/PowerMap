@@ -2039,6 +2039,26 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn legacy_global_reads_reject_multi_peer_configuration() {
+        let state = test_state("").await;
+        replace_test_peers(&state, [peer("office", "办公室"), peer("home", "家中")]).await;
+        let app = app(state);
+        let expected = "当前配置不是单一的“默认对端”；旧版接口无法安全选择对端，请使用对端专用 API";
+
+        for path in ["/api/credential", "/api/relay"] {
+            let response = app
+                .clone()
+                .oneshot(Request::get(path).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{path}");
+            let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+            assert_eq!(std::str::from_utf8(&body).unwrap(), expected, "{path}");
+        }
+    }
+
+    #[tokio::test]
     async fn reverse_mapping_acquires_its_configured_peer_in_multi_peer_state() {
         let state = test_state_with_peers([peer("office", "office"), peer("home", "home")]).await;
         let reverse = ReverseConfig {
@@ -8841,53 +8861,46 @@ async fn get_node(State(st): State<AppState>) -> Json<NodeView> {
 }
 
 /// GET /api/credential —— 供网页查看/复制当前凭证。
-async fn get_credential(State(st): State<AppState>) -> Json<CredentialView> {
-    match st.peers.legacy_default_peer_config().await {
-        Ok(peer) => {
-            let restart_required = match st.peers.legacy_default_cached_link().await {
-                Ok(Some(link)) => link.relay_restart_required().await,
-                _ => false,
-            };
-            Json(CredentialView {
-                configured: !peer.node_id.trim().is_empty(),
-                node_id: peer.node_id,
-                token: peer.token,
-                token_hidden: false,
-                published_targets: peer.published_targets,
-                relay: peer.relay,
-                restart_required,
-            })
-        }
-        Err(_) => Json(CredentialView {
-            configured: false,
-            node_id: String::new(),
-            token: String::new(),
-            token_hidden: false,
-            published_targets: Vec::new(),
-            relay: config::RelaySettings::default(),
-            restart_required: false,
-        }),
-    }
+async fn get_credential(
+    State(st): State<AppState>,
+) -> Result<Json<CredentialView>, (StatusCode, String)> {
+    let peer = st
+        .peers
+        .legacy_default_peer_config()
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, error))?;
+    let restart_required = match st.peers.legacy_default_cached_link().await {
+        Ok(Some(link)) => link.relay_restart_required().await,
+        _ => false,
+    };
+    Ok(Json(CredentialView {
+        configured: !peer.node_id.trim().is_empty(),
+        node_id: peer.node_id,
+        token: peer.token,
+        token_hidden: false,
+        published_targets: peer.published_targets,
+        relay: peer.relay,
+        restart_required,
+    }))
 }
 
 /// GET /api/relay --- the persisted relay configuration and whether an Endpoint restart is due.
-async fn get_relay(State(st): State<AppState>) -> Json<RelaySettingsView> {
-    match st.peers.legacy_default_peer_config().await {
-        Ok(peer) => {
-            let restart_required = match st.peers.legacy_default_cached_link().await {
-                Ok(Some(link)) => link.relay_restart_required().await,
-                _ => false,
-            };
-            Json(RelaySettingsView {
-                relay: peer.relay,
-                restart_required,
-            })
-        }
-        Err(_) => Json(RelaySettingsView {
-            relay: config::RelaySettings::default(),
-            restart_required: false,
-        }),
-    }
+async fn get_relay(
+    State(st): State<AppState>,
+) -> Result<Json<RelaySettingsView>, (StatusCode, String)> {
+    let peer = st
+        .peers
+        .legacy_default_peer_config()
+        .await
+        .map_err(|error| (StatusCode::CONFLICT, error))?;
+    let restart_required = match st.peers.legacy_default_cached_link().await {
+        Ok(Some(link)) => link.relay_restart_required().await,
+        _ => false,
+    };
+    Ok(Json(RelaySettingsView {
+        relay: peer.relay,
+        restart_required,
+    }))
 }
 
 /// A bounded control-plane probe for each configured private relay. This uses iroh-relay's
