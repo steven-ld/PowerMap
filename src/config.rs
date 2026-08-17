@@ -918,6 +918,8 @@ impl Config {
     /// Move the v0.9.0 single-credential access shape into one persistent peer.
     /// Returns whether a later successful save must persist the new representation.
     pub fn normalize_access_peers(&mut self) -> std::result::Result<bool, String> {
+        let root_relay_requires_access_peer =
+            self.expose.is_none() && self.relay != RelaySettings::default();
         let Some(access) = &mut self.access else {
             return Ok(false);
         };
@@ -931,7 +933,8 @@ impl Config {
             || !access.relay.relays.is_empty()
             || access.relay.force_relay
             || !access.mappings.is_empty()
-            || !access.domain_mappings.is_empty();
+            || !access.domain_mappings.is_empty()
+            || root_relay_requires_access_peer;
         if !needs_peer {
             return Ok(false);
         }
@@ -1521,6 +1524,36 @@ allow_loopback_target = true
     }
 
     #[test]
+    fn access_only_root_relay_migrates_to_the_default_peer() {
+        let mut config: Config = toml::from_str(
+            r#"
+[relay]
+relays = [{ url = "https://relay.example.test", auth_token = "relay-token" }]
+force_relay = true
+
+[access]
+"#,
+        )
+        .unwrap();
+
+        assert!(config.normalize_access_peers().unwrap());
+        let access = config.access.as_ref().unwrap();
+        assert_eq!(access.peers.len(), 1);
+        assert_eq!(access.peers[0].name, "默认对端");
+        assert_eq!(
+            access.peers[0].relay,
+            RelaySettings {
+                relays: vec![RelayEntry {
+                    url: "https://relay.example.test".into(),
+                    auth_token: "relay-token".into(),
+                }],
+                force_relay: true,
+            }
+        );
+        assert_eq!(config.relay, RelaySettings::default());
+    }
+
+    #[test]
     fn legacy_mapping_without_credential_migrates_to_default_peer() {
         let mut config: Config = toml::from_str(
             r#"
@@ -1551,6 +1584,33 @@ relays = [{ url = "https://relay.example.test", auth_token = "relay-token" }]
 [access]
 node_id = "legacy-node"
 token = "legacy-token"
+
+[expose]
+token = "expose-token"
+"#,
+        )
+        .unwrap();
+
+        assert!(config.normalize_access_peers().unwrap());
+        assert_eq!(config.relay.relays[0].auth_token, "relay-token");
+        assert_eq!(
+            config.access.as_ref().unwrap().peers[0].relay.relays[0].auth_token,
+            "relay-token"
+        );
+    }
+
+    #[test]
+    fn combined_access_migration_retains_the_root_relay_for_expose() {
+        let mut config: Config = toml::from_str(
+            r#"
+[relay]
+relays = [{ url = "https://relay.example.test", auth_token = "relay-token" }]
+
+[access]
+[[access.mappings]]
+local = "127.0.0.1:8080"
+host = "10.0.0.8"
+port = 8080
 
 [expose]
 token = "expose-token"

@@ -1981,6 +1981,42 @@ mod integration_tests {
     }
 
     #[tokio::test]
+    async fn mapping_preflight_rejects_a_multi_peer_configuration_before_network_work() {
+        let state = test_state("").await;
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: config::RelaySettings::default(),
+                expose: None,
+                access: Some(config::AConfig {
+                    peers: vec![peer("office", "office"), peer("home", "home")],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/mappings/preflight")
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(Body::from(
+                        r#"{"local":"127.0.0.1:0","host":"10.0.0.10","port":443}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(state.inner.lock().await.mappings.is_empty());
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
+    #[tokio::test]
     async fn legacy_mapping_mutations_reject_multi_peer_before_runtime_changes() {
         let state = test_state("").await;
         let port_mapping = config::Mapping {
@@ -3955,6 +3991,48 @@ mod integration_tests {
         );
     }
 
+    #[tokio::test]
+    async fn relay_probe_rejects_a_multi_peer_configuration_before_outbound_io() {
+        let state = test_state("").await;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let relay_url = format!("https://{}", listener.local_addr().unwrap());
+        state
+            .link
+            .set_relay(relay_settings(&relay_url, ""))
+            .await
+            .unwrap();
+        config::save(
+            &state.config_path,
+            &config::Config {
+                relay: config::RelaySettings::default(),
+                expose: None,
+                access: Some(config::AConfig {
+                    peers: vec![peer("office", "office"), peer("home", "home")],
+                    ..Default::default()
+                }),
+            },
+        )
+        .unwrap();
+        let app = app(state.clone());
+
+        let response = app
+            .oneshot(
+                Request::get("/api/relay/probe")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+        std::fs::remove_file(&state.config_path).unwrap();
+    }
+
     #[test]
     fn relay_probe_uses_iroh_ping_endpoint() {
         assert_eq!(
@@ -4950,6 +5028,7 @@ async fn preflight(
     State(st): State<AppState>,
     Json(body): Json<CreateBody>,
 ) -> Result<Json<PreflightResult>, (StatusCode, String)> {
+    ensure_legacy_mapping_mutation_compatible(&st).await?;
     let mapping = config::Mapping {
         peer_id: String::new(),
         allow_loopback_target: false,
@@ -6185,11 +6264,14 @@ struct RelayProbeResult {
     error: Option<&'static str>,
 }
 
-async fn probe_relays(State(st): State<AppState>) -> Json<RelayProbeReport> {
+async fn probe_relays(
+    State(st): State<AppState>,
+) -> Result<Json<RelayProbeReport>, (StatusCode, String)> {
+    ensure_legacy_mapping_mutation_compatible(&st).await?;
     let settings = st.link.relay_settings().await;
-    Json(RelayProbeReport {
+    Ok(Json(RelayProbeReport {
         relays: probe_relay_entries(settings.relays).await,
-    })
+    }))
 }
 
 async fn probe_relay_entries(entries: Vec<config::RelayEntry>) -> Vec<RelayProbeResult> {
