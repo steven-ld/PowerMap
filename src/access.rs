@@ -26,8 +26,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use axum::Router;
-use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::extract::{Path, Query, Request, State};
+use axum::http::{HeaderName, HeaderValue, Method, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::routing::{get, post, put};
 use iroh::endpoint::{Connection, presets};
@@ -184,18 +185,16 @@ impl Link {
         if !self.can_open_new_connections().await {
             anyhow::bail!("强制中继设置已变更；重启 PowerMap 后才能建立新连接");
         }
+        // 先读凭证再锁连接，与 connected_ips()/transport_path() 的加锁顺序保持一致，
+        // 避免两把锁互相等待（ABBA 死锁）。
+        let target = self.creds.read().await.target;
         let mut g = self.conn.lock().await;
         if let Some(c) = g.as_ref()
             && c.close_reason().is_none()
         {
             return Ok(c.clone());
         }
-        let target = self
-            .creds
-            .read()
-            .await
-            .target
-            .context("尚未配置凭证：请在 Web 管理页粘贴 server 端的凭证")?;
+        let target = target.context("尚未配置凭证：请在 Web 管理页粘贴 server 端的凭证")?;
         let c = self
             .endpoint
             .connect(target, proto::ALPN)
@@ -1339,6 +1338,8 @@ struct AppState {
     web_token: String,
     web_tls_cert: String,
     web_tls_key: String,
+    /// 反向代理域名白名单；用于管理服务的 Host 校验（阻断 DNS rebinding）。
+    web_allowed_hosts: Vec<String>,
     max_mappings: usize,
     max_conns_per_mapping: usize,
     domains: Arc<Mutex<DomainInner>>,
@@ -1394,16 +1395,24 @@ async fn open_tunnel(
     Box<dyn AsyncWrite + Unpin + Send>,
     Box<dyn AsyncRead + Unpin + Send>,
 )> {
-    let (mut send, mut recv) = conn.open_bi().await.context("打开隧道流失败")?;
-    proto::write_open(&mut send, req).await?;
-    match proto::read_status(&mut recv).await? {
-        proto::OpenStatus::Ok => {}
-        proto::OpenStatus::Error(message) => {
-            anyhow::bail!("B 拒绝: {message}");
+    // 对端可能接受流却永不回状态：没有超时的话这条本地连接会永久挂住，
+    // 并一直占着映射的并发配额。
+    tokio::time::timeout(Duration::from_secs(10), async {
+        let (mut send, mut recv) = conn.open_bi().await.context("打开隧道流失败")?;
+        proto::write_open(&mut send, req).await?;
+        match proto::read_status(&mut recv).await? {
+            proto::OpenStatus::Ok => {}
+            proto::OpenStatus::Error(message) => {
+                anyhow::bail!("B 拒绝: {message}");
+            }
+            proto::OpenStatus::LoopRisk(message) => return Err(LoopRiskError(message).into()),
         }
-        proto::OpenStatus::LoopRisk(message) => return Err(LoopRiskError(message).into()),
-    }
-    Ok((Box::new(send), Box::new(recv)))
+        let send: Box<dyn AsyncWrite + Unpin + Send> = Box::new(send);
+        let recv: Box<dyn AsyncRead + Unpin + Send> = Box::new(recv);
+        Ok((send, recv))
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("隧道握手超时"))?
 }
 
 #[derive(Debug)]
@@ -1946,6 +1955,7 @@ mod integration_tests {
             web_token: web_token.into(),
             web_tls_cert: String::new(),
             web_tls_key: String::new(),
+            web_allowed_hosts: Vec::new(),
             max_mappings: 8,
             max_conns_per_mapping: 8,
             domains: Arc::new(Mutex::new(DomainInner {
@@ -4394,7 +4404,7 @@ mod integration_tests {
             .await
             .mappings
             .insert(mapping.domain.clone(), handle);
-        save_config(&state).await;
+        save_config(&state).await.unwrap();
 
         let missing_hosts = state.config_path.with_extension("missing-hosts");
         let _ = std::fs::remove_file(&missing_hosts);
@@ -7979,6 +7989,21 @@ async fn peek_http_head(local: &mut TcpStream) -> std::io::Result<(Vec<u8>, Opti
     Ok((buf, host))
 }
 
+/// 映射监听在非回环地址时给出告警：这会把本地服务直接暴露给同网段的其他主机，
+/// 与“只通过隧道访问”的默认预期不同。
+fn warn_if_public_bind(local: &str) {
+    let host = local.rsplit_once(':').map(|(h, _)| h).unwrap_or(local);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = host.parse::<std::net::IpAddr>()
+        && !ip.is_loopback()
+    {
+        tracing::warn!(
+            listen = %local,
+            "映射监听在非回环地址：局域网内其他主机可绕过隧道直接访问该端口"
+        );
+    }
+}
+
 /// TCP / HTTP 网关映射：绑定本地 TCP 端口，每个连接复用到 B 的隧道。
 /// http 模式下先窥探 Host 头选后端并把读走的头重放给后端；tcp 模式 prefix 为空。
 async fn start_tcp_mapping(
@@ -7995,6 +8020,7 @@ async fn start_tcp_mapping(
                 format!("绑定 {} 失败: {e}", mapping.local),
             )
         })?;
+    warn_if_public_bind(&mapping.local);
     let metrics = st.metrics.clone();
     let local = mapping.local.clone();
     let runtime_mapping = Arc::new(RwLock::new(mapping));
@@ -8008,6 +8034,9 @@ async fn start_tcp_mapping(
         (st.max_conns_per_mapping > 0).then(|| Arc::new(Semaphore::new(st.max_conns_per_mapping)));
 
     let task = tokio::spawn(async move {
+        // accept() 的瞬时错误（EMFILE 等）不应让整条映射永久下线；
+        // 连续错误时指数退避，成功一次就复位。只有取消才退出循环。
+        let mut accept_errors: u32 = 0;
         loop {
             let accepted = tokio::select! {
                 // 映射被删除或进程退出：停止接受新连接并 drain（取消所有子任务）。
@@ -8016,6 +8045,7 @@ async fn start_tcp_mapping(
             };
             match accepted {
                 Ok((tcp, peer)) => {
+                    accept_errors = 0;
                     // 并发上限：拿不到许可就直接拒绝这条本地连接（丢弃即关闭）。
                     let permit = match &conn_sem {
                         Some(s) => match s.clone().try_acquire_owned() {
@@ -8060,8 +8090,13 @@ async fn start_tcp_mapping(
                         let (target_host, target_port, prefix) = if mode
                             == config::MappingMode::Http
                         {
-                            match peek_http_head(&mut tcp).await {
-                                Ok((buf, host_header)) => {
+                            match tokio::time::timeout(
+                                Duration::from_secs(10),
+                                peek_http_head(&mut tcp),
+                            )
+                            .await
+                            {
+                                Ok(Ok((buf, host_header))) => {
                                     let snapshot = config::Mapping {
                                         peer_id: String::new(),
                                         allow_loopback_target,
@@ -8077,10 +8112,19 @@ async fn start_tcp_mapping(
                                         select_http_backend(&snapshot, host_header.as_deref());
                                     (h, p, buf)
                                 }
-                                Err(e) => {
+                                Ok(Err(e)) => {
                                     Metrics::inc(&metrics.tunnels_failed);
                                     stats
                                         .record_failure(&anyhow::anyhow!("读取 HTTP 头失败: {e}"))
+                                        .await;
+                                    return;
+                                }
+                                Err(_) => {
+                                    Metrics::inc(&metrics.tunnels_failed);
+                                    stats
+                                        .record_failure(&anyhow::anyhow!(
+                                            "读取 HTTP 头超时（10 秒内未收到完整请求头）"
+                                        ))
                                         .await;
                                     return;
                                 }
@@ -8110,8 +8154,20 @@ async fn start_tcp_mapping(
                     });
                 }
                 Err(e) => {
-                    tracing::error!(error = %e, local = %local, "本地监听关闭");
-                    break;
+                    accept_errors = accept_errors.saturating_add(1);
+                    let backoff =
+                        Duration::from_millis(100u64.saturating_mul(1u64 << accept_errors.min(5)));
+                    tracing::error!(
+                        error = %e,
+                        local = %local,
+                        consecutive = accept_errors,
+                        backoff_ms = backoff.as_millis(),
+                        "本地监听 accept 失败，退避后重试"
+                    );
+                    tokio::select! {
+                        _ = cancel_task.cancelled() => break,
+                        _ = tokio::time::sleep(backoff) => {}
+                    }
                 }
             }
         }
@@ -8143,6 +8199,7 @@ async fn start_udp_mapping(
                 format!("绑定 UDP {} 失败: {e}", mapping.local),
             )
         })?;
+    warn_if_public_bind(&mapping.local);
     let socket = Arc::new(socket);
     let metrics = st.metrics.clone();
     let local = mapping.local.clone();
@@ -8372,8 +8429,16 @@ async fn update(
     }
     require_mapping_loopback_acknowledgement(&st, &mapping).await?;
 
-    // 本地地址与启用状态都没变：复用原把手，原子更新目标，无重绑竞争。
-    if mapping.local == id && mapping.enabled == was_enabled && mapping.peer_id == was_peer_id {
+    // 本地地址、启用状态、传输类型与对端都没变：复用原把手，原子更新目标，无重绑竞争。
+    // UDP 与 TCP/HTTP 用的是不同 socket 与接受循环，必须重绑；漏判会把 UDP 映射
+    // 的配置改成 TCP 却继续跑旧的 UDP 监听。
+    let same_socket_kind = matches!(mapping.mode, config::MappingMode::Udp)
+        == matches!(was_mode, config::MappingMode::Udp);
+    if mapping.local == id
+        && mapping.enabled == was_enabled
+        && mapping.peer_id == was_peer_id
+        && same_socket_kind
+    {
         let handle = g.mappings.get(&id).expect("已确认存在");
         let mapping_state = handle.mapping.clone();
         *mapping_state.write().await = mapping.clone();
@@ -8547,7 +8612,7 @@ async fn toggle_all(
     let _operation = lock_mapping_operation(&st).await;
     let target = body.enabled;
     // 先取出需要切换的 local 列表，避免持锁期间跨 await 重建监听。
-    let to_switch: Vec<String> = {
+    let (to_switch, total): (Vec<String>, usize) = {
         let g = st.inner.lock().await;
         let mut locals = Vec::new();
         for (local, handle) in g.mappings.iter() {
@@ -8555,9 +8620,10 @@ async fn toggle_all(
                 locals.push(local.clone());
             }
         }
-        locals
+        (locals, g.mappings.len())
     };
-    let unchanged = st.inner.lock().await.mappings.len() - to_switch.len();
+    // 两次加锁之间映射可能被并发删除；用 saturating 避免 len - n 下溢 panic。
+    let unchanged = total.saturating_sub(to_switch.len());
     let mut changed = 0usize;
     let mut failed = 0usize;
     let mut replaced = Vec::new();
@@ -8647,6 +8713,139 @@ async fn toggle_all(
     }))
 }
 
+/// 去掉 Host/Origin 里的端口；IPv6 字面量 `[::1]:8088` 返回 `::1`。
+fn host_without_port(value: &str) -> &str {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix('[')
+        && let Some(end) = rest.find(']')
+    {
+        return &rest[..end];
+    }
+    match value.rsplit_once(':') {
+        Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => host,
+        _ => value,
+    }
+}
+
+/// 管理页允许的 Host：回环名/地址、web_bind 的地址，以及显式配置的反代域名。
+/// 这是 DNS rebinding 的唯一可靠防线——恶意页面可以让自己的域名解析到 127.0.0.1，
+/// 但浏览器发出的 Host 仍是攻击者域名。
+fn host_allowed(value: &str, st: &AppState) -> bool {
+    let host = host_without_port(value).to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    if matches!(host.as_str(), "localhost" | "127.0.0.1" | "::1") {
+        return true;
+    }
+    // TLS 由本进程直接终止时，浏览器会对证书域名做校验，HTTP 层的 Host 校验可放宽，
+    // 以免破坏已有的远程 HTTPS 管理部署。
+    if !st.web_tls_cert.is_empty() {
+        return true;
+    }
+    if let Some((bind_host, _)) = st.web_bind.rsplit_once(':') {
+        let bind_host = bind_host.trim_matches(['[', ']']);
+        if !matches!(bind_host, "" | "0.0.0.0" | "::") && host.eq_ignore_ascii_case(bind_host) {
+            return true;
+        }
+    }
+    st.web_allowed_hosts
+        .iter()
+        .any(|allowed| host.eq_ignore_ascii_case(allowed.trim().trim_end_matches('.')))
+}
+
+fn origin_allowed(origin: &str, st: &AppState) -> bool {
+    if origin.eq_ignore_ascii_case("null") {
+        return false;
+    }
+    let Some((scheme, rest)) = origin.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let authority = rest.split('/').next().unwrap_or(rest);
+    host_allowed(authority, st)
+}
+
+fn forbidden(message: &'static str) -> Response {
+    (StatusCode::FORBIDDEN, message).into_response()
+}
+
+/// 管理服务的浏览器侧防护：
+/// - Host 白名单：阻断 DNS rebinding（恶意网页把自己的域名解析到 127.0.0.1 后读写管理 API）；
+/// - 跨站写请求：对 Origin / Sec-Fetch-Site 做二次校验，阻断 CSRF；
+/// - 统一安全响应头；`/api/*` 一律 `no-store`，避免令牌与配置进入浏览器缓存。
+async fn guard(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let path = req.uri().path().to_owned();
+    let method = req.method().clone();
+    if let Some(host) = req
+        .headers()
+        .get(header::HOST)
+        .and_then(|v| v.to_str().ok())
+        && !host_allowed(host, &st)
+    {
+        return forbidden("Host 不在管理页允许列表内（DNS rebinding 防护）");
+    }
+    if !matches!(method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        if let Some(origin) = req
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            && !origin_allowed(origin, &st)
+        {
+            return forbidden("跨站写请求被拒绝（Origin 校验失败）");
+        }
+        if let Some(site) = req
+            .headers()
+            .get("sec-fetch-site")
+            .and_then(|v| v.to_str().ok())
+            && site.eq_ignore_ascii_case("cross-site")
+        {
+            return forbidden("跨站写请求被拒绝（Sec-Fetch-Site: cross-site）");
+        }
+    }
+
+    let mut response = next.run(req).await;
+    let headers = response.headers_mut();
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    headers.insert(
+        header::CONTENT_SECURITY_POLICY,
+        HeaderValue::from_static(
+            "default-src 'self'; img-src 'self' data:; \
+             style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; \
+             font-src 'self' https://fonts.gstatic.com; \
+             script-src 'self' 'unsafe-inline'; connect-src 'self'; \
+             object-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+        ),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    headers.insert(
+        HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static("camera=(), microphone=(), geolocation=(), payment=()"),
+    );
+    if path.starts_with("/api/") {
+        headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        headers.insert(header::PRAGMA, HeaderValue::from_static("no-cache"));
+    }
+    response
+}
+
 fn app(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
@@ -8691,6 +8890,7 @@ fn app(state: AppState) -> Router {
         .route("/api/reverse", get(get_reverse).put(set_reverse))
         .route("/api/export", get(export_config))
         .route("/api/import", post(import_config))
+        .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
 
@@ -8818,6 +9018,7 @@ async fn build_config(st: &AppState) -> Result<config::AConfig, String> {
         web_token: st.web_token.clone(),
         web_tls_cert: st.web_tls_cert.clone(),
         web_tls_key: st.web_tls_key.clone(),
+        web_allowed_hosts: st.web_allowed_hosts.clone(),
         max_mappings: st.max_mappings,
         max_conns_per_mapping: st.max_conns_per_mapping,
         mappings,
@@ -8963,13 +9164,11 @@ async fn persist_config_with_runtime_sync(
     config::save(&st.config_path, &cfg).map_err(|error| format!("写入配置失败: {error}"))
 }
 
+/// 测试辅助：持久化完整的运行期 peer 模型，而不是走单默认 peer 的兼容桥。
+/// 失败必须让调用方知道：只打日志会让管理页在「已生效但没写盘」时仍显示成功。
 #[cfg(test)]
-async fn save_config(st: &AppState) {
-    // Mapping and domain routes may be owned by any peer. Persist the complete runtime peer
-    // model instead of passing through the legacy single-default-peer compatibility bridge.
-    if let Err(error) = persist_peer_state(st).await {
-        tracing::error!(error = %error, "保存配置失败");
-    }
+async fn save_config(st: &AppState) -> Result<(), String> {
+    persist_peer_state(st).await
 }
 
 /// 解析 node_id 字符串为 PublicKey。
@@ -10072,6 +10271,7 @@ pub async fn run(
         web_token: cfg.web_token.clone(),
         web_tls_cert: cfg.web_tls_cert.clone(),
         web_tls_key: cfg.web_tls_key.clone(),
+        web_allowed_hosts: cfg.web_allowed_hosts.clone(),
         max_mappings: cfg.max_mappings,
         max_conns_per_mapping: cfg.max_conns_per_mapping,
         domains: Arc::new(Mutex::new(DomainInner {

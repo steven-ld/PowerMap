@@ -3,8 +3,19 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="theme-color" content="#f5f6f7" media="(prefers-color-scheme: light)" />
-<meta name="theme-color" content="#171a1f" media="(prefers-color-scheme: dark)" />
+<meta id="themeColor" name="theme-color" content="#f5f6f7" />
+<script>
+  // 首帧前应用主题：深色偏好用户不应先看到一闪而过的白底。
+  try {
+    var savedTheme = localStorage.getItem('powermap_theme') || 'system';
+    var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.dataset.theme = savedTheme;
+    if (savedTheme === 'dark' || (savedTheme === 'system' && prefersDark)) {
+      document.documentElement.classList.add('dark');
+      document.getElementById('themeColor').content = '#171a1f';
+    }
+  } catch (_) {}
+</script>
 <title>PowerMap</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Crect%20width='64'%20height='64'%20rx='16'%20fill='%233370FF'/%3E%3Cpath%20d='M17%2044%2032%2032%2047%2020M17%2020l15%2012%2015%2012'%20fill='none'%20stroke='%23fff'%20stroke-linecap='round'%20stroke-linejoin='round'%20stroke-width='4'/%3E%3Ccircle%20cx='17'%20cy='20'%20r='6'%20fill='%23fff'/%3E%3Ccircle%20cx='47'%20cy='20'%20r='6'%20fill='%23fff'%20opacity='.88'/%3E%3Ccircle%20cx='17'%20cy='44'%20r='6'%20fill='%23fff'%20opacity='.88'/%3E%3Ccircle%20cx='47'%20cy='44'%20r='6'%20fill='%23fff'%20opacity='.88'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='6'%20fill='%23CFE0FF'/%3E%3C/svg%3E" />
 <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -18,23 +29,23 @@
     --card: #ffffff;
     --card-foreground: #373c43;
     --popover: #ffffff;
-    --primary: #3370ff;
+    --primary: #2b5fd9;
     --primary-foreground: #ffffff;
     --secondary: #f5f6f7;
     --secondary-foreground: #373c43;
     --muted: #f5f6f7;
     --muted-foreground: #646a73;
     --accent: #edf3ff;
-    --accent-foreground: #3370ff;
-    --destructive: #f54a45;
+    --accent-foreground: #2b5fd9;
+    --destructive: #d92b2b;
     --destructive-foreground: #ffffff;
     --border: #e8e9eb;
-    --border-focus: #3370ff;
+    --border-focus: #2b5fd9;
     --input: #dcdee1;
-    --ring: #3370ff;
-    --success: #00a870;
+    --ring: #2b5fd9;
+    --success: #007a50;
     --success-foreground: #ffffff;
-    --warning: #d46b08;
+    --warning: #9a4a00;
     --warning-foreground: #ffffff;
     --info: #3370ff;
     --radius-sm: 0.5rem;
@@ -52,7 +63,7 @@
     --card-foreground: #ffffff;
     --popover: #2a2e35;
     --primary: #5b8ff9;
-    --primary-foreground: #ffffff;
+    --primary-foreground: #0b1220;
     --secondary: #2a2e35;
     --secondary-foreground: #f2f3f5;
     --muted: #2a2e35;
@@ -60,7 +71,7 @@
     --accent: #243b61;
     --accent-foreground: #b9d4ff;
     --destructive: #ff7875;
-    --destructive-foreground: #ffffff;
+    --destructive-foreground: #2a0b0a;
     --border: #3a3f47;
     --border-focus: #5b8ff9;
     --input: #3a3f47;
@@ -407,7 +418,11 @@
   .stat-value { margin-top: .5rem; font-size: 1.8rem; }
   .stat-value.mono { font-family: var(--font-mono); font-size: 1.5rem; }
   .stat-icon { display: none; }
-  .stat-card:first-child .stat-value { color: var(--success); }
+  .stat-card:first-child .stat-value { flex-wrap: wrap; }
+  #mState { white-space: nowrap; }
+  .stat-value.is-ok { color: var(--success); }
+  .stat-value.is-warn { color: var(--warning); }
+  .stat-value.is-err { color: var(--destructive); }
   .stat-traffic { display: flex; gap: .75rem; margin-top: .45rem; color: var(--muted-foreground); font: 500 .75rem/1 var(--font-mono); }
   .stat-traffic span { display: inline-flex; align-items: baseline; gap: .3rem; }
   .tab-content { gap: 1.25rem; }
@@ -422,7 +437,7 @@
   td.target .to { display: none; }
   td.num { color: var(--foreground); }
   td.status { color: var(--success); font-size: .9rem; }
-  td.status.listening { color: var(--muted-foreground); }
+  td.status.listening, td.status.unknown { color: var(--muted-foreground); }
   td.status.degraded, td.status.stopped { color: var(--destructive); }
   td.status.disabled { color: var(--muted-foreground); }
   td.status::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .55rem; border-radius: 50%; background: currentColor; }
@@ -437,8 +452,11 @@
   .conn-expand:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: .2rem; }
   .conn-expand svg { width: .8rem; height: .8rem; transition: transform .16s ease; }
   .conn-expand.open svg { transform: rotate(180deg); }
-  td.status .status-detail { display: block; max-width: 18rem; margin: .35rem 0 0 1.2rem; overflow: hidden; color: var(--muted-foreground); font: 500 .72rem/1.35 var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
+  td.status .status-detail { display: block; max-width: 11rem; margin: .35rem 0 0 1.2rem; overflow: hidden; color: var(--muted-foreground); font: 500 .72rem/1.35 var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
   tr.is-disabled td.target, tr.is-disabled td.num { opacity: .5; }
+  /* 行内操作较多：允许换行，避免按钮在表格右侧被裁掉。 */
+  td.act { min-width: 12rem; }
+  td.act .btn-row { flex-wrap: wrap; white-space: normal; row-gap: .35rem; }
   .btn-del { height: 2rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: .5rem; background: var(--card); }
   .btn-del:hover { color: var(--destructive-foreground); }
   .app-footer { display: none; }
@@ -472,7 +490,11 @@
 
   /* ── 指标卡（照抄 kiro-go .stat-card）── */
   .stats-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 0.625rem; margin-bottom: 1.125rem; }
-  @media (max-width: 640px) { .stats-grid { grid-template-columns: repeat(2, minmax(0,1fr)); } }
+  @media (max-width: 640px) {
+    .stats-grid { grid-template-columns: repeat(2, minmax(0,1fr)); }
+    /* 三张卡时最后一张占满整行，避免右侧留半格空白、数值被挤成两行。 */
+    .stats-grid > .stat-card:last-child:nth-child(odd) { grid-column: 1 / -1; }
+  }
   .stat-card {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
     padding: 0.875rem 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.625rem; min-width: 0;
@@ -677,7 +699,7 @@
   .reverse-toggle input { accent-color: var(--primary); margin: 0; }
 
   /* ── 数据表 ── */
-  .table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; background: var(--card); }
+  .table-wrap { border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; overflow-x: auto; background: var(--card); }
   table { width: 100%; border-collapse: collapse; }
   thead th {
     font: 500 10px/1 var(--font-mono); letter-spacing: .1em; text-transform: uppercase;
@@ -734,9 +756,11 @@
       height: auto; gap: 0.875rem 0.75rem;
     }
     .brand-wrap { grid-area: brand; }
-    .header-nav { grid-area: nav; width: 100%; justify-content: center; }
-    .tabs { width: min(100%, 23rem); display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0.5rem; }
-    .tab { min-height: 2.75rem; height: auto; padding: 0.375rem 0.25rem; flex-direction: column; gap: 0.25rem; font-size: 0.75rem; }
+    .header-nav { grid-area: nav; width: 100%; justify-content: stretch; }
+    /* 单行横向滚动，避免 7 个页签折成三四行占掉半个屏幕。 */
+    .tabs { width: 100%; display: flex; flex-wrap: nowrap; gap: 0.35rem; overflow-x: auto; scrollbar-width: none; scroll-padding-inline: 0.75rem; }
+    .tabs::-webkit-scrollbar { display: none; }
+    .tab { flex: 0 0 auto; width: auto; min-height: 2.5rem; height: 2.5rem; padding: 0 0.85rem; flex-direction: row; gap: 0.25rem; font-size: 0.8125rem; }
     .topbar-actions { grid-area: actions; justify-content: flex-end; }
     .conn { display: none; }
     .footer-panel { flex-direction: column; gap: 1rem; }
@@ -770,6 +794,11 @@
     .sidebar-bottom { display: none; }
     .mapping-list-head { margin-top: 1rem; }
     .empty { padding: 2.5rem 1rem; }
+  }
+  @media (max-width: 480px) {
+    .console-actions > a { display: none; }
+    .console-actions { gap: .5rem; }
+    .app-header-inner { padding: 0 1rem; }
   }
 
   /* ── 事件页 ── */
@@ -842,7 +871,7 @@
   .peer-table-name small, .peer-mapping-label { color: var(--muted-foreground); font: 500 .75rem/1.35 var(--font-sans); }
   .peer-mapping-label { display: block; margin-top: .22rem; }
   .peer-help { margin: 0 0 1rem; color: var(--muted-foreground); font-size: .82rem; line-height: 1.55; }
-  @media (max-width: 900px) { .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+  @media (min-width: 721px) and (max-width: 900px) { .tabs { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   @media (max-width: 720px) {
     .domain-form-grid, .peer-form-grid { grid-template-columns: 1fr; }
     .domain-form-grid .btn { width: 100%; }
@@ -898,7 +927,15 @@
   .toast.ok .toast-ico { color: var(--success); }
   .toast.err .toast-ico { color: var(--destructive); }
   .toast.info .toast-ico { color: var(--info); }
-  .toast .toast-msg { min-width: 0; word-break: break-word; }
+  .toast .toast-msg { flex: 1; min-width: 0; word-break: break-word; }
+  .toast-close {
+    flex: none; width: 1.5rem; height: 1.5rem; margin: -.15rem -.25rem 0 0; padding: 0;
+    display: inline-flex; align-items: center; justify-content: center;
+    border: 0; border-radius: .35rem; background: transparent; color: var(--muted-foreground);
+    font: 400 1rem/1 var(--font-sans); cursor: pointer;
+  }
+  .toast-close:hover { background: var(--muted); color: var(--foreground); }
+  .toast-close:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
   @media (prefers-reduced-motion: reduce) {
     .toast { transition: none; opacity: 1; transform: none; }
   }
@@ -960,6 +997,74 @@
     .palette-backdrop, .palette { transition: none; }
     .palette { transform: none; }
   }
+  /* ── 首个接入引导卡：未配置凭证时替代空白面板 ── */
+  .first-run {
+    display: flex; align-items: center; justify-content: space-between; gap: 1.25rem;
+    margin-bottom: 1.25rem; padding: 1.15rem 1.25rem;
+    border: 1px solid color-mix(in srgb, var(--primary) 32%, var(--border));
+    border-radius: var(--radius-lg); background: color-mix(in srgb, var(--primary) 6%, var(--card));
+  }
+  .first-run h2 { margin: 0 0 .3rem; font: 800 1.02rem/1.2 var(--font-display); letter-spacing: -.02em; }
+  .first-run p { margin: 0; color: var(--muted-foreground); font-size: .86rem; line-height: 1.55; }
+  .first-run-actions { display: flex; flex-wrap: wrap; gap: .55rem; flex: none; }
+
+  .empty .btn + .btn { margin-left: .5rem; }
+
+  @media (max-width: 720px) {
+    .mapping-list-head { flex-wrap: wrap; align-items: flex-start; }
+    .mapping-list-tools { flex-wrap: wrap; justify-content: flex-start; gap: .5rem; }
+    .mapping-search { flex: 1 1 100%; }
+    .mapping-search input { width: 100%; }
+    td.act .btn-row { flex-wrap: wrap; justify-content: flex-start; white-space: normal; }
+    .first-run { flex-direction: column; align-items: flex-start; }
+    .first-run-actions { width: 100%; }
+    .first-run-actions .btn { flex: 1 1 10rem; }
+  }
+
+  /* ── 窄屏：列表改为卡片，取代横向滚动的宽表格 ── */
+  @media (max-width: 720px) {
+    #tabMappings .table-wrap, #tabDomains .table-wrap {
+      overflow: visible; border: 0; border-radius: 0; background: transparent;
+    }
+    #tabMappings table, #tabMappings thead, #tabMappings tbody, #tabMappings tr, #tabMappings td,
+    #tabDomains table, #tabDomains thead, #tabDomains tbody, #tabDomains tr, #tabDomains td {
+      display: block; width: 100%; min-width: 0;
+    }
+    #tabMappings thead, #tabDomains thead { display: none; }
+    #tabMappings tbody tr, #tabDomains tbody tr {
+      margin-bottom: .65rem; padding: .9rem 1rem;
+      border: 1px solid var(--border); border-radius: .8rem; background: var(--card);
+    }
+    #tabMappings tbody tr:last-child, #tabDomains tbody tr:last-child { margin-bottom: 0; }
+    #tabMappings tbody tr:hover td, #tabDomains tbody tr:hover td { background: transparent; }
+    #tabMappings tbody td, #tabDomains tbody td { padding: 0; border: 0; }
+
+    #tabMappings td.mapcol .map-name, #tabMappings td.mapcol .map-local.only { max-width: none; white-space: normal; }
+    #tabMappings td.target { margin-top: .45rem; font-size: .8rem; }
+    #tabMappings td.status { margin-top: .55rem; font-size: .86rem; }
+    #tabMappings td.status .status-detail { max-width: none; white-space: normal; }
+    #tabMappings td.num.r { display: flex; align-items: center; flex-wrap: wrap; gap: .15rem .55rem; margin-top: .5rem; text-align: left; font-size: .8rem; }
+    #tabMappings td.num .row-rate { display: inline; margin-top: 0; }
+    #tabMappings td.num .row-spark { display: none; }
+
+    /* 操作区独占一行，按钮换行而不是被裁切 */
+    #tabMappings td.act, #tabDomains td.act {
+      width: auto; min-width: 0; margin-top: .75rem; padding-top: .65rem;
+      border-top: 1px solid var(--border); text-align: left; white-space: normal;
+    }
+    #tabMappings td.act .btn-row, #tabDomains td.act .btn-row { justify-content: flex-start; flex-wrap: wrap; white-space: normal; }
+    #tabMappings td.act .btn-quiet, #tabMappings td.act .btn-del { padding: .45rem .6rem; }
+    #tabMappings tr.conn-detail-row > td { padding: 0; border: 0; }
+
+    #tabDomains td + td { margin-top: .4rem; }
+    #tabDomains td[data-label] { display: flex; align-items: baseline; gap: .3rem; min-width: 0; }
+    #tabDomains td[data-label]::before {
+      content: attr(data-label); flex: none; min-width: 4.2rem;
+      color: var(--muted-foreground); font: 500 .72rem/1.5 var(--font-mono);
+    }
+    #tabDomains td.domain-error-none { display: none; }
+    #tabDomains .domain-error { max-width: 100%; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+  }
 </style>
 </head>
 <body>
@@ -984,19 +1089,29 @@
     </div>
     <!-- Tab: 概览 -->
     <div id="tabDashboard" class="tab-content" role="tabpanel" aria-labelledby="tab-dashboard" tabindex="0">
+    <section id="firstRun" class="first-run hidden" aria-labelledby="firstRunTitle">
+      <div>
+        <h2 id="firstRunTitle">尚未接入 server</h2>
+        <p>粘贴 expose 设备提供的凭证后，即可在这里看到连接状态并创建本地入口。</p>
+      </div>
+      <div class="first-run-actions">
+        <button class="btn btn-primary btn-sm" type="button" data-first-run="credential">添加接入凭证</button>
+        <button class="btn btn-outline btn-sm" type="button" data-first-run="steps">查看接入步骤</button>
+      </div>
+    </section>
     <!-- 指标卡 -->
     <div class="stats-grid">
       <div class="stat-card">
         <div class="stat-card-title">连接状态</div>
         <div class="stat-body">
-          <div class="stat-main" role="status" aria-live="polite"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div><div id="mPeerList" class="connection-peers hidden"></div><div class="stat-uptime" id="mUptime" title="当前连接已保持时长"></div></div>
+          <div class="stat-main"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div><div id="mPeerList" class="connection-peers hidden"></div><div class="stat-uptime" id="mUptime" title="当前连接已保持时长"></div></div>
           <canvas class="stat-spark" id="mRttSpark" width="120" height="72" title="往返延迟趋势" aria-hidden="true" style="display:none"></canvas>
         </div>
       </div>
       <div class="stat-card">
         <div class="stat-card-title">映射隧道</div>
         <div class="stat-body">
-          <div class="stat-main" role="status" aria-live="polite"><div class="stat-value"><span id="mActive">0</span></div><div class="stat-traffic"><span title="活跃隧道数（当前有连接的隧道）">活跃</span><span title="已配置映射条数"><span id="mTunnels">0</span> 映射</span></div></div>
+          <div class="stat-main"><div class="stat-value"><span id="mActive">0</span></div><div class="stat-traffic"><span title="活跃隧道数（当前有连接的隧道）">活跃</span><span title="已配置映射条数"><span id="mTunnels">0</span> 映射</span></div></div>
           <span class="stat-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="19" r="3"/><path d="M9 19h8.5a3.5 3.5 0 0 0 0-7h-11a3.5 3.5 0 0 1 0-7H15"/><circle cx="18" cy="5" r="3"/></svg></span>
         </div>
       </div>
@@ -1013,7 +1128,7 @@
       </div>
     </div>
     <!-- 运行指标条 -->
-    <div class="ops-strip" id="opsStrip" role="status" aria-live="polite" aria-label="运行指标">
+    <div class="ops-strip" id="opsStrip" aria-label="运行指标">
       <span class="ops-item">活跃隧道 <b id="opsActive">0</b></span>
       <span class="ops-item">累计建立 <b id="opsOpened">0</b></span>
       <span class="ops-item" id="opsFailedItem">建立失败 <b id="opsFailed">0</b></span>
@@ -1040,7 +1155,7 @@
     </section>
     <section class="mapping-health" aria-label="映射健康">
       <div class="mapping-health-counts"><span>健康 <b id="healthHealthy">0</b></span><span>异常 <b id="healthDegraded">0</b></span><span>已停止 <b id="healthStopped">0</b></span><span>未启用 <b id="healthUnknown">0</b></span></div>
-      <p id="healthNote" class="mapping-health-note">正在汇总映射运行状态。</p>
+      <p id="healthNote" class="mapping-health-note" role="status" aria-live="polite">正在汇总映射运行状态。</p>
     </section>
     </div>
 
@@ -1086,10 +1201,10 @@
           </div>
           <div class="grid mapping">
             <div class="field"><label class="lbl" for="mf-localAddr">本地地址</label><input id="mf-localAddr" name="localAddr" class="mono" value="127.0.0.1" placeholder="127.0.0.1" spellcheck="false" autocomplete="off" required /></div>
-            <div class="field"><label class="lbl" for="mf-localPort">本地端口</label><input id="mf-localPort" name="localPort" class="mono" type="number" placeholder="8080" required /></div>
+            <div class="field"><label class="lbl" for="mf-localPort">本地端口</label><input id="mf-localPort" name="localPort" class="mono" type="number" min="1" max="65535" inputmode="numeric" placeholder="8080" required /></div>
             <div class="arrow">→</div>
             <div class="field"><label class="lbl" id="hostLbl" for="mf-host">目标主机</label><input id="mf-host" name="host" class="mono" placeholder="192.168.1.101" spellcheck="false" autocomplete="off" required /></div>
-            <div class="field"><label class="lbl" id="portLbl" for="mf-port">目标端口</label><input id="mf-port" name="port" class="mono" type="number" placeholder="6379" required /></div>
+            <div class="field"><label class="lbl" id="portLbl" for="mf-port">目标端口</label><input id="mf-port" name="port" class="mono" type="number" min="1" max="65535" inputmode="numeric" placeholder="6379" required /></div>
             <div class="mapping-actions"><button id="cancelEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="preflightBtn" class="btn btn-outline" type="button">测试目标</button><button id="submitMappingBtn" type="submit" class="btn btn-primary">添加映射</button></div>
           </div>
           <div id="portSuggestions" class="port-suggestions hidden" aria-live="polite"><span class="port-suggestions-label">可用端口</span><span id="portSuggestionOptions"></span></div>
@@ -1109,7 +1224,7 @@
           </tr></thead>
           <tbody id="rows"></tbody>
         </table>
-        <div id="empty" class="empty"><div class="empty-title">尚未创建端口映射</div><p>建立一条映射后，即可从本地地址安全访问内网服务。</p><button id="emptyNewMappingBtn" class="btn btn-primary" type="button">创建第一条映射</button></div>
+        <div id="empty" class="empty"><div class="empty-title">尚未创建端口映射</div><p>建立一条映射后，即可从本地地址安全访问内网服务。</p><button id="emptyNewMappingBtn" class="btn btn-primary" type="button">创建第一条映射</button><button id="clearSearchBtn" class="btn btn-outline hidden" type="button">清除搜索</button></div>
       </div>
     </div>
 
@@ -1184,6 +1299,7 @@
           <p class="node-table-copy">把本机凭证交给对方，对方即可在自己的“远端节点”中接入。</p>
           <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
         </section>
+        <span id="ioMsg" role="status" aria-live="polite"></span>
       </div>
 
       <div class="card">
@@ -1224,10 +1340,6 @@
           <button id="installUpdateBtn" class="btn btn-primary btn-sm hidden" type="button">下载并重启</button>
           <button id="copyUpdateCommandBtn" class="btn btn-primary btn-sm hidden" type="button">复制升级命令</button>
         </div>
-      </div>
-      <div class="card">
-        <div class="card-header"><span class="card-title">版本与发布</span><a id="aboutReleaseLink" class="footer-link hidden" target="_blank" rel="noopener noreferrer">查看发布说明</a></div>
-        <p id="aboutRelease" class="hint">正在检查最新稳定版本。</p>
         <pre id="aboutNotes" class="codebox hidden"></pre>
       </div>
       <div class="card">
@@ -1334,20 +1446,28 @@ const TOAST_ICON = {
 };
 function toast(msg, kind = 'ok', ttl = 4000) {
   const stack = document.getElementById('toastStack');
+  // 最多同时保留 4 条，超出的旧提示先退场，避免移动端整屏被提示盖住。
+  while (stack.children.length >= 4) stack.firstElementChild.remove();
   const el = document.createElement('div');
-  el.className = 'toast ' + kind;
+  el.className = 'toast ' + (TOAST_ICON[kind] ? kind : 'info');
   el.setAttribute('role', kind === 'err' ? 'alert' : 'status');
-  el.innerHTML = '<svg class="toast-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
-    + (TOAST_ICON[kind] || TOAST_ICON.info) + '</svg><span class="toast-msg"></span>';
+  el.innerHTML = '<svg class="toast-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+    + (TOAST_ICON[kind] || TOAST_ICON.info) + '</svg><span class="toast-msg"></span>'
+    + '<button class="toast-close" type="button" aria-label="关闭提示">×</button>';
   el.querySelector('.toast-msg').textContent = msg;
   stack.appendChild(el);
   requestAnimationFrame(() => el.classList.add('in'));
+  let closed = false;
   const close = () => {
+    if (closed) return;
+    closed = true;
     el.classList.remove('in');
     el.addEventListener('transitionend', () => el.remove(), { once: true });
     setTimeout(() => el.remove(), 300);
   };
-  if (ttl > 0) setTimeout(close, ttl);
+  const effectiveTtl = kind === 'err' && ttl === 4000 ? 6000 : ttl;
+  if (effectiveTtl > 0) setTimeout(close, effectiveTtl);
+  el.querySelector('.toast-close').addEventListener('click', (ev) => { ev.stopPropagation(); close(); });
   el.addEventListener('click', close);
   return close;
 }
@@ -1399,6 +1519,8 @@ function openModal({ title, body, danger = false, confirmText = '确定', cancel
     modalLastFocus = document.activeElement;
     modalEls.title.textContent = title || '';
     modalEls.body.textContent = body || '';
+    modalEls.input.setAttribute('aria-label', title || '输入');
+    modalEls.select.setAttribute('aria-label', title || '选择');
     modalEls.body.style.display = body ? '' : 'none';
     modalEls.confirm.textContent = confirmText;
     modalEls.cancel.textContent = cancelText;
@@ -1441,12 +1563,21 @@ function choiceModal(opts) { return openModal(opts).then(v => (v === null || v =
 // ── 主题：system / light / dark 三态循环，照抄 kiro-go ──
 const THEME_KEY = 'powermap_theme';
 const mql = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+const THEME_LABEL = { system: '跟随系统', light: '浅色', dark: '深色' };
 function applyTheme(mode) {
   const dark = mode === 'dark' || (mode === 'system' && mql && mql.matches);
   document.documentElement.classList.toggle('dark', dark);
-  document.getElementById('themeToggle').setAttribute('data-theme', mode);
+  document.documentElement.dataset.theme = mode;
+  const button = document.getElementById('themeToggle');
+  const label = THEME_LABEL[mode] || THEME_LABEL.system;
+  button.setAttribute('data-theme', mode);
+  button.title = `切换外观（当前：${label}）`;
+  button.setAttribute('aria-label', `切换外观（当前：${label}）`);
+  const meta = document.getElementById('themeColor');
+  if (meta) meta.content = dark ? '#171a1f' : '#f5f6f7';
 }
-let themeMode = localStorage.getItem(THEME_KEY) || 'system';
+let storedTheme = localStorage.getItem(THEME_KEY);
+let themeMode = ['system', 'light', 'dark'].includes(storedTheme) ? storedTheme : 'system';
 applyTheme(themeMode);
 if (mql) mql.addEventListener('change', () => { if (themeMode === 'system') applyTheme('system'); });
 document.getElementById('themeToggle').addEventListener('click', () => {
@@ -1466,6 +1597,16 @@ const TAB_META = {
   events: { title: '近期事件', subtitle: '查看连接、凭证与映射的近期变化，便于快速排查。' },
   about: { title: '关于', subtitle: '查看当前版本、发布说明与 PowerMap 功能。' },
 };
+function keepActiveTabVisible() {
+  const bar = document.getElementById('tabBar');
+  const active = bar && bar.querySelector('.tab.active');
+  if (!active) return;
+  const barRect = bar.getBoundingClientRect();
+  const tabRect = active.getBoundingClientRect();
+  if (tabRect.left < barRect.left + 1 || tabRect.right > barRect.right - 1) {
+    active.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+}
 function selectTab(name, { refreshPeerList = true } = {}) {
   if (name === 'connection' || name === 'relay') name = 'peers';
   if (!tabViews[name]) name = 'dashboard';
@@ -1479,6 +1620,10 @@ function selectTab(name, { refreshPeerList = true } = {}) {
     b.setAttribute('aria-selected', on ? 'true' : 'false');
     b.tabIndex = on ? 0 : -1;
   });
+  // 窄屏页签横向滚动：把当前页签滚到可见区域，避免选中的页签在屏幕外。
+  // 字体加载会改变页签宽度，所以下一帧与 load 后各校正一次。
+  keepActiveTabVisible();
+  requestAnimationFrame(keepActiveTabVisible);
   const meta = TAB_META[name] || TAB_META.dashboard;
   document.getElementById('workspaceTitle').textContent = meta.title;
   document.getElementById('workspaceSubtitle').textContent = meta.subtitle;
@@ -1539,6 +1684,12 @@ document.querySelector('.node-tabs').addEventListener('keydown', (e) => {
   document.getElementById(remote ? 'node-tab-remote' : 'node-tab-local').focus();
 });
 window.addEventListener('hashchange', () => selectTab(location.hash.slice(1)));
+window.addEventListener('load', () => {
+  keepActiveTabVisible();
+  // 字体与徽章会改变页签宽度，加载完成后再校正一次。
+  setTimeout(keepActiveTabVisible, 300);
+});
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(keepActiveTabVisible);
 selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'dashboard');
 
 // ── 映射编辑器：新建 / 编辑双模式。editMode 为 null 表示新建，否则存原映射 local。 ──
@@ -1646,7 +1797,7 @@ function openEditorForEdit(local, host, port, name, mode, routes, peerId) {
 }
 // 克隆：以某条映射为模板新建。沿用目标 host/port、本地地址与名称，但清空本地端口——
 // 本地端口不能重复，必须由用户填一个新的，因此聚焦到该字段。
-function openEditorForClone(local, host, port, name, peerId) {
+function openEditorForClone(local, host, port, name, peerId, mode = 'tcp', routes = []) {
   const editor = document.getElementById('mappingEditor');
   const form = document.getElementById('f');
   const [addr] = splitLocal(local);
@@ -1658,9 +1809,9 @@ function openEditorForClone(local, host, port, name, peerId) {
   form.elements.localPort.value = '';
   form.elements.host.value = host;
   form.elements.port.value = port;
-  setMode('tcp');
-  setAdvancedModes(false);
-  document.getElementById('routeRows').innerHTML = '';
+  setMode(mode || 'tcp');
+  setAdvancedModes((mode || 'tcp') !== 'tcp');
+  renderRouteRows(routes || []);
   latestPreflight = { key: '', ready: false };
   document.getElementById('preflightResult').classList.add('hidden');
   applyEditorMode();
@@ -1729,7 +1880,7 @@ function routeRowHtml(r) {
     `<input class="mono route-host" aria-label="匹配的 Host（留空为兜底）" placeholder="grafana.local（留空=兜底）" value="${esc(r.host_match || '')}" maxlength="255" spellcheck="false" autocomplete="off" autocapitalize="off" />` +
     `<span class="route-arrow" aria-hidden="true">→</span>` +
     `<input class="mono route-thost" aria-label="后端主机" placeholder="192.168.1.10" value="${esc(r.target_host || '')}" maxlength="255" spellcheck="false" autocomplete="off" autocapitalize="off" />` +
-    `<input class="mono route-tport" aria-label="后端端口" type="number" placeholder="3000" value="${r.target_port || ''}" />` +
+    `<input class="mono route-tport" aria-label="后端端口" type="number" min="1" max="65535" inputmode="numeric" placeholder="3000" value="${r.target_port || ''}" />` +
     `<button type="button" class="btn-quiet route-del">删除</button></div>`;
 }
 function renderRouteRows(routes) {
@@ -1769,8 +1920,45 @@ document.getElementById('cancelEditBtn').addEventListener('click', closeEditor);
 
 document.getElementById('footerYear').textContent = new Date().getFullYear();
 
-async function api(path, opts) {
-  return fetch(path, opts);
+const API_TIMEOUT_MS = 20000;
+async function api(path, opts = {}) {
+  // timeoutMs 为 0 表示不设超时（升级下载等长耗时操作）。
+  const { timeoutMs = API_TIMEOUT_MS, ...init } = opts;
+  const controller = new AbortController();
+  const timer = timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  if (init.signal) {
+    if (init.signal.aborted) controller.abort();
+    else init.signal.addEventListener('abort', () => controller.abort(), { once: true });
+  }
+  try {
+    return await fetch(path, {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      ...init,
+      signal: controller.signal,
+      headers: { Accept: 'application/json', ...(init.headers || {}) },
+    });
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error('请求超时，请确认 PowerMap 服务仍在运行');
+    throw err;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+// 读取错误响应正文，避免把整页 HTML 错误塞进 toast。
+async function errorText(response, fallback) {
+  try {
+    const text = (await response.text()).trim();
+    if (!text) return fallback;
+    // 反向代理/静态服务器可能返回整页 HTML；不要把标签直接展示给用户。
+    if (/^<!doctype\b|^<html\b/i.test(text)) return fallback;
+    return text.length > 300 ? text.slice(0, 300) + '…' : text;
+  } catch { return fallback; }
+}
+// 初始化调用没有 await，用 safe() 收尾，避免未处理 rejection。
+function safe(promise) {
+  if (promise && typeof promise.catch === 'function') promise.catch(() => {});
+  return promise;
 }
 
 // ── 远端节点管理：名称是展示标识；映射始终保存 peer_id，改名不会改变归属。 ──
@@ -2000,10 +2188,16 @@ function fmtBytes(n) {
   let i = 0; while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
   return n.toFixed(n < 10 && i > 0 ? 1 : 0) + ' ' + u[i];
 }
-function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+const ESC_MAP = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+function esc(s) { return String(s ?? '').replace(/[&<>"']/g, ch => ESC_MAP[ch]); }
 function fmtTime(ms) {
   if (!ms) return '';
-  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }).format(new Date(ms));
+  const d = new Date(ms);
+  if (Number.isNaN(d.getTime())) return '';
+  const sameDay = d.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat('zh-CN', sameDay
+    ? { hour: '2-digit', minute: '2-digit', second: '2-digit' }
+    : { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }).format(d);
 }
 
 // ── 域名映射：local_ip 为后端可选字段，旧服务端未提供时仍能正常管理。 ──
@@ -2028,9 +2222,9 @@ function renderDomains(list) {
     const entry = document.createElement('tr');
     entry.className = enabled ? '' : 'is-disabled';
     entry.innerHTML = `<td><div class="domain-entry"><strong>${esc(domain)}</strong><small>${esc(domainLocalLabel(mapping))} · ${mapping.hosts_managed ? 'hosts 已托管' : 'hosts 未托管'}</small><span class="peer-mapping-label">对端：${esc(peerLabel(mapping.peer_id))}</span></div></td>` +
-      `<td class="mono">${Number(mapping.remote_port) || '—'}</td>` +
-      `<td><span class="domain-state ${enabled ? 'enabled' : 'disabled'}">${status}</span></td>` +
-      `<td>${mapping.last_error ? `<span class="domain-error" title="${esc(mapping.last_error)}">${esc(mapping.last_error)}</span>` : '<span class="domain-error" style="color:var(--muted-foreground)">—</span>'}</td>` +
+      `<td class="mono" data-label="远端端口">${Number(mapping.remote_port) || '—'}</td>` +
+      `<td data-label="运行状态"><span class="domain-state ${enabled ? 'enabled' : 'disabled'}">${status}</span></td>` +
+      `<td data-label="错误"${mapping.last_error ? '' : ' class="domain-error-none"'}>${mapping.last_error ? `<span class="domain-error" title="${esc(mapping.last_error)}">${esc(mapping.last_error)}</span>` : '<span class="domain-error" style="color:var(--muted-foreground)">—</span>'}</td>` +
       `<td class="act"><span class="btn-row"><button class="btn-quiet domain-toggle" type="button" data-domain="${esc(domain)}" data-enabled="${enabled ? '1' : '0'}">${enabled ? '停用' : '启用'}</button><button class="btn-del domain-delete" type="button" data-domain="${esc(domain)}">删除</button></span></td>`;
     $domainRows.appendChild(entry);
   }
@@ -2055,11 +2249,11 @@ document.getElementById('domainForm').addEventListener('submit', async (e) => {
   try {
     let response = await api('/api/domain-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
     if (!response.ok) {
-      const detail = (await response.text()) || '创建域名映射失败';
+      const detail = await errorText(response, '创建域名映射失败');
       if (/loopback|回环/i.test(detail) && await acknowledgeReportedLoopRisk(body, detail)) {
         response = await api('/api/domain-mappings', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
       }
-      if (!response.ok) { toast((await response.text()) || detail, 'err'); return; }
+      if (!response.ok) { toast(await errorText(response, '创建域名映射失败'), 'err'); return; }
     }
     toast(`已创建域名映射 ${domain}`);
     form.reset();
@@ -2086,13 +2280,17 @@ $domainRows.addEventListener('click', async (e) => {
     const response = remove
       ? await api('/api/domain-mappings/' + encodeURIComponent(domain), { method: 'DELETE' })
       : await api('/api/domain-mappings/' + encodeURIComponent(domain) + '/toggle', { method: 'POST' });
-    if (!response.ok) { toast((await response.text()) || (remove ? '删除失败' : '切换失败'), 'err'); return; }
+    if (!response.ok) { toast(await errorText(response, remove ? '删除失败' : '切换失败'), 'err'); return; }
     toast(remove ? `已删除 ${domain}` : (button.dataset.enabled === '1' ? `已停用 ${domain}` : `已启用 ${domain}`));
     refreshDomains();
   } catch (err) { if (String(err) !== 'Error: unauthorized') toast(remove ? '删除失败' : '切换失败', 'err'); }
   finally { button.disabled = false; }
 });
 function mappingState(s) {
+  // /api/stats 尚未返回这条映射（启动竞态或旧服务端）时，不要误报为“监听已停止”。
+  if (!s || s.local === undefined) {
+    return { state: 'unknown', label: '状态未知', detail: '服务端暂未返回该映射的运行状态，稍后自动重试' };
+  }
   const state = s.state || (s.listener_active ? 'listening' : 'stopped');
   if (state === 'active') return { state, label: '已活动', detail: s.last_tunnel_success_at ? '最近成功 ' + fmtTime(s.last_tunnel_success_at) : '隧道已建立' };
   if (state === 'degraded') {
@@ -2139,7 +2337,12 @@ async function acknowledgeReportedLoopRisk(body, detail) {
   body.acknowledge_loop_risk = true;
   return true;
 }
-function mappingKey(body) { return [body.local, body.host, body.port, body.peer_id || '', body.acknowledge_loop_risk ? 'loop-ok' : ''].join('|'); }
+function mappingKey(body) {
+  return JSON.stringify([
+    body.local, body.host, body.port, body.mode || 'tcp', body.routes || [],
+    body.peer_id || '', body.acknowledge_loop_risk ? 'loop-ok' : '',
+  ]);
+}
 function collectMapping(form) {
   const fd = new FormData(form);
   const addr = (fd.get('localAddr') || '127.0.0.1').trim() || '127.0.0.1';
@@ -2171,7 +2374,7 @@ async function runPreflight(body, display = true) {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
     });
     if (!r.ok) {
-      const detail = (await r.text()) || '目标验证失败';
+      const detail = await errorText(r, '目标验证失败');
       if (display) {
         renderPreflight({ ready: false, checks: { local_listener: { ok: false, detail }, credential: { ok: false, detail: '未执行' }, target: { ok: false, detail: '未执行' } } });
       }
@@ -2318,7 +2521,7 @@ async function checkUpdate({ silent = false } = {}) {
   if (!silent) { button.disabled = true; button.textContent = '检查中…'; }
   try {
     const r = await api('/api/update');
-    if (!r.ok) throw new Error((await r.text()) || '检查失败');
+    if (!r.ok) throw new Error(await errorText(r, '检查失败'));
     const update = await r.json();
     checkedUpdate = true;
     const guidance = update.install || { kind: 'in_app', label: '下载并重启', command: null };
@@ -2339,11 +2542,6 @@ async function checkUpdate({ silent = false } = {}) {
     notice.classList.toggle('visible', update.update_available);
     notice.textContent = update.update_available ? `发现 v${update.latest_version}` : '发现新版本';
     document.getElementById('aboutCurrent').textContent = `当前 v${update.current_version}`;
-    document.getElementById('aboutRelease').textContent = update.update_available
-      ? `可升级至 v${update.latest_version}` : `当前已是最新稳定版 v${update.current_version}`;
-    const aboutLink = document.getElementById('aboutReleaseLink');
-    aboutLink.href = update.release_url;
-    aboutLink.classList.remove('hidden');
     const notes = document.getElementById('aboutNotes');
     notes.textContent = update.notes || '该版本未提供额外发布说明。';
     notes.classList.remove('hidden');
@@ -2372,7 +2570,7 @@ document.getElementById('downloadDiagnosticReport').addEventListener('click', as
   button.disabled = true;
   try {
     const response = await api('/api/diagnostic-report');
-    if (!response.ok) throw new Error((await response.text()) || '生成失败');
+    if (!response.ok) throw new Error(await errorText(response, '生成失败'));
     const report = await response.json();
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -2388,12 +2586,17 @@ document.getElementById('downloadDiagnosticReport').addEventListener('click', as
 document.getElementById('installUpdateBtn').addEventListener('click', async () => {
   const button = document.getElementById('installUpdateBtn');
   const summary = document.getElementById('updateSummary');
-  if (!confirm('将下载已验证的最新版本并重启 PowerMap。现有映射会自动恢复。是否继续？')) return;
+  const proceed = await confirmModal({
+    title: '安装更新', confirmText: '下载并重启',
+    body: '将下载并校验最新版本，然后重启 PowerMap。现有映射会自动恢复，但这期间连接会短暂中断。',
+  });
+  if (!proceed) return;
   button.disabled = true;
   button.textContent = '下载并校验中…';
   try {
-    const r = await api('/api/update', { method: 'POST' });
-    if (!r.ok) throw new Error((await r.text()) || '升级失败');
+    // 服务端需要下载并校验新版本，不能套用常规 20 秒超时。
+    const r = await api('/api/update', { method: 'POST', timeoutMs: 0 });
+    if (!r.ok) throw new Error(await errorText(r, '升级失败'));
     const result = await r.json();
     summary.textContent = `v${result.latest_version} 已下载并校验，正在重启服务…`;
     button.textContent = '正在重启…';
@@ -2406,7 +2609,7 @@ document.getElementById('installUpdateBtn').addEventListener('click', async () =
 document.getElementById('copyUpdateCommandBtn').addEventListener('click', async () => {
   if (!updateCommand) return;
   const ok = await copyText(updateCommand);
-  toast(ok ? '升级命令已复制' : '复制失败，请从发布说明中手动升级', ok ? 'success' : 'error');
+  toast(ok ? '升级命令已复制' : '复制失败，请从发布说明中手动升级', ok ? 'ok' : 'err');
 });
 function renderConnectedPeers(connected, ips) {
   const list = document.getElementById('mPeerList');
@@ -2498,7 +2701,7 @@ document.getElementById('reverseForm').addEventListener('submit', async (e) => {
     method: 'PUT', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ enabled, peer_id, allow_networks, allow_ports: ports }),
   });
-  if (!r.ok) { toast((await r.text()) || '保存失败', 'err'); return; }
+  if (!r.ok) { toast(await errorText(r, '保存失败'), 'err'); return; }
   await refreshReverse();
   toast(enabled ? '反向策略已保存并启用' : '反向映射已关闭');
 });
@@ -2508,7 +2711,7 @@ function ioMsg(t, kind = 'ok') {
 }
 document.getElementById('exportBtn').addEventListener('click', async () => {
   const r = await api('/api/export');
-  if (!r.ok) { toast((await r.text()) || '导出失败', 'err'); return; }
+  if (!r.ok) { toast(await errorText(r, '导出失败'), 'err'); return; }
   const blob = await r.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2519,7 +2722,7 @@ document.getElementById('exportBtn').addEventListener('click', async () => {
 });
 document.getElementById('copyConfigBtn').addEventListener('click', async () => {
   const r = await api('/api/export');
-  if (!r.ok) { toast((await r.text()) || '读取配置失败', 'err'); return; }
+  if (!r.ok) { toast(await errorText(r, '读取配置失败'), 'err'); return; }
   const ok = await copyText(await r.text());
   if (ok) {
     ioMsg('脱敏配置已复制到剪贴板');
@@ -2534,7 +2737,7 @@ document.getElementById('exportFullBtn').addEventListener('click', async () => {
   });
   if (!ok) return;
   const r = await api('/api/export?include_credentials=true');
-  if (!r.ok) { toast((await r.text()) || '导出失败', 'err'); return; }
+  if (!r.ok) { toast(await errorText(r, '导出失败'), 'err'); return; }
   const blob = await r.blob();
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -2553,20 +2756,27 @@ document.getElementById('importFile').addEventListener('change', async (e) => {
   try { cfg = JSON.parse(await file.text()); }
   catch { toast('配置文件不是合法 JSON', 'err'); e.target.value = ''; return; }
   e.target.value = '';
-  // 导入模式二选一：覆盖（替换全部映射）或合并（叠加，不删除现有其他映射）。
+  // 导入模式二选一。默认“合并”更安全：不会因为选错而清空现有映射。
+  const access = cfg && typeof cfg === 'object' ? cfg.access : null;
+  const fileMappings = access && Array.isArray(access.mappings) ? access.mappings.length : 0;
+  const currentMappings = Object.keys(mappingByLocal).length;
+  const hasCredential = Boolean(access && typeof access.node_id === 'string' && access.node_id.trim());
+  const summary = fileMappings
+    ? `文件包含 ${fileMappings} 条映射${hasCredential ? '和接入凭证' : ''}；当前已有 ${currentMappings} 条映射。`
+    : `文件中没有映射${hasCredential ? '，但包含接入凭证' : ''}；当前已有 ${currentMappings} 条映射。`;
   const mode = await openModal({
-    title: '导入配置', confirmText: '导入', cancelText: '取消',
-    body: '选择导入方式。凭证若包含在文件中都会被更新。',
+    title: '导入配置', confirmText: '导入', cancelText: '取消', value: 'merge',
+    body: `${summary} 选择导入方式：`,
     choices: [
+      { value: 'merge', label: '合并（推荐）：新增或更新文件中的映射，保留其他现有映射' },
       { value: 'overwrite', label: '覆盖：用文件中的映射替换当前全部映射' },
-      { value: 'merge', label: '合并：新增/更新文件中的映射，保留其他现有映射' },
     ],
   });
   if (!mode) return;
   const r = await api('/api/import?mode=' + encodeURIComponent(mode), {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(cfg),
   });
-  if (!r.ok) { toast((await r.text()) || '导入失败', 'err'); return; }
+  if (!r.ok) { toast(await errorText(r, '导入失败'), 'err'); return; }
   const res = await r.json();
   let msg = mode === 'merge'
     ? `已合并 ${res.started} 条映射${res.kept ? `，保留 ${res.kept} 条` : ''}`
@@ -2699,7 +2909,7 @@ async function refreshMappingHealth() {
   } catch { /* Old servers do not expose the optional summary. */ }
 }
 
-async function refresh() {
+async function refresh({ forceRows = false } = {}) {
   let list, st;
   try {
     [list, st] = await Promise.all([api('/api/mappings').then(r=>r.json()), api('/api/stats').then(r=>r.json())]);
@@ -2710,7 +2920,10 @@ async function refresh() {
   const now = Date.now();
   const elapsed = rateState.ts ? (now - rateState.ts) / 1000 : 0;
   const nextRows = new Map();
-  $rows.innerHTML = '';
+  // 轮询时若键盘焦点正落在行的操作按钮上，不重建 tbody——重建会夺走焦点，
+  // 键盘用户每 2 秒被打断一次。用户动作后显式 forceRows，或焦点在别处时正常重绘。
+  const renderRows = forceRows || !$rows.contains(document.activeElement);
+  if (renderRows) $rows.innerHTML = '';
   $empty.style.display = list.length ? 'none' : 'block';
   updateOnboarding(list);
   document.getElementById('mappingCount').textContent = `${list.length} 条映射`;
@@ -2752,7 +2965,7 @@ async function refresh() {
     if (!localsNow.has(key)) delete rowSparkHist[key];
   }
   saveRowSpark();
-  for (const m of shown) {
+  if (renderRows) for (const m of shown) {
     const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
     const enabled = m.enabled !== false;
     const health = mappingState(s);
@@ -2778,7 +2991,7 @@ async function refresh() {
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
                    `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span class="status-line"><span>${esc(label)}</span>${connToggle}</span><span class="status-detail">${esc(health.detail)}</span></td>` +
                    `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}${rowRate}<canvas class="row-spark" width="108" height="30" data-local="${esc(m.local)}" aria-hidden="true"></canvas></td>` +
-                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}">${enabled ? '停用' : '启用'}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令">命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}" title="以此为模板新建">克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}">复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}">编辑</button><button class="btn-del" data-id="${esc(m.local)}">断开</button></span></td>`;
+                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}">${enabled ? '停用' : '启用'}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令">命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}" title="以此为模板新建">克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}">复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}">编辑</button><button class="btn-del" data-id="${esc(m.local)}" title="删除这条映射">删除</button></span></td>`;
     $rows.appendChild(tr);
     // 连接明细展开行：仅在用户点开且仍有活跃连接时渲染。
     if (expanded && active > 0) {
@@ -2793,6 +3006,8 @@ async function refresh() {
   // 空态：无映射与“有映射但被搜索过滤空”分开提示。
   const emptyTitle = document.querySelector('#empty .empty-title');
   const emptyDesc = document.querySelector('#empty p');
+  const clearSearchBtn = document.getElementById('clearSearchBtn');
+  if (clearSearchBtn) clearSearchBtn.classList.toggle('hidden', !query);
   if (list.length && !shown.length) {
     $empty.style.display = 'block';
     if (emptyTitle) emptyTitle.textContent = '没有匹配的映射';
@@ -2802,7 +3017,7 @@ async function refresh() {
     if (emptyDesc) emptyDesc.textContent = '建立一条映射后，即可从本地地址安全访问内网服务。';
   }
   // 搜索框、排序、全部开关仅在映射较多时出现，少量映射无需占位。
-  document.getElementById('mappingSearchWrap').classList.toggle('hidden', list.length < 5);
+  document.getElementById('mappingSearchWrap').classList.toggle('hidden', list.length < 5 && !query);
   document.getElementById('mappingSort').classList.toggle('hidden', list.length < 2);
   // 全部开关：有任一启用则显示"全部停用"，全部停用则显示"全部启用"；无映射时隐藏。
   const toggleAllBtn = document.getElementById('toggleAllBtn');
@@ -2813,8 +3028,11 @@ async function refresh() {
   // 映射标签页的异常计数徽章：切到其他标签也能看到"有 N 条异常"。
   const issueBadge = document.getElementById('issueBadge');
   if (issueBadge) {
+    const wasHidden = issueBadge.classList.contains('hidden');
     issueBadge.textContent = issueCount;
     issueBadge.classList.toggle('hidden', issueCount === 0);
+    // 徽章显隐改变页签宽度：窄屏横向滚动时重新对齐当前页签。
+    if (wasHidden !== (issueCount === 0)) keepActiveTabVisible();
   }
   document.getElementById('mTotal').textContent = fmtBytes(totalTx + totalRx);
   document.getElementById('mTx').textContent = fmtBytes(totalTx);
@@ -2843,9 +3061,19 @@ async function refresh() {
 let mappingByLocal = {};
 // ── 搜索过滤：输入即时刷新列表；仅在映射较多时显示输入框 ──
 let mappingFilter = '';
+let searchDebounce = null;
 document.getElementById('mappingSearch').addEventListener('input', (e) => {
   mappingFilter = e.target.value;
-  refresh();
+  clearTimeout(searchDebounce);
+  searchDebounce = setTimeout(() => refresh({ forceRows: true }), 180);
+});
+document.getElementById('clearSearchBtn').addEventListener('click', () => {
+  mappingFilter = '';
+  const input = document.getElementById('mappingSearch');
+  if (input) input.value = '';
+  clearTimeout(searchDebounce);
+  refresh({ forceRows: true });
+  if (input) input.focus();
 });
 
 // ── 排序：异常优先（默认）/ 名称 / 本地地址 / 流量。选择持久化到 localStorage。 ──
@@ -2880,12 +3108,12 @@ document.getElementById('toggleAllBtn').addEventListener('click', async (e) => {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled: target }),
     });
-    if (!r.ok) { toast((await r.text()) || '批量切换失败', 'err'); return; }
+    if (!r.ok) { toast(await errorText(r, '批量切换失败'), 'err'); return; }
     const res = await r.json();
     let msg = res.changed ? `已${verb} ${res.changed} 条映射` : '没有需要切换的映射';
     if (res.failed) msg += `，${res.failed} 条失败`;
     toast(msg, res.failed ? 'err' : 'ok');
-    refresh();
+    refresh({ forceRows: true });
   } finally { btn.disabled = false; }
 });
 
@@ -2921,7 +3149,7 @@ $rows.addEventListener('click', async (e) => {
     const local = expand.dataset.local;
     if (expandedRows.has(local)) expandedRows.delete(local);
     else expandedRows.add(local);
-    refresh();
+    refresh({ forceRows: true });
     return;
   }
   const toggle = e.target.closest('button.btn-toggle');
@@ -2936,16 +3164,16 @@ $rows.addEventListener('click', async (e) => {
       if (!ok) return;
     }
     const r = await api('/api/mappings/' + encodeURIComponent(local) + '/toggle', { method: 'POST' });
-    if (!r.ok) { toast((await r.text()) || '切换失败', 'err'); return; }
+    if (!r.ok) { toast(await errorText(r, '切换失败'), 'err'); return; }
     toast(wasEnabled ? `已停用 ${local}` : `已启用 ${local}`);
-    refresh();
+    refresh({ forceRows: true });
     return;
   }
   const clone = e.target.closest('button.btn-clone');
   if (clone) {
-    // 克隆：以此条为模板打开新建编辑器，预填目标、清空本地端口，等待用户改地址。
+    // 克隆：沿用目标、对端、模式与 Host 路由；本地端口必须换一个，由用户填写。
     const m = mappingByLocal[clone.dataset.local] || {};
-    openEditorForClone(clone.dataset.local, clone.dataset.host, Number(clone.dataset.port), clone.dataset.name || '', m.peer_id || '');
+    openEditorForClone(clone.dataset.local, clone.dataset.host, Number(clone.dataset.port), clone.dataset.name || '', m.peer_id || '', m.mode || 'tcp', m.routes || []);
     return;
   }
   const cmd = e.target.closest('button.btn-cmd');
@@ -2966,7 +3194,7 @@ $rows.addEventListener('click', async (e) => {
     });
     if (action) {
       const result = await runPreflight(body, false);
-      if (result && result.ready) toast(`${body.host}:${body.port} 已恢复可达`, 'ok');
+      if (result && result.ready) toast(`${body.host}:${body.port} 目标已可达，请重试连接`, 'ok');
     }
     return;
   }
@@ -2986,35 +3214,51 @@ $rows.addEventListener('click', async (e) => {
   if (!btn) return;
   const id = btn.dataset.id;
   const ok = await confirmModal({
-    title: '断开映射', danger: true, confirmText: '断开',
-    body: `将停止本地监听 ${id} 并关闭其隧道。确定断开？`,
+    title: '删除映射', danger: true, confirmText: '删除',
+    body: `将停止本地监听 ${id}、断开在途连接，并移除这条映射。需要时可重新创建，但当前配置不会保留。确定删除？`,
   });
   if (!ok) return;
   const r = await api('/api/mappings/' + encodeURIComponent(id), { method: 'DELETE' });
-  if (!r.ok) { toast((await r.text()) || '断开失败', 'err'); return; }
-  toast(`已断开 ${id}`);
+  if (!r.ok) { toast(await errorText(r, '删除失败'), 'err'); return; }
+  toast(`已删除映射 ${id}`);
   refresh();
 });
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
-  const body = collectMapping(e.target);
+  const form = e.target;
+  if (!form.reportValidity()) return;
+  const submitBtn = document.getElementById('submitMappingBtn');
+  if (submitBtn.disabled) return;
+  const body = collectMapping(form);
   if (!await ensureLoopbackAcknowledged(body)) return;
-  if (!latestPreflight.ready || latestPreflight.key !== mappingKey(body)) {
-    const result = await runPreflight(body, true);
-    if (!result || !result.ready) return;
+  submitBtn.disabled = true;
+  const original = submitBtn.textContent;
+  try {
+    if (!latestPreflight.ready || latestPreflight.key !== mappingKey(body)) {
+      submitBtn.textContent = '验证中…';
+      const result = await runPreflight(body, true);
+      if (!result || !result.ready) return;
+    }
+    const editing = editMode !== null;
+    submitBtn.textContent = editing ? '保存中…' : '添加中…';
+    const r = editing
+      ? await api('/api/mappings/' + encodeURIComponent(editMode), {
+          method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        })
+      : await api('/api/mappings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+    if (!r.ok) { toast(await errorText(r, editing ? '保存失败' : '添加失败'), 'err'); return; }
+    toast(editing ? `已保存映射 ${body.local}` : `已添加映射 ${body.local}`);
+    closeEditor();
+    refresh({ forceRows: true });
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') toast(`操作失败：${String(error.message || error)}`, 'err');
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = original;
+    applyEditorMode();
   }
-  const editing = editMode !== null;
-  const r = editing
-    ? await api('/api/mappings/' + encodeURIComponent(editMode), {
-        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      })
-    : await api('/api/mappings', {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-      });
-  if (!r.ok) { toast((await r.text()) || (editing ? '保存失败' : '添加失败'), 'err'); return; }
-  toast(editing ? `已保存映射 ${body.local}` : `已添加映射 ${body.local}`);
-  closeEditor();
-  refresh();
 });
 document.getElementById('preflightBtn').addEventListener('click', async () => {
   const form = document.getElementById('f');
@@ -3039,18 +3283,36 @@ async function updateOnboarding(list) {
     document.getElementById('onboarding').classList.toggle('hidden', !!state.complete);
   } catch { /* Older service: avoid presenting a stale onboarding card. */ }
 }
-document.querySelectorAll('[data-onboarding]').forEach(button => button.addEventListener('click', () => {
-  const target = button.dataset.onboarding;
-  if (target === 'peers') {
-    selectTab('peers');
-    selectNodeTab('remote');
-    requestAnimationFrame(() => document.getElementById('peerName').focus());
-    return;
-  }
+function focusField(id) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.focus();
+  el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+function goToCredential() {
+  selectTab('peers');
+  selectNodeTab('remote');
+  requestAnimationFrame(() => focusField('peerName'));
+}
+function goToMappingEditor() {
   selectTab('mappings');
-  const editor = document.getElementById('mappingEditor');
-  editor.classList.add('open');
-  requestAnimationFrame(() => editor.querySelector('[name=localPort]').focus());
+  openEditorForCreate();
+  requestAnimationFrame(() => focusField('mf-host'));
+}
+// 引导步骤按钮：原来只手动加了 .open，表单仍是 hidden，点了没有任何反应。
+document.querySelectorAll('[data-onboarding]').forEach(button => button.addEventListener('click', () => {
+  if (button.dataset.onboarding === 'peers') goToCredential();
+  else goToMappingEditor();
+}));
+// 概览页首次接入卡：未配置凭证时给出明确下一步，而不是让首页只剩空指标。
+document.querySelectorAll('[data-first-run]').forEach(button => button.addEventListener('click', () => {
+  if (button.dataset.firstRun === 'credential') { goToCredential(); return; }
+  selectTab('mappings');
+  requestAnimationFrame(() => {
+    const card = document.getElementById('onboarding');
+    if (card && !card.classList.contains('hidden')) card.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    else openEditorForCreate();
+  });
 }));
 
 // ── 穿透路径徽章：direct = P2P 直连，relay = 经中继，unknown = 探测中 ──
@@ -3135,8 +3397,10 @@ async function refreshStatus() {
     if (!s.configured) { cls = ''; label = '未配置'; }
     else if (s.connected) { cls = 'ok'; label = '已连接'; }
     else { cls = 'warn'; label = '未连接'; }
+    const firstRun = document.getElementById('firstRun');
+    if (firstRun) firstRun.classList.toggle('hidden', !!s.configured);
     const remoteBadge = document.getElementById('credBadge');
-    if (s.configured) {
+    if (remoteBadge && s.configured) {
       remoteBadge.textContent = s.connected ? '已连接' : '未连接';
       remoteBadge.className = 'badge ' + (s.connected ? 'ok' : 'no');
     }
@@ -3151,6 +3415,7 @@ async function refreshStatus() {
     document.getElementById('sideActive').textContent = s.active_tunnels ?? 0;
     fDot.className = 'status-dot ' + cls;
     fTxt.textContent = label;
+    setConnectionTone(cls);
     renderPathChip(pathChip, s.path, s.connected, s.rtt_ms, s.relay);
     renderPathChip(mPathChip, s.path, s.connected, s.rtt_ms, s.relay);
     renderUptime(s.connected ? s.connected_since : null);
@@ -3163,6 +3428,7 @@ async function refreshStatus() {
     dot.className = 'status-dot err'; txt.textContent = '服务不可用';
     mDot.className = 'status-dot err'; mState.textContent = '不可用';
     document.getElementById('sideActive').textContent = '—';
+    setConnectionTone('err');
     fDot.className = 'status-dot err'; fTxt.textContent = '服务不可用';
     renderPathChip(pathChip, null, false);
     renderPathChip(mPathChip, null, false);
@@ -3171,6 +3437,14 @@ async function refreshStatus() {
     prevConnected = null;
     setTabTitle('err');
   }
+}
+// 连接状态卡的数值颜色必须随状态变化：未配置/不可用显示为绿色会误导。
+function setConnectionTone(cls) {
+  const el = document.querySelector('.stat-card:first-child .stat-value');
+  if (!el) return;
+  el.classList.toggle('is-ok', cls === 'ok');
+  el.classList.toggle('is-warn', cls === 'warn');
+  el.classList.toggle('is-err', cls === 'err');
 }
 // ── 连接时长：把 connected_since（unix 毫秒）渲染成"已连接 2h15m"。断开时清空。 ──
 function renderUptime(since) {
@@ -3214,8 +3488,10 @@ function drawRttSpark() {
   });
   ctx.stroke();
 }
+const TAB_TITLE = { ok: '● 已连接', warn: '○ 未连接', idle: '未配置', err: '⚠ 服务不可用' };
 function setTabTitle(state) {
-  const next = 'PowerMap';
+  const prefix = TAB_TITLE[state] || '';
+  const next = prefix ? `${prefix} · PowerMap` : 'PowerMap';
   if (document.title !== next) document.title = next;
 }
 function renderOps(s) {
@@ -3449,12 +3725,12 @@ function showShortcutHelp() {
   });
 }
 
-refreshPeers().then(() => { refreshTargetCatalog(); refresh(); refreshDomains(); });
-refreshOwnNode();
-refresh();
-refreshDomains();
-refreshStatus();
-refreshReverse();
+safe(refreshPeers().then(() => { refreshTargetCatalog(); refresh(); refreshDomains(); }));
+safe(refreshOwnNode());
+safe(refresh());
+safe(refreshDomains());
+safe(refreshStatus());
+safe(refreshReverse());
 // ── 轮询：可选间隔 + 暂停。标签页隐藏时自动挂起以省资源，重新可见时立即刷新一次再恢复。 ──
 // 停留在事件页时一并刷新事件，让新事件自动出现。
 // 间隔与暂停态持久化到 localStorage：0 = 手动（不自动轮询，仍可手动刷新或切页触发）。
@@ -3463,15 +3739,15 @@ const POLL_PAUSE_KEY = 'powermap_poll_paused';
 let pollTimer = null;
 let pollInterval = Math.max(0, Number(localStorage.getItem(POLL_KEY) ?? 2000) || 0);
 let pollPaused = localStorage.getItem(POLL_PAUSE_KEY) === '1';
+let pollBusy = false;
 function poll() {
-  refreshPeers();
-  refreshStatus();
-  refresh();
-  refreshDomains();
-  refreshOwnNode();
-  checkUpdate({ silent: true });
-  if (location.hash.slice(1) === 'about') refreshAboutRuntime();
-  if (location.hash.slice(1) === 'events') refreshEvents();
+  // 慢请求期间不叠加下一轮，避免断网时请求队列越积越多。
+  if (pollBusy) return Promise.resolve();
+  pollBusy = true;
+  const jobs = [refreshPeers(), refreshStatus(), refresh(), refreshDomains(), refreshOwnNode(), checkUpdate({ silent: true })];
+  if (location.hash.slice(1) === 'about') jobs.push(refreshAboutRuntime());
+  if (location.hash.slice(1) === 'events') jobs.push(refreshEvents());
+  return Promise.allSettled(jobs).finally(() => { pollBusy = false; });
 }
 function stopPolling() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 // 仅在“有正间隔 + 未暂停 + 页面可见”时开启定时器；否则只保持手动刷新能力。
