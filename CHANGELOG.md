@@ -4,6 +4,44 @@
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-11-18
+
+### Security
+
+- 管理页新增 Host 白名单与写请求的 Origin / `Sec-Fetch-Site` 校验，阻断 DNS rebinding
+  和 CSRF；统一注入安全响应头，`/api/*` 一律 `no-store`，令牌与配置不再进入浏览器缓存。
+  经 nginx 等反向代理访问时，需把代理域名加入新增的 `web_allowed_hosts`。
+- 隧道握手全部加上时限：access 打开流后 10 秒内未收到状态、expose 读握手头超过 5 秒，
+  都丢弃该流，避免对端只开流不发头就永久占住连接与并发配额。
+- 身份文件 `powermap.key` 与导出的 `powermap.credential.json` 收紧为仅属主可读写
+  （0600）；旧文件在下次读取时一并修正。
+- 反向注册改为先绑定全部内网监听、全部成功才回 OK，失败可重试；每条连接只允许一个
+  register 流，重复注册不再被当作首次处理。
+- 映射监听落在非回环地址时输出告警：该端口对同网段其他主机可直接访问，绕过了隧道。
+
+### Fixed
+
+- 旧配置迁移只在外观上像旧文件、内容却能按旧 schema 解析时才执行，避免一处笔误
+  （例如写坏 unified TOML）导致原文件被判为旧配置并被迁移流程删除。
+- 自更新替换二进制改为硬链接备份 + 单次原子 rename，消除了“先挪走旧文件、再放新文件”
+  之间目录里没有可执行文件的窗口；替换失败时旧版本保持原位。
+- 更新下载与 Release 查询加上连接/整体超时，网络挂起不再让更新流程无限等待。
+- 批量切换映射在并发删除时不再下溢 panic。
+- `from_hex` 遇到非 ASCII 输入（如中文）不再因字符串切片 panic，改为按字节解析。
+- 映射监听 `accept()` 的瞬时错误（EMFILE 等）改为指数退避重试，不再让整条映射永久下线。
+- 本地入口读取 HTTP 请求头加 10 秒超时；改映射的 `mode`（TCP ↔ UDP）会重新绑定套接字，
+  不再出现“配置已改为 UDP、实际仍跑旧 TCP 监听”。
+
+### Changed
+
+- 管理页适配窄屏：标签栏在手机上变为单行横向滚动并自动露出当前标签，映射与域名列表
+  在手机上以卡片形式展示（字段名标注在值前），编辑表单与按钮在 390px 宽度下可用。
+- 新增首次使用引导、运行指标条与映射健康汇总；错误提示统一走可关闭的 toast，
+  长耗时请求有超时与取消，提交按钮在请求期间禁用，避免重复提交。
+- 提升可访问性：状态区域使用 `aria-live`，键盘快捷键帮助与焦点管理补齐，弹窗内
+  输入控件带 `aria-label`。
+- README 与 nginx 示例补充 `web_allowed_hosts` 的说明。
+
 ## [1.0.0] - 2026-08-17
 
 ### Added
@@ -169,7 +207,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/steven-ld/PowerMap/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/steven-ld/PowerMap/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/steven-ld/PowerMap/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/steven-ld/PowerMap/compare/v0.7.0...v0.8.0
