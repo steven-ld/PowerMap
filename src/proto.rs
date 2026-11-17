@@ -195,7 +195,9 @@ pub fn from_hex(s: &str) -> Option<Vec<u8>> {
     }
     // 按字节切分：先在 &str 上做字节下标切片会在非 ASCII 输入（如中文）处 panic。
     bytes
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             if !pair.iter().all(u8::is_ascii_hexdigit) {
                 return None;
