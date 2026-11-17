@@ -11,6 +11,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -24,6 +25,9 @@ use tokio_util::sync::CancellationToken;
 use crate::metrics::Metrics;
 use crate::{config, proto, relay_runtime, tunnel};
 
+/// 对端建立流后必须在此时限内发出握手头，否则丢弃该流。
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
 fn resolve_identity(config_path: &Path, identity: &str) -> PathBuf {
     let p = PathBuf::from(identity);
     if p.is_absolute() {
@@ -36,8 +40,23 @@ fn resolve_identity(config_path: &Path, identity: &str) -> PathBuf {
     }
 }
 
+/// 把文件权限收紧到仅属主可读写（Unix）。Windows 上由用户目录 ACL 决定，无需处理。
+fn restrict_to_owner(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!(path = %path.display(), %error, "收紧文件权限失败");
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
+}
+
 fn load_or_create_key(path: &std::path::Path) -> Result<SecretKey> {
     if path.exists() {
+        // 旧版本以默认 umask 写入（常见 0644），读到就顺手收紧。
+        restrict_to_owner(path);
         let hex = std::fs::read_to_string(path)
             .with_context(|| format!("读取身份文件失败: {}", path.display()))?;
         let bytes = proto::from_hex(hex.trim()).context("身份文件不是合法的 hex")?;
@@ -50,6 +69,20 @@ fn load_or_create_key(path: &std::path::Path) -> Result<SecretKey> {
             std::fs::create_dir_all(parent).ok();
         }
         let sk = SecretKey::generate();
+        // 先以 0600 创建，再写入内容，避免密钥在 0644 窗口内被同机其他用户读取。
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(path)
+                .with_context(|| format!("创建身份文件失败: {}", path.display()))?;
+            file.write_all(proto::to_hex(&sk.to_bytes()).as_bytes())?;
+        }
+        #[cfg(not(unix))]
         std::fs::write(path, proto::to_hex(&sk.to_bytes()))?;
         Ok(sk)
     }
@@ -83,22 +116,40 @@ impl ProtocolHandler for TunnelHandler {
             .then(|| Arc::new(Semaphore::new(self.max_streams_per_conn)));
         // 该连接上已启动的反向监听（首个 register 流触发；连接结束时随 CancellationToken 关闭）。
         let reverse_cancel = tokio_util::sync::CancellationToken::new();
+        // 每条连接只允许一个 register 流；用独立标志而不是 cancel 状态判断，
+        // 后者在连接存活期间永远为 false，重复 register 会被当作首次处理。
+        let registered = Arc::new(AtomicBool::new(false));
         loop {
             match connection.accept_bi().await {
                 Ok((mut send, mut recv)) => {
                     // 先读握手头，据此分流：register（建立反向监听）/ 正向隧道。
-                    let req = match proto::read_open(&mut recv).await {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::warn!(error = %e, "读取隧道握手头失败，丢弃该流");
-                            continue;
-                        }
-                    };
+                    // 对端可以只开流不发头，必须有超时，否则一条连接就能阻塞 accept 循环。
+                    let req =
+                        match tokio::time::timeout(HANDSHAKE_TIMEOUT, proto::read_open(&mut recv))
+                            .await
+                        {
+                            Ok(Ok(r)) => r,
+                            Ok(Err(e)) => {
+                                tracing::warn!(error = %e, "读取隧道握手头失败，丢弃该流");
+                                continue;
+                            }
+                            Err(_) => {
+                                tracing::warn!(%peer, "读取隧道握手头超时，丢弃该流");
+                                continue;
+                            }
+                        };
 
                     // register 流：认证 token，为该客户在内网启动反向监听（仅首个 register 生效）。
                     if req.register {
-                        self.handle_register(&connection, &peer, &mut send, &req, &reverse_cancel)
-                            .await;
+                        self.handle_register(
+                            &connection,
+                            &peer,
+                            &mut send,
+                            &req,
+                            &reverse_cancel,
+                            &registered,
+                        )
+                        .await;
                         continue;
                     }
 
@@ -149,6 +200,7 @@ impl TunnelHandler {
         send: &mut iroh::endpoint::SendStream,
         req: &proto::OpenRequest,
         cancel: &tokio_util::sync::CancellationToken,
+        registered: &AtomicBool,
     ) {
         let client = match self.registry.authenticate(&req.token) {
             Some(c) => c,
@@ -165,19 +217,38 @@ impl TunnelHandler {
             return;
         }
         // 已在本连接启动过反向监听则忽略重复 register。
-        if cancel.is_cancelled() {
+        if registered.swap(true, Ordering::SeqCst) {
             let _ = proto::write_status(send, proto::STATUS_ERR, "already registered").await;
             return;
         }
-        let _ = proto::write_status(send, proto::STATUS_OK, "").await;
-        tracing::info!(client = %client.id, %peer, count = listens.len(), "已接受反向注册，启动内网反向监听");
+        // 先绑定全部内网监听，全部成功才回 OK；否则 A 端会以为注册成功，
+        // 而实际监听从未建立。绑定失败时允许重试（回滚标志）。
+        let mut bound = Vec::with_capacity(listens.len());
         for listen in listens {
+            match tokio::net::TcpListener::bind(&listen.listen).await {
+                Ok(listener) => bound.push((listener, listen)),
+                Err(error) => {
+                    registered.store(false, Ordering::SeqCst);
+                    let _ = proto::write_status(
+                        send,
+                        proto::STATUS_ERR,
+                        &format!("bind {} failed: {error}", listen.listen),
+                    )
+                    .await;
+                    tracing::warn!(client = %client.id, %peer, listen = %listen.listen, %error, "反向监听绑定失败");
+                    return;
+                }
+            }
+        }
+        let _ = proto::write_status(send, proto::STATUS_OK, "").await;
+        tracing::info!(client = %client.id, %peer, count = bound.len(), "已接受反向注册，启动内网反向监听");
+        for (listener, listen) in bound {
             let conn = connection.clone();
             let metrics = self.metrics.clone();
             let child = cancel.child_token();
             let client_id = client.id.clone();
             tokio::spawn(async move {
-                if let Err(e) = run_reverse_listener(conn, listen, metrics, child).await {
+                if let Err(e) = run_reverse_listener(conn, listener, listen, metrics, child).await {
                     tracing::warn!(client = %client_id, error = %e, "反向监听退出");
                 }
             });
@@ -189,13 +260,11 @@ impl TunnelHandler {
 /// 写目标（A 一侧要拨的 host:port），随后与 A 双向透传。A 端按其 deny-all 策略校验并回拨。
 async fn run_reverse_listener(
     connection: Connection,
+    listener: tokio::net::TcpListener,
     listen: config::ReverseListen,
     metrics: Arc<Metrics>,
     cancel: tokio_util::sync::CancellationToken,
 ) -> Result<()> {
-    let listener = tokio::net::TcpListener::bind(&listen.listen)
-        .await
-        .with_context(|| format!("绑定反向监听 {} 失败", listen.listen))?;
     tracing::info!(listen = %listen.listen, target = %format!("{}:{}", listen.target_host, listen.target_port), name = %listen.name, "反向监听已就绪");
     loop {
         let (mut tcp, _peer) = tokio::select! {
@@ -385,6 +454,8 @@ pub async fn run(
         };
         let cred_path = config_path.with_file_name("powermap.credential.json");
         std::fs::write(&cred_path, serde_json::to_string_pretty(&cred)?)?;
+        // 凭证含可直接拨号的 token，不能留在默认 umask 的 0644 上。
+        restrict_to_owner(&cred_path);
         tracing::info!("凭证已写入 {}（把它交给 A 端）", cred_path.display());
     } else {
         tracing::info!("多租户模式：请分别向各客户分发其 node_id + token");

@@ -266,6 +266,11 @@ pub struct AConfig {
     /// Web 管理页 TLS 私钥路径（PEM）
     #[serde(default)]
     pub web_tls_key: String,
+    /// 反向代理访问管理页时允许的 Host 头（域名，不含端口）。
+    /// 默认只接受 localhost / 127.0.0.1 / [::1] 与本机 web_bind 地址，
+    /// 用于阻断 DNS rebinding；经 nginx 等反代访问时把域名填在这里。
+    #[serde(default)]
+    pub web_allowed_hosts: Vec<String>,
     /// 最大映射条数上限（防止无限添加耗尽本地端口/资源）
     #[serde(default = "default_max_mappings")]
     pub max_mappings: usize,
@@ -303,6 +308,7 @@ impl Default for AConfig {
             web_token: String::new(),
             web_tls_cert: String::new(),
             web_tls_key: String::new(),
+            web_allowed_hosts: Vec::new(),
             max_mappings: default_max_mappings(),
             max_conns_per_mapping: default_max_conns_per_mapping(),
             mappings: Vec::new(),
@@ -337,6 +343,18 @@ impl AConfig {
         }
         if self.web_tls_cert.is_empty() != self.web_tls_key.is_empty() {
             return Err("web_tls_cert 与 web_tls_key 必须同时设置或同时留空".into());
+        }
+        for host in &self.web_allowed_hosts {
+            let host = host.trim();
+            if host.is_empty()
+                || host.contains('/')
+                || host.contains(':')
+                || host.contains(char::is_whitespace)
+            {
+                return Err(format!(
+                    "web_allowed_hosts 条目不是合法主机名（不要带 scheme/端口）: {host:?}"
+                ));
+            }
         }
         if self.node_id.trim().is_empty() != self.token.trim().is_empty() {
             return Err("node_id 与 token 必须同时设置；也可同时留空并在管理页完成接入".into());
@@ -904,22 +922,38 @@ pub fn load_config(path: &Path, legacy_role: Option<LegacyRole>) -> Result<Loade
                 path: path.to_path_buf(),
             });
         }
-        if let Ok(config) = toml::from_str::<Config>(&raw) {
-            config.validate().map_err(anyhow::Error::msg)?;
-            return Ok(LoadedConfig {
-                config,
-                path: path.to_path_buf(),
-            });
-        }
+        let parse_error = match toml::from_str::<Config>(&raw) {
+            Ok(config) => {
+                config.validate().map_err(anyhow::Error::msg)?;
+                return Ok(LoadedConfig {
+                    config,
+                    path: path.to_path_buf(),
+                });
+            }
+            Err(error) => error,
+        };
 
+        // 统一配置解析失败时才考虑旧版迁移。绝不能仅凭文件名（含 server/client）
+        // 就改写并删除用户文件：一个笔误导致的解析失败会被当成旧配置，
+        // 原文件随即被迁移流程删除。这里要求内容确实能按旧 schema 解析。
         let role = legacy_role
             .or_else(|| infer_legacy_role(path))
             .ok_or_else(|| {
                 anyhow::anyhow!(
-                    "{} 不是统一配置；请使用 powermap expose/access --config 指定旧配置角色",
+                    "{} 不是统一配置（{parse_error}）；请修正文件，或用 powermap expose/access --config 指定旧配置角色",
                     path.display()
                 )
             })?;
+        let legacy_parses = match role {
+            LegacyRole::Expose => toml::from_str::<BConfig>(&raw).is_ok(),
+            LegacyRole::Access => toml::from_str::<AConfig>(&raw).is_ok(),
+        };
+        if !legacy_parses {
+            return Err(anyhow::anyhow!(
+                "{} 既不是统一配置，也不是合法的旧版配置（{parse_error}）；已保留原文件未做迁移",
+                path.display()
+            ));
+        }
         return migrate_legacy_files(
             path.with_file_name("powermap.toml"),
             &[(path.to_path_buf(), role)],
@@ -985,6 +1019,10 @@ fn migrate_legacy_files(
     config.validate().map_err(anyhow::Error::msg)?;
     save(&new_path, &config)?;
     for (path, _) in legacy {
+        // 新路径与旧路径重合时（理论上不会发生）绝不能删源文件。
+        if path == &new_path {
+            continue;
+        }
         std::fs::remove_file(path)
             .with_context(|| format!("删除已迁移的旧配置失败: {}", path.display()))?;
     }

@@ -169,12 +169,20 @@ pub fn to_hex(bytes: &[u8]) -> String {
 }
 
 pub fn from_hex(s: &str) -> Option<Vec<u8>> {
-    let s = s.trim();
-    if s.is_empty() || !s.len().is_multiple_of(2) {
+    let bytes = s.trim().as_bytes();
+    if bytes.is_empty() || !bytes.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len())
-        .step_by(2)
-        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).ok())
+    // 按字节切分：先在 &str 上做字节下标切片会在非 ASCII 输入（如中文）处 panic。
+    bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            if !pair.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            Some((hi * 16 + lo) as u8)
+        })
         .collect()
 }

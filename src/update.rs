@@ -238,6 +238,8 @@ async fn prepare_latest_update() -> Result<PreparedUpdate> {
 async fn download_asset(url: &str) -> Result<Vec<u8>> {
     let response = reqwest::Client::builder()
         .user_agent(format!("powermap/{}", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(300))
         .build()?
         .get(url)
         .send()
@@ -272,6 +274,8 @@ fn release_target(os: &str, arch: &str) -> Result<&'static str> {
 pub async fn fetch_latest_release() -> Result<GithubRelease> {
     let response = reqwest::Client::builder()
         .user_agent(format!("powermap/{}", env!("CARGO_PKG_VERSION")))
+        .connect_timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()?
         .get(RELEASES_API)
         .send()
@@ -537,27 +541,31 @@ pub fn replace_binary(current: &Path, staged: &Path) -> Result<PathBuf> {
     if backup.exists() {
         bail!("存在未清理的更新备份: {}", backup.display());
     }
-    std::fs::rename(current, &backup)
-        .with_context(|| format!("备份当前二进制失败: {}", current.display()))?;
+    // 用硬链接而不是 rename 备份：旧二进制保持原名不动，随后一次 rename 原子覆盖。
+    // 旧实现先 rename 走旧文件、再 rename 新文件，两次调用之间进程目录里没有可执行文件，
+    // 崩溃或断电会留下“当前二进制缺失”的状态。
+    if let Err(link_error) = std::fs::hard_link(current, &backup) {
+        // 跨文件系统或文件系统不支持硬链接时退回复制（staged 与 current 同目录，
+        // 正常路径不会走到这里）。
+        std::fs::copy(current, &backup).with_context(|| {
+            format!(
+                "备份当前二进制失败: {link_error}; 复制备份也失败: {}",
+                current.display()
+            )
+        })?;
+    }
     if let Err(error) = std::fs::rename(staged, current) {
-        let rollback = std::fs::rename(&backup, current);
-        return match rollback {
-            Ok(()) => Err(error).context("替换更新二进制失败，已恢复旧版本"),
-            Err(rollback_error) => Err(anyhow::anyhow!(
-                "替换更新二进制失败 ({error})，且恢复旧版本也失败 ({rollback_error}); 备份位于 {}",
-                backup.display()
-            )),
-        };
+        // 替换失败时旧文件仍在原位（单次 rename 的原子性），只需清掉备份链接。
+        let _ = std::fs::remove_file(&backup);
+        return Err(error).context("替换更新二进制失败，旧版本未被改动");
     }
     Ok(backup)
 }
 
 /// Restore the prior executable after a replacement or restart failure.
 pub fn restore_binary(current: &Path, backup: &Path) -> Result<()> {
-    if current.exists() {
-        std::fs::remove_file(current)
-            .with_context(|| format!("移除未能启动的新二进制失败: {}", current.display()))?;
-    }
+    // Unix 上 rename 会原子覆盖现有文件；Windows 上标准库同样使用可替换语义，
+    // 因此无需先删除 current（先删会重新引入“无二进制”窗口）。
     std::fs::rename(backup, current)
         .with_context(|| format!("恢复备份二进制失败: {}", backup.display()))
 }

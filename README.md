@@ -317,6 +317,9 @@ web_bind = "127.0.0.1:8088"
 web_token = ""
 web_tls_cert = ""
 web_tls_key = ""
+# 经反向代理访问管理页时，把代理转发的 Host 域名填在这里（不含 scheme/端口）。
+# 留空时只接受 localhost / 127.0.0.1 / [::1] 与 web_bind 的主机名，用于阻断 DNS rebinding。
+web_allowed_hosts = []
 max_mappings = 256
 max_conns_per_mapping = 512
 
@@ -357,7 +360,7 @@ routes = [
 
 ```
 
-`web_bind` 仅接受本机回环地址；`web_token` 是保留字段，当前版本不读取、不生成、不校验它。域名映射仅支持 macOS/Linux，必须以管理员身份启动 PowerMap；它会修改系统 hosts 文件。多个域名共享本机 `127.0.0.1:443`，按 TLS SNI 分流，客户端必须发送 SNI。`max_conns_per_mapping = 0` 表示不限制。域名映射要求小写的完整 DNS 域名（不接受通配符或 IP 地址）；省略 `remote_port` 时默认使用 HTTPS 的 `443`，省略 `enabled` 时默认启用。
+`web_bind` 仅接受本机回环地址；`web_token` 是保留字段，当前版本不读取、不生成、不校验它。管理页会校验请求的 `Host` 与写请求的 `Origin`：默认只接受 `localhost`、`127.0.0.1`、`[::1]` 和 `web_bind` 中配置的主机名。若通过 nginx 等反向代理访问（`proxy_set_header Host $host` 转发的是代理域名），必须把该域名加入 `web_allowed_hosts`，否则管理 API 返回 403；由 PowerMap 自己以 `web_tls_cert`/`web_tls_key` 终止 TLS 时不做该域名限制。域名映射仅支持 macOS/Linux，必须以管理员身份启动 PowerMap；它会修改系统 hosts 文件。多个域名共享本机 `127.0.0.1:443`，按 TLS SNI 分流，客户端必须发送 SNI。`max_conns_per_mapping = 0` 表示不限制。域名映射要求小写的完整 DNS 域名（不接受通配符或 IP 地址）；省略 `remote_port` 时默认使用 HTTPS 的 `443`，省略 `enabled` 时默认启用。
 
 映射的 `mode` 省略时为 `tcp`（裸透传）；`udp` 走 UDP 数据报隧道；`http` 启用单端口 HTTP 网关，按请求 `Host` 头匹配 `routes`（最多 32 条），未命中则回落到该映射的 `host`/`port` 兜底后端（`routes` 仅在 `http` 模式有效）。
 
