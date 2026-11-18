@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+## [1.0.2] - 2026-11-18
+
+### Added
+
+- 管理页新增「入站连接（谁连了本机）」：启用 expose 的节点可以看到当前有哪些对端连入，
+  以及认证客户、连接路径与延迟、活跃/累计隧道、反向是否已注册和被拒次数。它与
+  「出站节点（本机主动连接）」互为两半，连接断开即从列表移除。本机未启用 expose 时
+  明确显示「未启用」，而不是把「没有人连」和「角色没跑」混成同一个空列表。
+- 「出站节点」列表新增连接列，逐节点显示在线状态、直连/中继路径、往返延迟与已保持
+  时长；概览页新增节点连接条。配置正确但尚未被任何映射使用的节点标记为「空闲」，
+  不再长期显示为未连接告警。
+- 反向映射增加当前策略摘要与「有未保存的修改」提示；节点表单把已发布目标、专用中继
+  与强制中继收进「高级设置」，编辑已配置节点时自动展开。
+
+### Changed
+
+- `/api/peers` 与 `/api/status` 的节点视图增加 `path` / `rtt_ms` / `relay` /
+  `connected_since`。节点状态改为逐节点并发探测，单个节点最多等待 500 ms，节点较多
+  时管理页轮询不再被串行拖慢；`/api/status` 的聚合路径字段固定取 peer id 最小的
+  在线节点，不再随哈希遍历顺序每轮指向不同节点。
+- 控制台交互：切换、删除、保存等操作在请求期间标记「处理中」并锁定按钮，完成后整行
+  短暂高亮；轮询重建表格时保留键盘焦点；窄屏下节点表与域名表改为带字段标签的卡片；
+  「关于」页显示配置文件路径并支持点击复制。
+
+### Fixed
+
+- 修复管理页首次加载时 `selectTab` 早于顶层常量执行的暂时性死区：首个 `/api/peers`
+  请求必然失败，节点状态要等下一轮轮询才出现。
+- 入站连接读取失败时显示明确的重试提示，而不是让「正在读取…」一直留在页面上。
+
 ## [1.0.1] - 2026-11-18
 
 ### Security
@@ -207,7 +237,8 @@
 - 运维：优雅关闭（drain 在途隧道）、断线指数退避重连、看门狗热连接。
 - Docker 部署（`Dockerfile` + `docker-compose.yml`）。
 
-[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/steven-ld/PowerMap/compare/v1.0.2...HEAD
+[1.0.2]: https://github.com/steven-ld/PowerMap/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/steven-ld/PowerMap/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/steven-ld/PowerMap/compare/v0.9.0...v1.0.0
 [0.9.0]: https://github.com/steven-ld/PowerMap/compare/v0.8.0...v0.9.0

@@ -11,7 +11,7 @@
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-3366f0.svg)](LICENSE-MIT)
 [![Rust](https://img.shields.io/badge/Rust-1.85%2B-dc8a4d.svg?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 
-[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [v1.0.1 Release Notes](docs/releases/v1.0.1.md) · [Contributing](CONTRIBUTING.md)
+[Website](https://powermap.ga666666.com) · [简体中文](README.md) · **English** · [Downloads](https://github.com/steven-ld/PowerMap/releases) · [v1.0.2 Release Notes](docs/releases/v1.0.2.md) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -58,7 +58,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/steven-ld/PowerMap/main/scri
 powershell -ExecutionPolicy Bypass -File .\install.ps1
 ```
 
-The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v1.0.1` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
+The installers download the Release SHA-256 file and validate the archive before installation. Pin a version with `sh install.sh v1.0.2` or `POWERMAP_VERSION`; manual Release downloads and source builds remain available below.
 
 ## Where It Fits
 
@@ -84,7 +84,7 @@ The installers download the Release SHA-256 file and validate the archive before
 Download a prebuilt archive for your platform from [Releases](https://github.com/steven-ld/PowerMap/releases). For macOS Apple Silicon:
 
 ```bash
-VERSION=v1.0.1
+VERSION=v1.0.2
 TARGET=aarch64-apple-darwin   # Intel: x86_64-apple-darwin; Linux: x86_64/aarch64-unknown-linux-gnu
 BASE=https://github.com/steven-ld/PowerMap/releases/download/$VERSION
 
@@ -194,19 +194,19 @@ Prefer a pinned image version and persist configuration plus node identity in a 
 
 ```bash
 mkdir -p data
-docker pull ghcr.io/steven-ld/powermap:v1.0.1
+docker pull ghcr.io/steven-ld/powermap:v1.0.2
 docker run -d --name powermap --restart unless-stopped \
   --network host \
   -v "$(pwd)/data:/data" \
   -e RUST_LOG=info \
-  ghcr.io/steven-ld/powermap:v1.0.1 \
+  ghcr.io/steven-ld/powermap:v1.0.2 \
   powermap --config /data/powermap.toml
 ```
 
 Or use Compose:
 
 ```bash
-POWERMAP_TAG=v1.0.1 docker compose up -d
+POWERMAP_TAG=v1.0.2 docker compose up -d
 ```
 
 To upgrade, run `POWERMAP_TAG=vX.Y.Z docker compose pull && POWERMAP_TAG=vX.Y.Z docker compose up -d` from the Compose project directory; the console generates the matching command when it detects Docker. Without a config, first start creates a default node with both expose and access capabilities.
