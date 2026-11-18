@@ -6,7 +6,7 @@ use iroh::SecretKey;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 
-use powermap::{access, config, expose, proto, signal, update};
+use powermap::{access, config, expose, inbound, proto, signal, update};
 
 #[derive(Parser)]
 #[command(name = "powermap", version, about = "P2P private-network access")]
@@ -65,6 +65,11 @@ async fn run() -> Result<()> {
         signal_cancel.cancel();
     });
 
+    // 入站连接表：expose 角色写入，access 角色的管理页读取，两者同进程时共享一份。
+    // 只跑 access 时保留一份空表，让 /api/inbound 明确回答“本机未启用 expose 角色”。
+    let inbound = inbound::InboundRegistry::new();
+    let has_expose = loaded.config.expose.is_some();
+
     let mut tasks = JoinSet::new();
     if let Some(expose_cfg) = loaded.config.expose {
         tasks.spawn(expose::run(
@@ -72,15 +77,18 @@ async fn run() -> Result<()> {
             relay.clone(),
             loaded.path.clone(),
             args.online_timeout,
+            inbound.clone(),
             cancel.clone(),
         ));
     }
     if let Some(access_cfg) = loaded.config.access {
+        let inbound = if has_expose { Some(inbound) } else { None };
         tasks.spawn(access::run(
             access_cfg,
             loaded.path,
             cancel.clone(),
             local_expose_id,
+            inbound,
         ));
     }
 

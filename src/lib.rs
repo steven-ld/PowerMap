@@ -4,6 +4,7 @@ pub mod diagnostic_report;
 pub mod diagnostics;
 pub mod domain_hosts;
 pub mod expose;
+pub mod inbound;
 pub mod local_services;
 pub mod mapping_health;
 pub mod metrics;

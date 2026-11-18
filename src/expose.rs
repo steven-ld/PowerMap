@@ -22,11 +22,35 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
+use crate::inbound::InboundRegistry;
 use crate::metrics::Metrics;
 use crate::{config, proto, relay_runtime, tunnel};
 
 /// 对端建立流后必须在此时限内发出握手头，否则丢弃该流。
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// 描述一条刚接受的连接：选定路径的类型、远端地址与 RTT。
+/// 只在 accept 循环里同步读取一次，连接建立后路径可能切换，管理页的值是“接入时”的快照。
+fn describe_incoming(connection: &Connection) -> (Option<String>, String, Option<u64>) {
+    let paths = connection.paths();
+    let Some(path) = paths.iter().find(|path| path.is_selected()) else {
+        return (None, "unknown".to_owned(), None);
+    };
+    let rtt_ms = Some((path.rtt().as_secs_f64() * 1000.0).round() as u64);
+    let remote_addr = match path.remote_addr() {
+        iroh::TransportAddr::Ip(addr) => Some(addr.to_string()),
+        iroh::TransportAddr::Relay(url) => url.host_str().map(|host| host.to_owned()),
+        _ => None,
+    };
+    let kind = if path.is_ip() {
+        "direct"
+    } else if path.is_relay() {
+        "relay"
+    } else {
+        "unknown"
+    };
+    (remote_addr, kind.to_owned(), rtt_ms)
+}
 
 fn resolve_identity(config_path: &Path, identity: &str) -> PathBuf {
     let p = PathBuf::from(identity);
@@ -110,6 +134,8 @@ struct TunnelHandler {
     /// 客户 id → 该客户的反向监听列表。A 端注册连接后，B 为对应客户在内网起这些监听，
     /// 每个内网连接经隧道交给 A 拨其一侧目标。空表示该客户无反向监听。
     reverse: Arc<std::collections::HashMap<String, Vec<config::ReverseListen>>>,
+    /// 入站连接登记表：让管理页能回答「谁连到了本机」。
+    inbound: Arc<InboundRegistry>,
 }
 
 impl std::fmt::Debug for TunnelHandler {
@@ -121,6 +147,12 @@ impl std::fmt::Debug for TunnelHandler {
 impl ProtocolHandler for TunnelHandler {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let peer = connection.remote_id().to_string();
+        // 接入即登记：即使后续没有一条隧道被放行，管理页也能看到「谁连上了本机」。
+        let (remote_addr, path, rtt_ms) = describe_incoming(&connection);
+        let record = self
+            .inbound
+            .open(peer.clone(), remote_addr, path, rtt_ms)
+            .await;
         // 每连接一把信号量，限制该连接上的并发隧道数（0 = 不限）。
         let sem = (self.max_streams_per_conn > 0)
             .then(|| Arc::new(Semaphore::new(self.max_streams_per_conn)));
@@ -151,16 +183,23 @@ impl ProtocolHandler for TunnelHandler {
 
                     // register 流：认证 token，为该客户在内网启动反向监听（仅首个 register 生效）。
                     if req.register {
-                        self.handle_register(
-                            &connection,
-                            &peer,
-                            &mut send,
-                            &req,
-                            &reverse_cancel,
-                            &registered,
-                        )
-                        .await;
+                        let ctx = RegisterCtx {
+                            connection: &connection,
+                            peer: &peer,
+                            cancel: &reverse_cancel,
+                            registered: &registered,
+                            record: &record,
+                        };
+                        self.handle_register(ctx, &mut send, &req).await;
                         continue;
+                    }
+
+                    // 先把客户 id 记到连接上：即使 serve_forward 随后因策略拒绝，
+                    // 管理页也能看出是谁在连，而不是一片未知 node。
+                    if let Some(client) = self.registry.authenticate(&req.token) {
+                        record.authenticate(&client.id).await;
+                    } else {
+                        record.denied().await;
                     }
 
                     // 超过单连接并发上限：直接丢弃这条流（不 spawn），并计数。
@@ -169,6 +208,7 @@ impl ProtocolHandler for TunnelHandler {
                             Ok(p) => Some(p),
                             Err(_) => {
                                 Metrics::inc(&self.metrics.over_limit);
+                                record.denied().await;
                                 drop((send, recv));
                                 continue;
                             }
@@ -182,21 +222,34 @@ impl ProtocolHandler for TunnelHandler {
                         dial_timeout: self.dial_timeout,
                         peer: peer.clone(),
                     });
+                    record.tunnel_started().await;
+                    let tunnel_record = record.clone();
                     tokio::spawn(async move {
                         let _permit = permit; // 持有至隧道结束
                         if let Err(e) = tunnel::serve_forward(send, recv, req, &ctx).await {
                             tracing::warn!(error = %e, "隧道流结束");
                         }
+                        tunnel_record.tunnel_finished().await;
                     });
                 }
                 // 连接关闭：本连接上的流由各自任务处理完后自然退出；反向监听随之关闭。
                 Err(_) => {
                     reverse_cancel.cancel();
+                    record.close().await;
                     return Ok(());
                 }
             }
         }
     }
+}
+
+/// 一条连接上处理 register 流需要的上下文，集中传递避免参数列表继续膨胀。
+struct RegisterCtx<'a> {
+    connection: &'a Connection,
+    peer: &'a str,
+    cancel: &'a tokio_util::sync::CancellationToken,
+    registered: &'a AtomicBool,
+    record: &'a crate::inbound::InboundHandle,
 }
 
 impl TunnelHandler {
@@ -205,22 +258,28 @@ impl TunnelHandler {
     /// register 流保持打开作为存活信号——回一个状态码后即返回，流的关闭由连接生命周期决定。
     async fn handle_register(
         &self,
-        connection: &Connection,
-        peer: &str,
+        ctx: RegisterCtx<'_>,
         send: &mut iroh::endpoint::SendStream,
         req: &proto::OpenRequest,
-        cancel: &tokio_util::sync::CancellationToken,
-        registered: &AtomicBool,
     ) {
+        let RegisterCtx {
+            connection,
+            peer,
+            cancel,
+            registered,
+            record,
+        } = ctx;
         let client = match self.registry.authenticate(&req.token) {
             Some(c) => c,
             None => {
                 Metrics::inc(&self.metrics.handshake_denied);
+                record.denied().await;
                 let _ = proto::write_status(send, proto::STATUS_ERR, "bad token").await;
                 tracing::warn!(%peer, "register 流 token 无效，拒绝");
                 return;
             }
         };
+        record.authenticate(&client.id).await;
         let listens = self.reverse.get(&client.id).cloned().unwrap_or_default();
         if listens.is_empty() {
             let _ = proto::write_status(send, proto::STATUS_ERR, "no reverse listeners").await;
@@ -251,6 +310,7 @@ impl TunnelHandler {
             }
         }
         let _ = proto::write_status(send, proto::STATUS_OK, "").await;
+        record.registered().await;
         tracing::info!(client = %client.id, %peer, count = bound.len(), "已接受反向注册，启动内网反向监听");
         for (listener, listen) in bound {
             let conn = connection.clone();
@@ -344,6 +404,7 @@ pub async fn run(
     relay: config::RelaySettings,
     config_path: PathBuf,
     online_timeout: u64,
+    inbound: Arc<InboundRegistry>,
     cancel: CancellationToken,
 ) -> Result<()> {
     cfg.validate().map_err(anyhow::Error::msg)?;
@@ -503,6 +564,7 @@ pub async fn run(
         dial_timeout,
         max_streams_per_conn: cfg.max_streams_per_conn,
         reverse,
+        inbound,
     };
     let router = Router::builder(endpoint)
         .accept(proto::ALPN, handler)
@@ -522,8 +584,16 @@ mod integration_tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
-    async fn start_server(allow_ports: Vec<u16>) -> (Router, iroh::EndpointAddr, Arc<Metrics>) {
+    async fn start_server(
+        allow_ports: Vec<u16>,
+    ) -> (
+        Router,
+        iroh::EndpointAddr,
+        Arc<Metrics>,
+        Arc<InboundRegistry>,
+    ) {
         let metrics = Metrics::new();
+        let inbound = InboundRegistry::new();
         let registry = Arc::new(tunnel::ClientRegistry::from_configs(&[
             config::ClientCred {
                 id: "test-client".into(),
@@ -543,13 +613,14 @@ mod integration_tests {
             dial_timeout: Duration::from_secs(2),
             max_streams_per_conn: 0,
             reverse: Arc::new(std::collections::HashMap::new()),
+            inbound: inbound.clone(),
         };
         let endpoint = Endpoint::builder(presets::N0).bind().await.unwrap();
         let addr = endpoint.addr();
         let router = Router::builder(endpoint)
             .accept(proto::ALPN, handler)
             .spawn();
-        (router, addr, metrics)
+        (router, addr, metrics, inbound)
     }
 
     async fn connect(addr: iroh::EndpointAddr) -> (Endpoint, Connection) {
@@ -575,7 +646,7 @@ mod integration_tests {
             socket.shutdown().await.unwrap();
         });
 
-        let (router, server_addr, _) = start_server(vec![target_addr.port()]).await;
+        let (router, server_addr, _, _) = start_server(vec![target_addr.port()]).await;
         let (client_endpoint, connection) = connect(server_addr).await;
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
         proto::write_open(
@@ -609,7 +680,7 @@ mod integration_tests {
 
     #[tokio::test]
     async fn iroh_tunnel_rejects_a_target_port_outside_the_server_allowlist() {
-        let (router, server_addr, metrics) = start_server(vec![443]).await;
+        let (router, server_addr, metrics, _) = start_server(vec![443]).await;
         let (client_endpoint, connection) = connect(server_addr).await;
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
         proto::write_open(
@@ -642,7 +713,7 @@ mod integration_tests {
     async fn normal_loopback_target_requires_explicit_acknowledgement() {
         let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let target_addr = target.local_addr().unwrap();
-        let (router, server_addr, _) = start_server(vec![target_addr.port()]).await;
+        let (router, server_addr, _, _) = start_server(vec![target_addr.port()]).await;
         let (client_endpoint, connection) = connect(server_addr).await;
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
         proto::write_open(
@@ -687,7 +758,7 @@ mod integration_tests {
             target.send_to(b"pong", from).await.unwrap();
         });
 
-        let (router, server_addr, _) = start_server(vec![target_addr.port()]).await;
+        let (router, server_addr, _, _) = start_server(vec![target_addr.port()]).await;
         let (client_endpoint, connection) = connect(server_addr).await;
         let (mut send, mut recv) = connection.open_bi().await.unwrap();
         proto::write_open(
@@ -718,6 +789,43 @@ mod integration_tests {
 
         echo.await.unwrap();
         connection.close(0u8.into(), b"test complete");
+        client_endpoint.close().await;
+        router.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn inbound_registry_records_who_connected_and_forgets_it_on_close() {
+        let (router, server_addr, _, inbound) = start_server(vec![443]).await;
+        let (client_endpoint, connection) = connect(server_addr).await;
+        let client_id = client_endpoint.id().to_string();
+
+        // 连接被 accept 后即出现在登记表里；节点 id 就是入站对端的公钥。
+        let view = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Some(view) = inbound
+                    .snapshot()
+                    .await
+                    .into_iter()
+                    .find(|view| view.node_id == client_id)
+                {
+                    return view;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("accepted connection should be registered");
+        assert!(view.path == "direct" || view.path == "relay" || view.path == "unknown");
+
+        connection.close(0u8.into(), b"test complete");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !inbound.is_empty().await {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("closed connection should leave the registry");
+
         client_endpoint.close().await;
         router.shutdown().await.unwrap();
     }

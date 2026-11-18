@@ -278,9 +278,66 @@
   .node-table-head { display: flex; align-items: center; justify-content: space-between; gap: .75rem; margin-bottom: .65rem; }
   .node-table-title { font-size: .875rem; font-weight: 700; }
   .node-table-copy { margin: 0; color: var(--muted-foreground); font-size: .8125rem; line-height: 1.45; }
+  /* 入站连接：谁连到了本机。与「出站节点」表互为另一半，同样按行展示。 */
+  .inbound-list { list-style: none; margin: .7rem 0 0; padding: 0; display: flex; flex-direction: column; gap: .45rem; }
+  .inbound-row { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; padding: .55rem .7rem; border: 1px solid var(--border); border-radius: .55rem; background: var(--card); }
+  .inbound-row .inbound-id { font: 500 .78rem/1.2 var(--font-mono); color: var(--foreground); }
+  .inbound-row .inbound-meta { color: var(--muted-foreground); font-size: .75rem; }
+  .inbound-empty { margin-top: .7rem; padding: .8rem; border: 1px dashed var(--border); border-radius: .55rem; color: var(--muted-foreground); font-size: .8125rem; }
   .connection-peers { display: flex; flex-wrap: wrap; align-items: center; gap: .45rem; margin-top: .7rem; color: var(--muted-foreground); font-size: .78rem; }
   .connection-peer-label { font-weight: 600; }
   .connection-peer-ip { padding: .28rem .48rem; border: 1px solid var(--border); border-radius: .35rem; background: var(--muted); color: var(--foreground); font: .75rem/1 var(--font-mono); }
+  /* 连接明细：按节点给出在线状态、路径与保持时长，替代笼统的“正在连接”。 */
+  .connection-peer { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .3rem; padding: .25rem .5rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--card); color: var(--foreground); }
+  .connection-peer .state { color: var(--muted-foreground); }
+  .connection-peer.is-offline .state { color: var(--warning); }
+  .connection-peer .path-chip { height: 1.2rem; padding: 0 .38rem; font-size: .68rem; }
+  .connection-peer small { color: var(--muted-foreground); font: 500 .7rem/1 var(--font-mono); }
+  .connection-peer-more { color: var(--muted-foreground); }
+  .connection-peer-ips { display: inline-flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin-left: .25rem; padding-left: .75rem; border-left: 1px solid var(--border); }
+  /* 节点连接条：横向铺开，避免把连接状态卡撑高、挤空旁边的指标卡。 */
+  .peer-conn-strip { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; margin: -.125rem 0 1.5rem; padding: .7rem 1rem; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--card); }
+  .peer-conn-strip-head { color: var(--muted-foreground); font: 600 .72rem/1 var(--font-mono); letter-spacing: .05em; text-transform: uppercase; }
+  .peer-conn-strip .connection-peers { margin: 0; }
+  /* 节点表格的连接列：状态点 + 文字 + 路径徽标，窄屏下可换行。 */
+  .peer-conn { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; }
+  .peer-conn .state { font-size: .8rem; white-space: nowrap; }
+  .peer-conn small { color: var(--muted-foreground); font: 500 .72rem/1.2 var(--font-mono); }
+  .peer-conn .path-chip { height: 1.2rem; padding: 0 .4rem; font-size: .68rem; }
+  .peer-conn-empty { color: var(--muted-foreground); }
+  /* 变更反馈：请求期间标出“处理中”，落定后闪一次背景。 */
+  tr.is-pending { opacity: .65; }
+  tr.is-pending td .btn-row { pointer-events: none; }
+  .pending-dot { display: inline-block; width: .5rem; height: .5rem; margin-right: .3rem; border: 2px solid currentColor; border-top-color: transparent; border-radius: 50%; vertical-align: 0; }
+  /* 处理中状态自带旋转指示，去掉 domain-state 的静态圆点避免出现两个点。 */
+  .domain-state.pending { color: var(--muted-foreground); }
+  .domain-state.pending::before { display: none; }
+  @media (prefers-reduced-motion: no-preference) {
+    .pending-dot { animation: pm-spin .7s linear infinite; }
+    tr.row-flash-ok { animation: pm-flash-ok 1.2s ease-out; }
+    tr.row-flash-err { animation: pm-flash-err 1.2s ease-out; }
+    @keyframes pm-spin { to { transform: rotate(360deg); } }
+    @keyframes pm-flash-ok { from { background: color-mix(in oklab, var(--success) 18%, transparent); } to { background: transparent; } }
+    @keyframes pm-flash-err { from { background: color-mix(in oklab, var(--destructive) 18%, transparent); } to { background: transparent; } }
+  }
+  /* 对端表单：次要字段折叠，减少首次添加时的字段墙。 */
+  .peer-advanced { margin-top: .25rem; border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--muted); }
+  .peer-advanced > summary { display: flex; align-items: center; gap: .4rem; padding: .7rem .85rem; font-size: .82rem; font-weight: 700; color: var(--foreground); cursor: pointer; list-style: none; }
+  .peer-advanced > summary::-webkit-details-marker { display: none; }
+  .peer-advanced > summary::after { content: "展开"; flex: none; margin-left: auto; white-space: nowrap; color: var(--muted-foreground); font: 500 .74rem/1 var(--font-sans); }
+  .peer-advanced[open] > summary::after { content: "收起"; }
+  .peer-advanced > summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; border-radius: var(--radius-md); }
+  .peer-advanced-body { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; padding: 0 .85rem .85rem; }
+  .peer-advanced-body > .relay-force-option { grid-column: 1 / -1; }
+  @media (max-width: 720px) { .peer-advanced-body { grid-template-columns: 1fr; } }
+  /* 反向策略摘要：一眼看清当前是关闭还是放行了多少网段/端口。 */
+  .reverse-summary { margin: .15rem 0 .85rem; padding: .55rem .7rem; border-left: 3px solid var(--border); border-radius: .35rem; background: var(--muted); }
+  .reverse-summary.is-on { border-left-color: var(--warning); }
+  .reverse-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: center; gap: .75rem; }
+  .form-dirty { display: inline-flex; align-items: center; gap: .3rem; font: 600 .76rem/1 var(--font-sans); color: var(--warning); }
+  /* 配置文件路径可点击复制：虚线底标出可点，悬停变主色。 */
+  .about-path { cursor: copy; overflow-wrap: anywhere; text-decoration: underline dotted color-mix(in srgb, var(--muted-foreground) 55%, transparent); text-underline-offset: .22em; }
+  .about-path:hover { color: var(--primary); text-decoration-color: var(--primary); }
   .node-tabs { display: inline-flex; gap: .25rem; padding: .25rem; margin-bottom: 1rem; border: 1px solid var(--border); border-radius: .5rem; background: var(--muted); }
   .node-tab { min-height: 2.25rem; padding: 0 .75rem; border: 0; border-radius: .3rem; background: transparent; color: var(--muted-foreground); font: 700 .78rem/1 var(--font-sans); cursor: pointer; }
   .node-tab[aria-selected="true"] { background: var(--card); color: var(--foreground); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
@@ -439,8 +496,11 @@
   td.status { color: var(--success); font-size: .9rem; }
   td.status.listening, td.status.unknown { color: var(--muted-foreground); }
   td.status.degraded, td.status.stopped { color: var(--destructive); }
-  td.status.disabled { color: var(--muted-foreground); }
+  td.status.disabled, td.status.pending { color: var(--muted-foreground); }
   td.status::before { content: ""; display: inline-block; width: .65rem; height: .65rem; margin-right: .55rem; border-radius: 50%; background: currentColor; }
+  /* 处理中已有旋转指示器，隐藏状态圆点避免两套指示重叠。 */
+  td.status.pending::before { display: none; }
+  td.status.pending .status-detail { margin-left: 0; }
   td.status.disabled::before { background: transparent; border: 1.5px solid var(--muted-foreground); }
   td.status .status-line { display: inline-flex; align-items: center; gap: .35rem; }
   .conn-expand {
@@ -456,7 +516,9 @@
   tr.is-disabled td.target, tr.is-disabled td.num { opacity: .5; }
   /* 行内操作较多：允许换行，避免按钮在表格右侧被裁掉。 */
   td.act { min-width: 12rem; }
-  td.act .btn-row { flex-wrap: wrap; white-space: normal; row-gap: .35rem; }
+  /* 操作按钮保持单行：换行会把每行撑到三倍高，且挤压状态列。窄屏由下方
+     卡片式布局接管，桌面端的溢出交给 .table-wrap 横向滚动。 */
+  td.act .btn-row { flex-wrap: nowrap; white-space: nowrap; row-gap: .35rem; }
   .btn-del { height: 2rem; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: .5rem; background: var(--card); }
   .btn-del:hover { color: var(--destructive-foreground); }
   .app-footer { display: none; }
@@ -497,7 +559,7 @@
   }
   .stat-card {
     background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-lg);
-    padding: 0.875rem 1rem; display: flex; flex-direction: column; justify-content: space-between; gap: 0.625rem; min-width: 0;
+    padding: 0.875rem 1rem; display: flex; flex-direction: column; justify-content: flex-start; gap: 0.625rem; min-width: 0;
   }
   .stat-card-title { color: var(--muted-foreground); font-size: 0.75rem; font-weight: 500; line-height: 1.2; min-height: 1rem; }
   .stat-body { display: flex; align-items: flex-start; justify-content: space-between; gap: 0.5rem; }
@@ -534,6 +596,8 @@
   .port-suggestions-label { color: var(--muted-foreground); font: 600 .72rem/1 var(--font-mono); }
   @media (max-width: 900px) { .dashboard-monitor { display: grid; gap: 1rem; } .dashboard-monitor-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } .dashboard-refresh { padding: 1rem 0 0; border-top: 1px solid var(--border); border-left: 0; } .mapping-health { align-items: flex-start; flex-direction: column; } }
   @media (max-width: 560px) { .dashboard-monitor-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } .dashboard-monitor .sidebar-metric:nth-child(2) { border-right: 0; } .dashboard-monitor .sidebar-metric { padding-right: 0; border-right: 0; } .dashboard-refresh { display: grid; grid-template-columns: 1fr auto; } }
+  /* 两列卡片每张只有 ~150px：60px 的趋势图会把正文挤成一列窄条，手机上先让位给数字。 */
+  @media (max-width: 560px) { .stats-grid .stat-spark { display: none; } }
   .ops-item { display: inline-flex; align-items: baseline; gap: 0.4rem; font: 500 0.8rem/1.3 var(--font-sans); color: var(--muted-foreground); }
   .ops-item b { font: 700 0.95rem/1 var(--font-mono); color: var(--foreground); font-feature-settings: "tnum"; }
   .ops-item.warn b { color: var(--destructive); }
@@ -695,7 +759,7 @@
   }
 
   /* ── 反向映射启用开关 ── */
-  .reverse-toggle { display: inline-flex; align-items: center; gap: 0.4rem; font: 500 0.8125rem/1 var(--font-sans); color: var(--foreground); cursor: pointer; user-select: none; }
+  .reverse-toggle { display: inline-flex; align-items: center; gap: 0.4rem; flex: none; white-space: nowrap; font: 500 0.8125rem/1 var(--font-sans); color: var(--foreground); cursor: pointer; user-select: none; }
   .reverse-toggle input { accent-color: var(--primary); margin: 0; }
 
   /* ── 数据表 ── */
@@ -939,6 +1003,12 @@
   @media (prefers-reduced-motion: reduce) {
     .toast { transition: none; opacity: 1; transform: none; }
   }
+  /* 窄屏上卡片会把操作按钮铺到页面底部，气泡贴底会盖住刚点的那排按钮：
+     改为从顶部滑入，落在页头下方。 */
+  @media (max-width: 720px) {
+    .toast-stack { top: 4.25rem; bottom: auto; left: 1rem; right: 1rem; max-width: none; }
+    .toast { width: 100%; }
+  }
 
   /* ── Modal（内联确认 / 输入）── */
   .modal-backdrop {
@@ -1064,6 +1134,33 @@
     }
     #tabDomains td.domain-error-none { display: none; }
     #tabDomains .domain-error { max-width: 100%; min-width: 0; overflow-wrap: anywhere; white-space: normal; }
+
+    /* 卡片头在窄屏改成纵向排列后，居中会让标题和开关左右各缩一半：
+       改为撑满整行，标题与控件都贴左。 */
+    .card-header { align-items: stretch; gap: .5rem; }
+
+    /* 节点列表同样卡片化：连接、凭证、中继带行首标签，操作独占一行。 */
+    #tabPeers .table-wrap { overflow: visible; border: 0; border-radius: 0; background: transparent; }
+    #tabPeers table, #tabPeers thead, #tabPeers tbody, #tabPeers tr, #tabPeers td { display: block; width: 100%; min-width: 0; }
+    #tabPeers thead { display: none; }
+    #tabPeers tbody tr {
+      margin-bottom: .65rem; padding: .9rem 1rem;
+      border: 1px solid var(--border); border-radius: .8rem; background: var(--card);
+    }
+    #tabPeers tbody tr:last-child { margin-bottom: 0; }
+    #tabPeers tbody tr:hover td { background: transparent; }
+    #tabPeers tbody td { padding: 0; border: 0; }
+    #tabPeers td + td { margin-top: .4rem; }
+    #tabPeers td[data-label] { display: flex; align-items: center; gap: .3rem; min-width: 0; }
+    #tabPeers td[data-label]::before {
+      content: attr(data-label); flex: none; min-width: 2.6rem;
+      color: var(--muted-foreground); font: 500 .72rem/1.5 var(--font-mono);
+    }
+    #tabPeers td.act {
+      margin-top: .75rem; padding-top: .65rem;
+      border-top: 1px solid var(--border); text-align: left; white-space: normal;
+    }
+    #tabPeers td.act .btn-row { justify-content: flex-start; flex-wrap: wrap; }
   }
 </style>
 </head>
@@ -1104,7 +1201,7 @@
       <div class="stat-card">
         <div class="stat-card-title">连接状态</div>
         <div class="stat-body">
-          <div class="stat-main"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div><div id="mPeerList" class="connection-peers hidden"></div><div class="stat-uptime" id="mUptime" title="当前连接已保持时长"></div></div>
+          <div class="stat-main"><div class="stat-value"><span id="mStateDot" class="status-dot" style="width:10px;height:10px"></span><span id="mState">—</span><span id="mPathChip" class="path-chip" style="display:none"></span></div><div class="stat-uptime" id="mUptime" title="当前连接已保持时长"></div></div>
           <canvas class="stat-spark" id="mRttSpark" width="120" height="72" title="往返延迟趋势" aria-hidden="true" style="display:none"></canvas>
         </div>
       </div>
@@ -1127,6 +1224,11 @@
         </div>
       </div>
     </div>
+    <!-- 节点连接条：多节点时逐条显示在线状态、路径与保持时长 -->
+    <section id="peerConnStrip" class="peer-conn-strip hidden" aria-label="节点连接状态" aria-live="polite">
+      <span class="peer-conn-strip-head">节点</span>
+      <span id="mPeerList" class="connection-peers"></span>
+    </section>
     <!-- 运行指标条 -->
     <div class="ops-strip" id="opsStrip" aria-label="运行指标">
       <span class="ops-item">活跃隧道 <b id="opsActive">0</b></span>
@@ -1285,19 +1387,28 @@
             <div class="field"><label class="lbl" for="peerNodeId">node_id（可选）</label><input id="peerNodeId" name="node_id" class="mono" placeholder="粘贴对方提供的 node_id" autocomplete="off" spellcheck="false" /></div>
             <div class="field"><label class="lbl" for="peerToken">token（可选）</label><input id="peerToken" name="token" class="mono" placeholder="粘贴对方提供的 token" autocomplete="off" spellcheck="false" /></div>
             <div class="field peer-relays"><label class="lbl" for="peerCredentialJson">凭证 JSON（可选）</label><textarea id="peerCredentialJson" name="credential_json" class="mono" rows="3" placeholder='粘贴 {"node_id":"...","token":"..."}' autocomplete="off" spellcheck="false"></textarea><small class="peer-mapping-label">粘贴完整凭证后会填入 node_id、token、已发布目标和该节点的中继设置；节点名称仍需单独填写。</small></div>
-            <div class="field peer-relays"><label class="lbl" for="peerTargets">已发布目标（可选）</label><input id="peerTargets" name="published_targets" class="mono" placeholder="每项 host:port，以逗号分隔，例如 10.0.0.8:5432, redis.internal:6379" autocomplete="off" spellcheck="false" /></div>
-            <div class="field peer-relays"><label class="lbl" for="peerRelays">专用中继（可选）</label><textarea id="peerRelays" name="relay_entries" class="mono" rows="3" placeholder="每行：https://relay.example.com:18443 [可选 token]"></textarea><small class="peer-mapping-label">每行一条中继，URL 后可用空格填写该条中继的 token。留空时使用默认中继策略。</small></div>
           </div>
-          <label class="share-relay-option relay-force-option" for="peerForceRelay"><input id="peerForceRelay" name="force_relay" type="checkbox" /><span><strong>此节点强制经中继</strong><small>关闭该节点的 P2P 直连。该节点的 Endpoint 重建后生效。</small></span></label>
+          <details class="peer-advanced">
+            <summary>高级设置：已发布目标、专用中继与强制中继</summary>
+            <div class="peer-advanced-body">
+              <div class="field"><label class="lbl" for="peerTargets">已发布目标（可选）</label><input id="peerTargets" name="published_targets" class="mono" placeholder="每项 host:port，以逗号分隔，例如 10.0.0.8:5432, redis.internal:6379" autocomplete="off" spellcheck="false" /></div>
+              <div class="field"><label class="lbl" for="peerRelays">专用中继（可选）</label><textarea id="peerRelays" name="relay_entries" class="mono" rows="3" placeholder="每行：https://relay.example.com:18443 [可选 token]"></textarea><small class="peer-mapping-label">每行一条中继，URL 后可用空格填写该条中继的 token。留空时使用默认中继策略。</small></div>
+              <label class="share-relay-option relay-force-option" for="peerForceRelay"><input id="peerForceRelay" name="force_relay" type="checkbox" /><span><strong>此节点强制经中继</strong><small>关闭该节点的 P2P 直连。该节点的 Endpoint 重建后生效。</small></span></label>
+            </div>
+          </details>
           <div class="peer-form-actions"><button id="cancelPeerEditBtn" class="btn btn-outline" type="button" style="display:none">取消</button><button id="savePeerBtn" class="btn btn-primary" type="submit">添加远端节点</button></div>
         </form>
-        <div class="mapping-list-head"><h2>已配置远端节点</h2><span id="peerCount">0 个节点</span></div>
-        <div class="table-wrap"><table><thead><tr><th>节点</th><th>连接凭证</th><th>中继</th><th></th></tr></thead><tbody id="peerRows"></tbody></table><div id="peerEmpty" class="empty"><div class="empty-title">尚未添加远端节点</div><p>先添加一个具名远端节点，再为端口映射或域名映射选择它。</p></div></div>
+        <div class="mapping-list-head"><h2>出站节点（本机主动连接）</h2><span id="peerCount">0 个节点</span></div>
+        <div class="table-wrap"><table><thead><tr><th>节点</th><th>连接</th><th>连接凭证</th><th>中继</th><th></th></tr></thead><tbody id="peerRows"></tbody></table><div id="peerEmpty" class="empty"><div class="empty-title">尚未添加远端节点</div><p>先添加一个具名远端节点，再为端口映射或域名映射选择它。</p></div></div>
         </section>
         <section id="nodeLocalPanel" class="node-panel node-table hidden" role="tabpanel" aria-labelledby="node-tab-local">
           <div class="node-table-head"><span id="ownNodeTitle" class="node-table-title">本机节点</span><button id="copyOwnCredential" class="btn btn-outline btn-sm" type="button" style="display:none">复制分享凭证</button></div>
           <p class="node-table-copy">把本机凭证交给对方，对方即可在自己的“远端节点”中接入。</p>
           <div class="cred-status"><span id="ownNodeBadge" class="badge no">准备中</span><span id="ownNodeId" class="node-id"></span></div>
+          <div class="node-table-head" style="margin-top:1.15rem"><span class="node-table-title">入站连接（谁连了本机）</span><span id="inboundCount" class="mapping-count">—</span></div>
+          <p class="node-table-copy">本机启用 expose 后，持有凭证的远端会主动连过来使用已发布目标或注册反向映射。这里只列出当前在线的连接，断开即消失。</p>
+          <ul id="inboundList" class="inbound-list" aria-live="polite"></ul>
+          <div id="inboundEmpty" class="inbound-empty">正在读取入站连接…</div>
         </section>
         <span id="ioMsg" role="status" aria-live="polite"></span>
       </div>
@@ -1312,12 +1423,13 @@
           这会让持有 server 的一方触达你这台机器上的服务，因此<strong>默认全部拒绝</strong>：必须显式填写允许的网段与端口才会放行。
           具体在内网监听哪些地址，由 server 端的 <kbd>reverse</kbd> 配置决定。
         </p>
+        <p id="reverseSummary" class="hint reverse-summary" role="status" aria-live="polite">正在读取当前反向策略…</p>
         <form id="reverseForm">
           <div class="grid cred">
             <div class="field"><label class="lbl" for="revPeer">对端</label><select id="revPeer" name="peer_id"></select></div>
             <div class="field"><label class="lbl" for="revNets">允许回拨网段（CIDR，逗号分隔）</label><input id="revNets" class="mono" placeholder="127.0.0.0/8, 192.168.1.0/24" spellcheck="false" autocomplete="off" autocapitalize="off" /></div>
             <div class="field"><label class="lbl" for="revPorts">允许回拨端口（逗号分隔）</label><input id="revPorts" class="mono" placeholder="8080, 5900" spellcheck="false" autocomplete="off" /></div>
-            <button type="submit" class="btn btn-primary">保存反向策略</button>
+            <div class="reverse-actions"><button type="submit" class="btn btn-primary">保存反向策略</button><span id="reverseDirty" class="form-dirty hidden" role="status">有未保存的修改</span></div>
           </div>
         </form>
       </div>
@@ -1345,6 +1457,7 @@
       <div class="card">
         <div class="card-header"><span class="card-title">运行与诊断</span><button id="downloadDiagnosticReport" class="btn btn-outline btn-sm" type="button">下载诊断报告</button></div>
         <p id="aboutRuntime" class="hint">正在读取运行状态。</p>
+        <p id="aboutConfigPath" class="hint about-path mono" title="点击复制配置文件路径"></p>
         <p id="aboutDiagnostic" class="hint">正在读取网络诊断。</p>
       </div>
       <div class="card">
@@ -1638,6 +1751,7 @@ function selectTab(name, { refreshPeerList = true } = {}) {
   if (name === 'peers') {
     if (refreshPeerList) refreshPeers();
     refreshOwnNode();
+    refreshInbound();
     refreshReverse();
   }
   if (name === 'about') setTimeout(() => {
@@ -1690,7 +1804,6 @@ window.addEventListener('load', () => {
   setTimeout(keepActiveTabVisible, 300);
 });
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(keepActiveTabVisible);
-selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'dashboard');
 
 // ── 映射编辑器：新建 / 编辑双模式。editMode 为 null 表示新建，否则存原映射 local。 ──
 let editMode = null;
@@ -2067,6 +2180,9 @@ function resetPeerForm() {
   document.getElementById('peerEditorTitle').textContent = '添加远端节点';
   document.getElementById('savePeerBtn').textContent = '添加远端节点';
   document.getElementById('cancelPeerEditBtn').style.display = 'none';
+  // 退出编辑时收起高级项，回到“添加”初始态；否则上一个节点展开的折叠区会留着。
+  const advanced = form.querySelector('.peer-advanced');
+  if (advanced) advanced.open = false;
 }
 function editPeer(id) {
   const peer = peers.find(item => item.id === id);
@@ -2083,33 +2199,178 @@ function editPeer(id) {
   delete form.dataset.parsedCredentialJson;
   document.getElementById('peerEditorTitle').textContent = `编辑远端节点：${peer.name}`;
   document.getElementById('savePeerBtn').textContent = '保存远端节点';
+  // 这个节点配过高级项时展开折叠区，否则用户会以为数据丢了。
+  const advanced = form.querySelector('.peer-advanced');
+  if (advanced) advanced.open = Boolean((peer.published_targets || []).length || (peer.relay?.relays || []).length || peer.relay?.force_relay);
   document.getElementById('cancelPeerEditBtn').style.display = '';
   form.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   form.elements.name.focus();
 }
-function renderPeers(list) {
+// ── 节点连接质量：/api/peers 与 /api/status 都带会话信息，合并后按节点绘制。 ──
+// 之前只显示“已连接”，多节点时看不出是哪一个在线、走直连还是中继。
+let peerConn = new Map();      // peer id → { name, connected, path, rtt_ms, relay, connected_since, restart_required, mapping_count }
+let lastStatus = null;         // 最近一次 /api/status，供节点列表刷新后重算汇总文案
+const pendingPeers = new Set(); // 删除进行中的节点 id
+// 已配置但既没连上、也没有任何映射引用它 —— 属于「空闲」而不是故障。
+// 把它算成未连接会让多节点概览长期显示一个红点，用户会去追一个不存在的故障。
+function peerIsIdle(info) {
+  // mapping_count 为 null 表示这一轮没拿到映射统计（/api/peers 失败或尚未返回），
+  // 此时不能断言“空闲”：Number(null) 是 0，会把真正的未连接误报成正常状态。
+  return Boolean(info && info.configured && !info.connected && info.mapping_count != null && Number(info.mapping_count) === 0);
+}
+function updatePeerConn(list) {
+  const next = new Map();
+  for (const peer of Array.isArray(list) ? list : []) {
+    next.set(peer.id, {
+      name: peer.name || '',
+      configured: Boolean(peer.node_id),
+      connected: Boolean(peer.connected),
+      restart_required: Boolean(peer.restart_required),
+      path: peer.path || null,
+      rtt_ms: Number.isFinite(peer.rtt_ms) ? peer.rtt_ms : null,
+      relay: peer.relay || null,
+      connected_since: peer.connected_since || null,
+      mapping_count: peer.mapping_count == null ? null : Number(peer.mapping_count),
+    });
+  }
+  peerConn = next;
+}
+function applyStatusPeers(list) {
+  // /api/status 的 peers 是同一份连接数据的另一个视图：用它刷新在线状态，
+  // 即使 /api/peers 这一轮失败，概览与侧栏也能显示正确的节点数。
+  if (!Array.isArray(list)) return;
+  for (const peer of list) {
+    const prior = peerConn.get(peer.id) || {};
+    peerConn.set(peer.id, {
+      name: peer.name || prior.name || '',
+      configured: peer.configured !== false,
+      connected: Boolean(peer.connected),
+      restart_required: peer.restart_required ?? prior.restart_required ?? false,
+      path: peer.path || null,
+      rtt_ms: Number.isFinite(peer.rtt_ms) ? peer.rtt_ms : null,
+      relay: peer.relay || null,
+      connected_since: peer.connected_since || null,
+      // /api/status 不带映射数，沿用 /api/peers 的那份，否则“空闲”判定会反复翻转。
+      mapping_count: prior.mapping_count ?? null,
+    });
+  }
+}
+function peerConnSummary() {
+  const configured = [...peerConn.values()].filter(entry => entry.configured);
+  // 空闲节点不计入分母：它们不参与当前流量，把它们算进去会让“已连接 1/3”
+  // 看起来像两个节点掉线了。
+  const active = configured.filter(entry => entry.connected || !peerIsIdle(entry));
+  return {
+    total: active.length,
+    online: configured.filter(entry => entry.connected).length,
+    idle: configured.length - active.length,
+  };
+}
+function peerConnHTML(info) {
+  if (!info) return '<span class="peer-conn-empty">—</span>';
+  if (!info.configured) return '<div class="peer-conn"><span class="status-dot"></span><span class="state">未配置</span></div>';
+  // 首轮 /api/status 到达前，先别把节点断言成“未连接”——那只是一次还没来得及更新的猜测。
+  if (!lastStatus) return '<div class="peer-conn"><span class="status-dot"></span><span class="state">检查中…</span></div>';
+  const idle = peerIsIdle(info);
+  const parts = [
+    `<span class="status-dot ${info.connected ? 'ok' : idle ? '' : 'warn'}"></span>`,
+    `<span class="state">${info.connected ? '已连接' : idle ? '空闲' : '未连接'}</span>`,
+  ];
+  if (info.connected) {
+    const chip = pathChipHTML(info.path, info.rtt_ms, info.relay);
+    if (chip) parts.push(chip);
+    if (info.connected_since) {
+      // data-since 交给 tickDurationSpans 就地刷新：条带签名没变时不重绘，
+      // 但“已保持 9m”不能因此一直停在 9m。
+      parts.push(`<small data-since="${Number(info.connected_since)}">已保持 ${fmtDuration(elapsedSec(info.connected_since))}</small>`);
+    }
+  }
+  if (info.restart_required) {
+    parts.push('<span class="badge no" title="该节点的中继或强制中继策略已修改，重启 PowerMap 后生效">需重启</span>');
+  }
+  return `<div class="peer-conn">${parts.join('')}</div>`;
+}
+function paintPeerConnections() {
+  for (const row of document.querySelectorAll('#peerRows tr[data-peer-id]')) {
+    const cell = row.querySelector('td.peer-link');
+    if (cell) cell.innerHTML = peerConnHTML(peerConn.get(row.dataset.peerId));
+  }
+}
+function connectionLabel(status) {
+  const { total, online, idle } = peerConnSummary();
+  if (!status || !status.configured) return { cls: '', label: '未配置', total, online, idle };
+  if (!status.connected) return { cls: 'warn', label: '未连接', total, online, idle };
+  return { cls: 'ok', label: total > 1 ? `已连接 ${online}/${total}` : '已连接', total, online, idle };
+}
+// 侧栏、页脚与概览状态卡共用同一份汇总，避免三处各算各的。
+function applyConnectionLabel(status) {
+  const { cls, label, total, online, idle } = connectionLabel(status);
+  const dot = document.getElementById('statusDot');
+  const txt = document.getElementById('statusText');
+  const mDot = document.getElementById('mStateDot');
+  const mState = document.getElementById('mState');
+  const fDot = document.getElementById('footerDot');
+  const fTxt = document.getElementById('footerStatus');
+  dot.className = 'status-dot ' + cls;
+  txt.textContent = label;
+  mDot.className = 'status-dot ' + cls;
+  mDot.style.width = mDot.style.height = '10px';
+  mState.textContent = label;
+  fDot.className = 'status-dot ' + cls;
+  fTxt.textContent = label;
+  setConnectionTone(cls);
+  setTabTitle(!status?.configured ? 'idle' : status.connected ? 'ok' : 'warn');
+  const idleNote = idle > 0 ? `，另有 ${idle} 个空闲节点` : '';
+  const detail = total > 0
+    ? (status?.connected ? `${online}/${total} 个使用中的节点在线${idleNote}` : `${total} 个使用中的节点均未连接${idleNote}`)
+    : '';
+  for (const el of [txt, mState, fTxt]) {
+    if (detail) el.title = detail; else el.removeAttribute('title');
+  }
+  return cls;
+}
+function renderPeers(list, { forceRows = false } = {}) {
   peers = Array.isArray(list) ? list.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))) : [];
+  updatePeerConn(peers);
   const rows = document.getElementById('peerRows');
-  rows.replaceChildren();
   document.getElementById('peerCount').textContent = `${peers.length} 个节点`;
   document.getElementById('peerEmpty').style.display = peers.length ? 'none' : 'block';
-  for (const peer of peers) {
-    const relayCount = peer.relay?.relays?.length || 0;
-    const row = document.createElement('tr');
-    row.innerHTML = `<td><div class="peer-table-name"><strong>${esc(peer.name)}</strong><small class="mono">${esc(peer.id)}</small></div></td>` +
-      `<td>${peer.node_id ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'}</td>` +
-      `<td>${relayCount ? `${relayCount} 条专用中继${peer.relay?.force_relay ? ' · 强制' : ''}` : (peer.relay?.force_relay ? '强制中继' : '默认策略')}</td>` +
-      `<td class="act"><span class="btn-row"><button class="btn-quiet peer-edit" type="button" data-peer-id="${esc(peer.id)}">编辑</button><button class="btn-del peer-delete" type="button" data-peer-id="${esc(peer.id)}" data-peer-name="${esc(peer.name)}">删除</button></span></td>`;
-    rows.append(row);
+  // 行里有编辑/删除按钮：轮询期间整表重建会把键盘焦点丢掉，
+  // 用户按两次 Tab 想点“删除”却总被弹回页面顶部。焦点在表内时只跳过重建。
+  const renderRows = forceRows || !rows.contains(document.activeElement);
+  if (renderRows) {
+    rows.replaceChildren();
+    for (const peer of peers) {
+      const relayCount = peer.relay?.relays?.length || 0;
+      const pending = pendingPeers.has(peer.id);
+      const row = document.createElement('tr');
+      row.dataset.peerId = peer.id;
+      if (pending) row.classList.add('is-pending');
+      const mappingNote = Number(peer.mapping_count) > 0
+        ? `<small class="peer-mapping-label">${Number(peer.mapping_count)} 条映射</small>` : '';
+      row.innerHTML = `<td><div class="peer-table-name"><strong>${esc(peer.name)}</strong><small class="mono">${esc(peer.id)}</small>${mappingNote}</div></td>` +
+        `<td class="peer-link" data-label="连接">${peerConnHTML(peerConn.get(peer.id))}</td>` +
+        `<td data-label="凭证">${peer.node_id ? '<span class="badge ok">已配置</span>' : '<span class="badge no">未配置</span>'}</td>` +
+        `<td data-label="中继">${relayCount ? `${relayCount} 条专用中继${peer.relay?.force_relay ? ' · 强制' : ''}` : (peer.relay?.force_relay ? '强制中继' : '默认策略')}</td>` +
+        `<td class="act"><span class="btn-row"><button class="btn-quiet peer-edit" type="button" data-peer-id="${esc(peer.id)}"${pending ? ' disabled' : ''}>编辑</button><button class="btn-del peer-delete" type="button" data-peer-id="${esc(peer.id)}" data-peer-name="${esc(peer.name)}"${pending ? ' disabled' : ''}>${pending ? '处理中…' : '删除'}</button></span></td>`;
+      rows.append(row);
+    }
+  } else {
+    // 只刷新每行的连接单元格，其余（含焦点所在的按钮）原样保留。
+    paintPeerConnections();
   }
   refreshPeerSelects();
+  // 节点列表比状态轮询先到时，用已有的状态重算“已连接 n/m”。
+  if (lastStatus) applyConnectionLabel(lastStatus);
+  // 节点名称可能让上一轮的入站连接对上号：重渲染一次「谁连了本机」。
+  if (lastInboundPayload) renderInbound(lastInboundPayload);
 }
-async function refreshPeers() {
+async function refreshPeers({ forceRows = false } = {}) {
   try {
     const response = await api('/api/peers');
     if (!response.ok) throw new Error((await response.text()) || '读取对端失败');
     const list = await response.json();
-    renderPeers(list);
+    renderPeers(list, { forceRows });
     return peers;
   } catch (error) {
     if (String(error) !== 'Error: unauthorized') console.warn('读取对端失败', error);
@@ -2136,7 +2397,10 @@ document.getElementById('peerForm').addEventListener('submit', async event => {
   } catch (error) { toast(error.message || '对端配置格式错误', 'err'); return; }
   const body = { name, node_id: nodeId, token, published_targets: publishedTargets, relay: { relays, force_relay: form.elements.force_relay.checked } };
   const button = document.getElementById('savePeerBtn');
+  const idleText = button.textContent;
+  const progressText = peerEditId ? '保存中…' : '添加中…';
   button.disabled = true;
+  button.textContent = progressText;
   try {
     const response = await api(peerEditId ? '/api/peers/' + encodeURIComponent(peerEditId) : '/api/peers', {
       method: peerEditId ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
@@ -2144,10 +2408,15 @@ document.getElementById('peerForm').addEventListener('submit', async event => {
     if (!response.ok) { toast((await response.text()) || '保存对端失败', 'err'); return; }
     toast(peerEditId ? `已更新对端 ${name}` : `已添加对端 ${name}`);
     resetPeerForm();
-    await refreshPeers();
+    // 增删改必须重建行：焦点此时在表单按钮上，焦点守卫会让行保持旧内容。
+    await refreshPeers({ forceRows: true });
     refresh(); refreshDomains();
   } catch (error) { toast('保存对端失败', 'err'); }
-  finally { button.disabled = false; }
+  finally {
+    button.disabled = false;
+    // 成功路径里 resetPeerForm 已经改回正常文案，失败时这里还原。
+    if (button.textContent === progressText) button.textContent = idleText;
+  }
 });
 document.getElementById('peerCredentialJson').addEventListener('input', event => {
   const form = document.getElementById('peerForm');
@@ -2160,11 +2429,16 @@ document.getElementById('peerRows').addEventListener('click', async event => {
   if (edit) { editPeer(edit.dataset.peerId); return; }
   const remove = event.target.closest('.peer-delete');
   if (!remove) return;
+  const peerId = remove.dataset.peerId;
+  if (pendingPeers.has(peerId)) return;
   const ok = await confirmModal({ title: '删除对端', danger: true, confirmText: '删除', body: `将删除对端“${remove.dataset.peerName}”。被端口映射、域名映射或反向映射引用时，系统会拒绝删除。确定继续？` });
   if (!ok) return;
+  pendingPeers.add(peerId);
   remove.disabled = true;
+  remove.textContent = '删除中…';
+  remove.closest('tr')?.classList.add('is-pending');
   try {
-    const response = await api('/api/peers/' + encodeURIComponent(remove.dataset.peerId), { method: 'DELETE' });
+    const response = await api('/api/peers/' + encodeURIComponent(peerId), { method: 'DELETE' });
     if (!response.ok) {
       let detail = await response.text();
       try {
@@ -2177,9 +2451,15 @@ document.getElementById('peerRows').addEventListener('click', async event => {
       return;
     }
     toast(`已删除对端 ${remove.dataset.peerName}`);
-    if (peerEditId === remove.dataset.peerId) resetPeerForm();
-    await refreshPeers();
-  } finally { remove.disabled = false; }
+    if (peerEditId === peerId) resetPeerForm();
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') toast('删除对端失败', 'err');
+  } finally {
+    pendingPeers.delete(peerId);
+    // 成功时该行已消失，失败时重绘会把按钮还原成可选状态。
+    // 这里焦点可能还在被删的按钮上，必须强制重建，否则行不会更新。
+    await refreshPeers({ forceRows: true });
+  }
 });
 
 function fmtBytes(n) {
@@ -2209,6 +2489,20 @@ function domainLocalLabel(mapping) {
   if (listener === true) return '本地监听已启动';
   return '等待本地监听';
 }
+// 域名映射的变更反馈：同一套“处理中 + 落定高亮”语义，与端口映射保持一致。
+const pendingDomains = new Set();
+const flashDomains = new Map();
+// 落定高亮只在一定时限内有效：行被搜索过滤掉、或这一轮因为焦点在表格里没有重绘时，
+// 高亮不会被消费；没有时限就会在几十秒后突然闪一下，看起来像是刚发生的变更。
+const FLASH_TTL_MS = 4000;
+function setFlash(map, key, kind) { map.set(key, { kind, at: Date.now() }); }
+function peekFlash(map, key) {
+  const entry = map.get(key);
+  if (!entry) return null;
+  if (Date.now() - entry.at > FLASH_TTL_MS) { map.delete(key); return null; }
+  return entry.kind;
+}
+function clearFlash(map, key) { map.delete(key); }
 function renderDomains(list) {
   const mappings = Array.isArray(list) ? list : [];
   $domainRows.innerHTML = '';
@@ -2219,14 +2513,21 @@ function renderDomains(list) {
     const enabled = mapping.enabled !== false;
     const hasListener = mapping.local_listener === true || (typeof mapping.local_listener === 'string' && mapping.local_listener.trim());
     const status = !enabled ? '已停用' : hasListener ? '监听中' : '等待监听';
+    const pending = pendingDomains.has(domain);
+    const flash = peekFlash(flashDomains, domain);
     const entry = document.createElement('tr');
-    entry.className = enabled ? '' : 'is-disabled';
+    entry.className = [enabled ? '' : 'is-disabled', pending ? 'is-pending' : '', flash ? 'row-flash-' + flash : ''].filter(Boolean).join(' ');
+    const stateCell = pending
+      ? '<span class="domain-state pending"><span class="pending-dot"></span>处理中…</span>'
+      : `<span class="domain-state ${enabled ? 'enabled' : 'disabled'}">${status}</span>`;
+    const lock = pending ? ' disabled' : '';
     entry.innerHTML = `<td><div class="domain-entry"><strong>${esc(domain)}</strong><small>${esc(domainLocalLabel(mapping))} · ${mapping.hosts_managed ? 'hosts 已托管' : 'hosts 未托管'}</small><span class="peer-mapping-label">对端：${esc(peerLabel(mapping.peer_id))}</span></div></td>` +
       `<td class="mono" data-label="远端端口">${Number(mapping.remote_port) || '—'}</td>` +
-      `<td data-label="运行状态"><span class="domain-state ${enabled ? 'enabled' : 'disabled'}">${status}</span></td>` +
+      `<td data-label="运行状态">${stateCell}</td>` +
       `<td data-label="错误"${mapping.last_error ? '' : ' class="domain-error-none"'}>${mapping.last_error ? `<span class="domain-error" title="${esc(mapping.last_error)}">${esc(mapping.last_error)}</span>` : '<span class="domain-error" style="color:var(--muted-foreground)">—</span>'}</td>` +
-      `<td class="act"><span class="btn-row"><button class="btn-quiet domain-toggle" type="button" data-domain="${esc(domain)}" data-enabled="${enabled ? '1' : '0'}">${enabled ? '停用' : '启用'}</button><button class="btn-del domain-delete" type="button" data-domain="${esc(domain)}">删除</button></span></td>`;
+      `<td class="act"><span class="btn-row"><button class="btn-quiet domain-toggle" type="button" data-domain="${esc(domain)}" data-enabled="${enabled ? '1' : '0'}"${lock}>${pending ? '处理中…' : (enabled ? '停用' : '启用')}</button><button class="btn-del domain-delete" type="button" data-domain="${esc(domain)}"${lock}>${pending ? '处理中…' : '删除'}</button></span></td>`;
     $domainRows.appendChild(entry);
+    if (flash) clearFlash(flashDomains, domain);
   }
 }
 async function refreshDomains() {
@@ -2271,20 +2572,34 @@ $domainRows.addEventListener('click', async (e) => {
   const button = toggle || remove;
   if (!button) return;
   const domain = button.dataset.domain;
+  if (pendingDomains.has(domain)) return;
   if (remove) {
     const ok = await confirmModal({ title: '删除域名映射', danger: true, confirmText: '删除', body: `将删除 ${domain} 的本地 hosts 与监听配置。此操作可能需要管理员权限。确定继续？` });
     if (!ok) return;
   }
+  const wasEnabled = button.dataset.enabled === '1';
+  pendingDomains.add(domain);
   button.disabled = true;
+  button.textContent = '处理中…';
+  button.closest('tr')?.classList.add('is-pending');
   try {
     const response = remove
       ? await api('/api/domain-mappings/' + encodeURIComponent(domain), { method: 'DELETE' })
       : await api('/api/domain-mappings/' + encodeURIComponent(domain) + '/toggle', { method: 'POST' });
-    if (!response.ok) { toast(await errorText(response, remove ? '删除失败' : '切换失败'), 'err'); return; }
-    toast(remove ? `已删除 ${domain}` : (button.dataset.enabled === '1' ? `已停用 ${domain}` : `已启用 ${domain}`));
+    if (!response.ok) {
+      toast(await errorText(response, remove ? '删除失败' : '切换失败'), 'err');
+      setFlash(flashDomains, domain, 'err');
+      return;
+    }
+    toast(remove ? `已删除 ${domain}` : (wasEnabled ? `已停用 ${domain}` : `已启用 ${domain}`));
+    if (!remove) setFlash(flashDomains, domain, 'ok');
+  } catch (err) {
+    if (String(err) !== 'Error: unauthorized') toast(remove ? '删除失败' : '切换失败', 'err');
+    setFlash(flashDomains, domain, 'err');
+  } finally {
+    pendingDomains.delete(domain);
     refreshDomains();
-  } catch (err) { if (String(err) !== 'Error: unauthorized') toast(remove ? '删除失败' : '切换失败', 'err'); }
-  finally { button.disabled = false; }
+  }
 });
 function mappingState(s) {
   // /api/stats 尚未返回这条映射（启动竞态或旧服务端）时，不要误报为“监听已停止”。
@@ -2506,6 +2821,97 @@ async function refreshOwnNode() {
     document.getElementById('copyOwnCredential').style.display = ownCredential ? '' : 'none';
   } catch (e) { if (String(e) === 'Error: unauthorized') return; }
 }
+// ── 入站连接（谁连了本机）：与「出站节点」表互为另一半。 ──
+// 数据来自同进程 expose 角色的登记表：只含当前在线的连接，断开即消失。
+let inboundSignature = '';
+let lastInboundPayload = null;
+// 入站的 node_id 若正是本机配置过的远端节点，直接显示它的名字，
+// 这样「我连了它」和「它连了我」在界面上是同一个称呼，不需要对着两串公钥比对。
+function inboundPeerName(view) {
+  const peer = peers.find(item => item.node_id && item.node_id === view.node_id);
+  return peer ? peer.name : '';
+}
+function inboundLabel(view) {
+  const peerName = inboundPeerName(view);
+  if (peerName) return peerName;
+  if (view.client_id) return `客户 ${view.client_id}`;
+  const node = String(view.node_id || '');
+  return node.length > 18 ? `${node.slice(0, 18)}…` : (node || '未知节点');
+}
+async function refreshInbound() {
+  let payload;
+  try {
+    payload = await (await api('/api/inbound')).json();
+  } catch (e) {
+    if (String(e) === 'Error: unauthorized') return;
+    // 读不到时明确报错，而不是让占位文案“正在读取…”无限地留在页面上。
+    // 已经渲染过的行保留：一次请求失败不代表连接真的断了。
+    const list = document.getElementById('inboundList');
+    const empty = document.getElementById('inboundEmpty');
+    if (empty && (!list || !list.children.length)) {
+      empty.style.display = '';
+      empty.textContent = '读取入站连接失败，稍后自动重试。';
+    }
+    return;
+  }
+  lastInboundPayload = payload;
+  renderInbound(payload);
+}
+function renderInbound(payload) {
+  const list = document.getElementById('inboundList');
+  if (!list) return;
+  const enabled = Boolean(payload?.enabled);
+  const connections = Array.isArray(payload?.connections) ? payload.connections : [];
+  const count = document.getElementById('inboundCount');
+  const empty = document.getElementById('inboundEmpty');
+  if (count) count.textContent = enabled ? `${connections.length} 个在线连接` : '未启用';
+  // 与节点条带同理：内容没变就不重绘，避免 aria-live 每两秒念一遍。
+  // 名称匹配结果也要进签名：节点列表晚一轮到达时，行文案需要跟着变。
+  const signature = JSON.stringify([enabled, connections, connections.map(inboundPeerName)]);
+  if (signature === inboundSignature) return;
+  inboundSignature = signature;
+  list.replaceChildren();
+  if (!enabled) {
+    if (empty) { empty.style.display = ''; empty.textContent = '本机未启用 expose 角色，其他节点无法主动连入。'; }
+    return;
+  }
+  if (!connections.length) {
+    if (empty) { empty.style.display = ''; empty.textContent = '当前没有远端连入。'; }
+    return;
+  }
+  if (empty) empty.style.display = 'none';
+  for (const view of connections) {
+    const parts = [
+      '<span class="status-dot ok"></span>',
+      `<span class="inbound-id" title="node_id ${esc(view.node_id)}">${esc(inboundLabel(view))}</span>`,
+      pathChipHTML(view.path, view.rtt_ms, view.path === 'relay' ? view.remote_addr : null),
+    ];
+    // 显示的是配置过的节点名时，补一行客户 id：同一个节点可能有多个客户凭证。
+    if (inboundPeerName(view) && view.client_id) {
+      parts.push(`<span class="inbound-meta">客户 ${esc(view.client_id)}</span>`);
+    }
+    if (Number(view.active_tunnels) > 0) {
+      parts.push(`<span class="inbound-meta">活跃隧道 ${Number(view.active_tunnels)}</span>`);
+    } else if (Number(view.tunnels_opened) > 0) {
+      parts.push(`<span class="inbound-meta">累计隧道 ${Number(view.tunnels_opened)}</span>`);
+    }
+    if (view.registered) parts.push('<span class="badge ok">反向已注册</span>');
+    if (Number(view.tunnels_denied) > 0) {
+      parts.push(`<span class="badge no" title="令牌错误或超过并发上限">拒绝 ${Number(view.tunnels_denied)}</span>`);
+    }
+    if (view.connected_at) {
+      parts.push(`<span class="inbound-meta" data-since="${Number(view.connected_at)}">已保持 ${fmtDuration(elapsedSec(view.connected_at))}</span>`);
+    }
+    // 直连时补上对端地址；中继地址已经在路径徽标的 title 里。
+    if (view.remote_addr && view.path !== 'relay') {
+      parts.push(`<span class="inbound-meta">${esc(view.remote_addr)}</span>`);
+    }
+    const row = document.createElement('li');
+    row.className = 'inbound-row';
+    row.innerHTML = parts.join('');
+    list.append(row);
+  }
+}
 let checkedUpdate = false;
 let updateCommand = '';
 let updateProbeInFlight = false;
@@ -2562,9 +2968,24 @@ async function refreshAboutRuntime() {
       api('/api/diagnostics').then(r => r.json()),
     ]);
     document.getElementById('aboutRuntime').textContent = `PID ${runtime.pid} · ${runtime.supervisor?.kind || 'manual'} · ${runtime.privilege?.level || 'user'}`;
+    // 排查配置问题时第一件事就是找配置文件；直接显示路径并支持点击复制。
+    const configLine = document.getElementById('aboutConfigPath');
+    if (configLine) {
+      const os = runtime.platform?.os || '';
+      const arch = runtime.platform?.architecture || '';
+      const platformLabel = os ? `${os}/${arch}` : '';
+      configLine.textContent = `配置文件 ${runtime.config_path}${platformLabel ? ` · ${platformLabel}` : ''}`;
+      configLine.dataset.path = runtime.config_path || '';
+    }
     document.getElementById('aboutDiagnostic').textContent = diagnostic.recommendation || '当前网络状态正常。';
   } catch { /* 旧版本服务不支持扩展诊断时保持默认文本。 */ }
 }
+document.getElementById('aboutConfigPath').addEventListener('click', async () => {
+  const path = document.getElementById('aboutConfigPath').dataset.path;
+  if (!path) return;
+  const ok = await copyText(path);
+  toast(ok ? '配置文件路径已复制' : '复制失败，请手动选取', ok ? 'ok' : 'err');
+});
 document.getElementById('downloadDiagnosticReport').addEventListener('click', async () => {
   const button = document.getElementById('downloadDiagnosticReport');
   button.disabled = true;
@@ -2611,21 +3032,84 @@ document.getElementById('copyUpdateCommandBtn').addEventListener('click', async 
   const ok = await copyText(updateCommand);
   toast(ok ? '升级命令已复制' : '复制失败，请从发布说明中手动升级', ok ? 'ok' : 'err');
 });
-function renderConnectedPeers(connected, ips) {
+// 逐节点展示连接：哪个节点在线、走直连还是中继、保持了多久。
+// 旧实现只在“已连接”时写一句“正在连接”，多节点时既看不出是谁，也和状态卡自相矛盾。
+// 条带每两秒随轮询重建：签名没变就不动 DOM，避免读屏软件把整段 aria-live 重念一遍。
+let peerStripSignature = '';
+function renderConnectedPeers(status) {
   const list = document.getElementById('mPeerList');
-  const unique = [...new Set(Array.isArray(ips) ? ips.filter(Boolean) : [])];
+  if (!list) return;
+  // 在线的排前面：条带有上限，离线的节点不该把在线节点挤出去。
+  const entries = [...peerConn.entries()]
+    .filter(([, info]) => info.configured)
+    .sort((a, b) => Number(b[1].connected) - Number(a[1].connected));
+  const ips = [...new Set(Array.isArray(status?.connected_ips) ? status.connected_ips.filter(Boolean) : [])];
+  const signature = JSON.stringify([
+    entries.map(([id, info]) => [id, info.name, info.connected, peerIsIdle(info), info.path,
+      info.rtt_ms, info.relay, info.restart_required]),
+    ips,
+  ]);
+  const strip = document.getElementById('peerConnStrip');
+  if (signature === peerStripSignature) {
+    if (strip) strip.classList.toggle('hidden', entries.length === 0);
+    return;
+  }
+  peerStripSignature = signature;
   list.replaceChildren();
-  if (!connected) { list.classList.add('hidden'); return; }
-  list.classList.remove('hidden');
-  const label = document.createElement('span');
-  label.className = 'connection-peer-label';
-  label.textContent = unique.length ? '正在连接' : '正在连接远端节点（经中继）';
-  list.appendChild(label);
-  for (const ip of unique) {
+  if (strip) strip.classList.toggle('hidden', entries.length === 0);
+  if (!entries.length) return;
+  const shown = entries.slice(0, 4);
+  for (const [id, info] of shown) {
+    const idle = peerIsIdle(info);
     const item = document.createElement('span');
-    item.className = 'connection-peer-ip';
-    item.textContent = ip;
-    list.appendChild(item);
+    item.className = 'connection-peer' + (info.connected || idle ? '' : ' is-offline');
+    const dot = document.createElement('span');
+    dot.className = 'status-dot ' + (info.connected ? 'ok' : idle ? '' : 'warn');
+    const name = document.createElement('span');
+    name.textContent = info.name || id;
+    const state = document.createElement('span');
+    state.className = 'state';
+    state.textContent = info.connected ? '在线' : idle ? '空闲' : '未连接';
+    item.append(dot, name, state);
+    if (info.connected && info.path) {
+      const chip = document.createElement('span');
+      // class 只用已知路径值：path 来自对端上报，不能直接当类名拼进去。
+      chip.className = 'path-chip show ' + pathClass(info.path);
+      const rtt = fmtRtt(info.rtt_ms);
+      chip.innerHTML = '<span>' + esc(PATH_LABEL[info.path] || info.path) + (rtt ? ' · ' + esc(rtt) : '') + '</span>';
+      if (info.relay) chip.title = '经中继 ' + info.relay;
+      item.append(chip);
+    }
+    if (info.restart_required) {
+      const badge = document.createElement('span');
+      badge.className = 'badge no';
+      badge.title = '该节点的中继或强制中继策略已修改，重启 PowerMap 后生效';
+      badge.textContent = '需重启';
+      item.append(badge);
+    }
+    list.append(item);
+  }
+  if (entries.length > shown.length) {
+    const more = document.createElement('span');
+    more.className = 'connection-peer-more';
+    more.textContent = `还有 ${entries.length - shown.length} 个节点`;
+    list.append(more);
+  }
+  // 直连时补充对端地址；经中继时没有可展示的公网地址，只保留上面的节点行。
+  if (status?.connected && ips.length) {
+    const wrap = document.createElement('span');
+    wrap.className = 'connection-peer-ips';
+    const label = document.createElement('span');
+    label.className = 'connection-peer-label';
+    label.textContent = '对端地址';
+    wrap.append(label);
+    for (const ip of ips) {
+      const chip = document.createElement('span');
+      chip.className = 'connection-peer-ip';
+      chip.textContent = ip;
+      wrap.append(chip);
+    }
+    list.append(wrap);
   }
 }
 document.getElementById('copyOwnCredential').addEventListener('click', async () => {
@@ -2667,15 +3151,51 @@ function populateReversePeerSelect(selectedId) {
 document.getElementById('revPeer').addEventListener('change', event => {
   reversePeerId = event.currentTarget.value;
 });
-async function refreshReverse() {
+// 反向策略摘要：不用展开表单也能确认当前是“全拒绝”还是放行了什么。
+function renderReverseSummary(r) {
+  const el = document.getElementById('reverseSummary');
+  if (!el) return;
+  const nets = (r.allow_networks || []).length;
+  const ports = (r.allow_ports || []).length;
+  const peer = peers.find(item => item.id === r.peer_id);
+  if (r.enabled) {
+    el.classList.add('is-on');
+    el.textContent = `当前：已启用 · 放行 ${nets} 个网段、${ports} 个端口${peer ? ` · 对端 ${peer.name}` : ''}`;
+  } else {
+    el.classList.remove('is-on');
+    el.textContent = '当前：已关闭 · 全部回拨请求都会被拒绝';
+  }
+}
+// 表单是否被用户改过但还没保存：轮询回填不能覆盖这些改动，
+// 否则用户一边输入一边被两秒一次的 refreshReverse 抹掉。
+let reverseDirty = false;
+function setReverseDirty(dirty) {
+  reverseDirty = dirty;
+  const el = document.getElementById('reverseDirty');
+  if (el) el.classList.toggle('hidden', !dirty);
+}
+async function refreshReverse({ force = false } = {}) {
   try {
     const r = await (await api('/api/reverse')).json();
     reversePeerId = String(r.peer_id || '');
+    renderReverseSummary(r);
+    // 用户正在编辑时不回填输入框：那会把手打到一半的内容清掉。
+    // 保存成功后由提交处理用 force 强制回填一次。
+    if (reverseDirty && !force) return;
     document.getElementById('revEnabled').checked = !!r.enabled;
     document.getElementById('revNets').value = (r.allow_networks || []).join(', ');
     document.getElementById('revPorts').value = (r.allow_ports || []).join(', ');
     populateReversePeerSelect(reversePeerId);
+    // 服务端状态回填后，输入框里的内容与已保存策略一致。
+    setReverseDirty(false);
   } catch (e) { if (String(e) === 'Error: unauthorized') return; }
+}
+// 改过但未保存时明确提示，避免“以为已经生效”。
+for (const id of ['revEnabled', 'revPeer', 'revNets', 'revPorts']) {
+  const el = document.getElementById(id);
+  if (!el) continue;
+  el.addEventListener('input', () => setReverseDirty(true));
+  el.addEventListener('change', () => setReverseDirty(true));
 }
 document.getElementById('reverseForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -2697,13 +3217,23 @@ document.getElementById('reverseForm').addEventListener('submit', async (e) => {
     document.getElementById('revPeer').focus();
     return;
   }
-  const r = await api('/api/reverse', {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ enabled, peer_id, allow_networks, allow_ports: ports }),
-  });
-  if (!r.ok) { toast(await errorText(r, '保存失败'), 'err'); return; }
-  await refreshReverse();
-  toast(enabled ? '反向策略已保存并启用' : '反向映射已关闭');
+  const submit = e.currentTarget.querySelector('button[type="submit"]');
+  submit.disabled = true;
+  submit.textContent = '保存中…';
+  try {
+    const r = await api('/api/reverse', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled, peer_id, allow_networks, allow_ports: ports }),
+    });
+    if (!r.ok) { toast(await errorText(r, '保存失败'), 'err'); return; }
+    await refreshReverse({ force: true });
+    toast(enabled ? '反向策略已保存并启用' : '反向映射已关闭');
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') toast('保存失败', 'err');
+  } finally {
+    submit.disabled = false;
+    submit.textContent = '保存反向策略';
+  }
 });
 // ── 导入 / 导出 ──
 function ioMsg(t, kind = 'ok') {
@@ -2843,6 +3373,20 @@ function fmtDuration(sec) {
   if (sec < 3600) return Math.floor(sec / 60) + 'm' + (sec % 60 ? ' ' + (sec % 60) + 's' : '');
   return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
 }
+// 统一的“已保持”时长：传入 unix 毫秒，返回秒数（时钟回拨按 0 处理）。
+function elapsedSec(since) {
+  const start = Number(since);
+  if (!Number.isFinite(start)) return 0;
+  return Math.max(0, Math.round((Date.now() - start) / 1000));
+}
+// 节点条带与入站列表都按签名门控重绘，时长得单独刷新：每轮轮询就地改文本，
+// 不动 DOM 结构，读屏也只会念变化的那一小段，而不是整块重念。
+function tickDurationSpans() {
+  for (const el of document.querySelectorAll('[data-since]')) {
+    const text = '已保持 ' + fmtDuration(elapsedSec(el.dataset.since));
+    if (el.textContent !== text) el.textContent = text;
+  }
+}
 function fmtRate(bps) {
   if (!bps || bps < 1) return '0/s';
   const u = ['B', 'KB', 'MB', 'GB']; let i = 0, n = bps;
@@ -2964,6 +3508,10 @@ async function refresh({ forceRows = false } = {}) {
   for (const key of Object.keys(rowSparkHist)) {
     if (!localsNow.has(key)) delete rowSparkHist[key];
   }
+  // 已删除的映射不会再有行来消费高亮，清掉防止 Map 里留下死项。
+  for (const key of [...flashMappings.keys()]) {
+    if (!localsNow.has(key)) clearFlash(flashMappings, key);
+  }
   saveRowSpark();
   if (renderRows) for (const m of shown) {
     const s = statMap[m.local] || { tx_bytes: 0, rx_bytes: 0 };
@@ -2973,12 +3521,18 @@ async function refresh({ forceRows = false } = {}) {
     const active = Number(s.active_conns || 0);
     const label = health.label;
     const expanded = expandedRows.has(m.local);
+    // 正在提交的映射：状态格里直接写“处理中”，按钮不可再点。
+    const pending = pendingMappings.has(m.local);
+    const pendingAction = pendingMappings.get(m.local);
     // 有活跃连接时才显示同一状态行内的明细入口。
     const connToggle = active > 0
       ? `<button class="conn-expand${expanded ? ' open' : ''}" data-local="${esc(m.local)}" aria-expanded="${expanded ? 'true' : 'false'}" title="查看连接明细">${active} 个连接<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg></button>`
       : '';
     const tr = document.createElement('tr');
     if (!enabled) tr.className = 'is-disabled';
+    if (pending) tr.classList.add('is-pending');
+    const flash = peekFlash(flashMappings, m.local);
+    if (flash) tr.classList.add('row-flash-' + flash);
     // 名称作为主标识，本地地址降为副信息；未命名则本地地址仍作主标识。
     const modeBadge = m.mode && m.mode !== 'tcp'
       ? `<span class="map-mode map-mode-${esc(m.mode)}">${esc(m.mode.toUpperCase())}</span>`
@@ -2987,12 +3541,18 @@ async function refresh({ forceRows = false } = {}) {
     const nameCell = m.name
       ? `<span class="map-name">${esc(m.name)}${modeBadge}</span><span class="map-local mono">${esc(m.local)}</span>${peerLine}`
       : `<span class="map-local mono only">${esc(m.local)}${modeBadge}</span>${peerLine}`;
+    const statusCell = pending
+      ? `<td class="status pending" title="正在应用变更"><span class="status-line"><span><span class="pending-dot"></span>处理中…</span></span><span class="status-detail">正在提交变更并等待服务端确认</span></td>`
+      : `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span class="status-line"><span>${esc(label)}</span>${connToggle}</span><span class="status-detail">${esc(health.detail)}</span></td>`;
+    const lock = pending ? ' disabled' : '';
     tr.innerHTML = `<td class="mapcol">${nameCell}</td>` +
                    `<td class="target"><span class="to">→</span>${esc(m.host)}:${m.port}</td>` +
-                   `<td class="status ${esc(health.state)}" title="${esc(health.detail)}"><span class="status-line"><span>${esc(label)}</span>${connToggle}</span><span class="status-detail">${esc(health.detail)}</span></td>` +
+                   statusCell +
                    `<td class="num r">${fmtBytes((s.tx_bytes || 0) + (s.rx_bytes || 0))}${rowRate}<canvas class="row-spark" width="108" height="30" data-local="${esc(m.local)}" aria-hidden="true"></canvas></td>` +
-                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}">诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}">${enabled ? '停用' : '启用'}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令">命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}" title="以此为模板新建">克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}">复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}">编辑</button><button class="btn-del" data-id="${esc(m.local)}" title="删除这条映射">删除</button></span></td>`;
+                   `<td class="act"><span class="btn-row">${['degraded', 'stopped'].includes(health.state) ? `<button class="btn-quiet btn-recover" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-state="${esc(health.state)}" data-reason="${esc((s.last_tunnel_failure || {}).reason || '')}"${lock}>诊断</button>` : ''}<button class="btn-quiet btn-toggle" data-local="${esc(m.local)}" data-enabled="${enabled ? '1' : '0'}" title="${enabled ? '停用此映射' : '启用此映射'}"${lock}>${pendingAction === 'toggle' ? '处理中…' : (enabled ? '停用' : '启用')}</button><button class="btn-quiet btn-cmd" data-local="${esc(m.local)}" title="复制连接命令"${lock}>命令</button><button class="btn-quiet btn-clone" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}" title="以此为模板新建"${lock}>克隆</button><button class="btn-quiet btn-copy" data-local="${esc(m.local)}"${lock}>复制</button><button class="btn-quiet btn-edit" data-local="${esc(m.local)}" data-host="${esc(m.host)}" data-port="${m.port}" data-name="${esc(m.name || '')}"${lock}>编辑</button><button class="btn-del" data-id="${esc(m.local)}" title="删除这条映射"${lock}>${pendingAction === 'delete' ? '删除中…' : '删除'}</button></span></td>`;
     $rows.appendChild(tr);
+    // 高亮只播一次：重绘后即消费掉，避免每两秒重复闪烁。
+    if (flash) clearFlash(flashMappings, m.local);
     // 连接明细展开行：仅在用户点开且仍有活跃连接时渲染。
     if (expanded && active > 0) {
       const detailTr = document.createElement('tr');
@@ -3023,8 +3583,12 @@ async function refresh({ forceRows = false } = {}) {
   const toggleAllBtn = document.getElementById('toggleAllBtn');
   const anyEnabled = list.some(m => m.enabled !== false);
   toggleAllBtn.classList.toggle('hidden', list.length < 2);
-  toggleAllBtn.textContent = anyEnabled ? '全部停用' : '全部启用';
-  toggleAllBtn.dataset.target = anyEnabled ? 'disable' : 'enable';
+  // 批量请求在途时保留「处理中…」：这一轮列表可能已经变了，但请求还没回来，
+  // 按列表改文案会让进度每两秒闪回一次，用户无从判断到底完成没有。
+  if (!bulkPending) {
+    toggleAllBtn.textContent = anyEnabled ? '全部停用' : '全部启用';
+    toggleAllBtn.dataset.target = anyEnabled ? 'disable' : 'enable';
+  }
   // 映射标签页的异常计数徽章：切到其他标签也能看到"有 N 条异常"。
   const issueBadge = document.getElementById('issueBadge');
   if (issueBadge) {
@@ -3059,6 +3623,14 @@ async function refresh({ forceRows = false } = {}) {
 }
 // 最近一次列表的 local → 完整映射对象查找表，供编辑按钮取出 mode/routes。
 let mappingByLocal = {};
+// 变更进行中与刚落定的映射：轮询重绘后仍保持“处理中”，落定后闪一次。
+// 值记录正在执行的动作（toggle / delete），让两个按钮各自显示准确的进度文案。
+const pendingMappings = new Map();
+// 批量启停进行中：期间轮询重绘必须保留「处理中…」文案，不要按最新列表改回
+// 「全部停用/全部启用」，否则用户看到的进度会每两秒闪回一次。
+let bulkPending = false;
+// 落定高亮：值为 { kind, at }，由 setFlash/peekFlash 维护，超过时限不再播放。
+const flashMappings = new Map();
 // ── 搜索过滤：输入即时刷新列表；仅在映射较多时显示输入框 ──
 let mappingFilter = '';
 let searchDebounce = null;
@@ -3091,6 +3663,8 @@ if (mappingSortEl) {
 
 // ── 一键启用/停用全部映射：按钮文案随当前状态在“全部停用/全部启用”间切换。 ──
 // 全部或多数已启用 → 提供“全部停用”；否则提供“全部启用”。目标状态存在 dataset 上。
+// 批量进行中用 bulkPending 标记，轮询重绘时保留“处理中…”，并把受影响的每一行
+// 也标成处理中，避免用户在批量请求还没回来时又点了单条切换。
 document.getElementById('toggleAllBtn').addEventListener('click', async (e) => {
   const btn = e.currentTarget;
   const target = btn.dataset.target === 'enable'; // 目标启用状态
@@ -3102,7 +3676,14 @@ document.getElementById('toggleAllBtn').addEventListener('click', async (e) => {
       : '将停用全部映射：释放所有本地端口并断开在途连接，但都保留在列表中可随时再启用。确定继续？',
   });
   if (!ok) return;
+  const affected = Object.values(mappingByLocal)
+    .filter(mapping => (mapping.enabled !== false) !== target)
+    .map(mapping => mapping.local);
+  bulkPending = true;
+  for (const local of affected) pendingMappings.set(local, 'toggle');
   btn.disabled = true;
+  btn.textContent = '处理中…';
+  refresh({ forceRows: true });
   try {
     const r = await api('/api/mappings/toggle-all', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -3113,8 +3694,15 @@ document.getElementById('toggleAllBtn').addEventListener('click', async (e) => {
     let msg = res.changed ? `已${verb} ${res.changed} 条映射` : '没有需要切换的映射';
     if (res.failed) msg += `，${res.failed} 条失败`;
     toast(msg, res.failed ? 'err' : 'ok');
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') toast('批量切换失败', 'err');
+  } finally {
+    bulkPending = false;
+    for (const local of affected) pendingMappings.delete(local);
+    btn.disabled = false;
+    // 重绘会按最新状态把按钮文案改回“全部停用/全部启用”。
     refresh({ forceRows: true });
-  } finally { btn.disabled = false; }
+  }
 });
 
 // ── 连接命令：按目标端口猜测常见客户端命令，方便一键复制 ──
@@ -3155,6 +3743,8 @@ $rows.addEventListener('click', async (e) => {
   const toggle = e.target.closest('button.btn-toggle');
   if (toggle) {
     const local = toggle.dataset.local;
+    // 双击/连点直接忽略：第二次请求既没有意义，还会和服务端正在处理的切换打架。
+    if (pendingMappings.has(local)) return;
     const wasEnabled = toggle.dataset.enabled === '1';
     if (wasEnabled) {
       const ok = await confirmModal({
@@ -3163,10 +3753,27 @@ $rows.addEventListener('click', async (e) => {
       });
       if (!ok) return;
     }
-    const r = await api('/api/mappings/' + encodeURIComponent(local) + '/toggle', { method: 'POST' });
-    if (!r.ok) { toast(await errorText(r, '切换失败'), 'err'); return; }
-    toast(wasEnabled ? `已停用 ${local}` : `已启用 ${local}`);
-    refresh({ forceRows: true });
+    // 立刻把这一行标成“处理中”，再让轮询重绘保持同一外观。
+    pendingMappings.set(local, 'toggle');
+    toggle.disabled = true;
+    toggle.textContent = '处理中…';
+    toggle.closest('tr')?.classList.add('is-pending');
+    try {
+      const r = await api('/api/mappings/' + encodeURIComponent(local) + '/toggle', { method: 'POST' });
+      if (!r.ok) {
+        toast(await errorText(r, '切换失败'), 'err');
+        setFlash(flashMappings, local, 'err');
+        return;
+      }
+      toast(wasEnabled ? `已停用 ${local}` : `已启用 ${local}`);
+      setFlash(flashMappings, local, 'ok');
+    } catch (error) {
+      if (String(error) !== 'Error: unauthorized') toast(`切换失败：${String(error.message || error)}`, 'err');
+      setFlash(flashMappings, local, 'err');
+    } finally {
+      pendingMappings.delete(local);
+      refresh({ forceRows: true });
+    }
     return;
   }
   const clone = e.target.closest('button.btn-clone');
@@ -3213,15 +3820,27 @@ $rows.addEventListener('click', async (e) => {
   const btn = e.target.closest('button.btn-del');
   if (!btn) return;
   const id = btn.dataset.id;
+  if (pendingMappings.has(id)) return;
   const ok = await confirmModal({
     title: '删除映射', danger: true, confirmText: '删除',
     body: `将停止本地监听 ${id}、断开在途连接，并移除这条映射。需要时可重新创建，但当前配置不会保留。确定删除？`,
   });
   if (!ok) return;
-  const r = await api('/api/mappings/' + encodeURIComponent(id), { method: 'DELETE' });
-  if (!r.ok) { toast(await errorText(r, '删除失败'), 'err'); return; }
-  toast(`已删除映射 ${id}`);
-  refresh();
+  pendingMappings.set(id, 'delete');
+  btn.disabled = true;
+  btn.textContent = '删除中…';
+  btn.closest('tr')?.classList.add('is-pending');
+  try {
+    const r = await api('/api/mappings/' + encodeURIComponent(id), { method: 'DELETE' });
+    if (!r.ok) { toast(await errorText(r, '删除失败'), 'err'); setFlash(flashMappings, id, 'err'); return; }
+    toast(`已删除映射 ${id}`);
+  } catch (error) {
+    if (String(error) !== 'Error: unauthorized') toast('删除失败', 'err');
+    setFlash(flashMappings, id, 'err');
+  } finally {
+    pendingMappings.delete(id);
+    refresh({ forceRows: true });
+  }
 });
 document.getElementById('f').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -3323,14 +3942,27 @@ function fmtRtt(ms) {
   if (ms < 1) return '<1ms';
   return Math.round(ms) + 'ms';
 }
+// 字符串版路径徽标，供表格单元格等直接拼 HTML 的场景复用同一套文案。
+function pathClass(path) {
+  // path 由对端上报，只把已知取值放进 class；未知值统一落到 unknown 的样式。
+  return Object.prototype.hasOwnProperty.call(PATH_LABEL, path) ? path : 'unknown';
+}
+function pathChipHTML(path, rttMs, relay) {
+  if (!path) return '';
+  const parts = [esc(PATH_LABEL[path] || path)];
+  const rtt = fmtRtt(rttMs);
+  if (rtt) parts.push(esc(rtt));
+  const title = relay ? ` title="经中继 ${esc(relay)}"` : '';
+  return `<span class="path-chip show ${pathClass(path)}"${title}><span>${parts.join(' · ')}</span></span>`;
+}
 function renderPathChip(el, path, connected, rttMs, relay) {
   if (!el) return;
   if (!connected || !path) { el.className = 'path-chip'; el.style.display = 'none'; el.innerHTML = ''; el.removeAttribute('title'); return; }
-  el.className = 'path-chip show ' + path;
+  el.className = 'path-chip show ' + pathClass(path);
   el.style.display = '';
-  const parts = [PATH_LABEL[path] || path];
+  const parts = [esc(PATH_LABEL[path] || path)];
   const rtt = fmtRtt(rttMs);
-  if (rtt) parts.push(rtt);
+  if (rtt) parts.push(esc(rtt));
   el.innerHTML = '<span>' + parts.join(' · ') + '</span>';
   // 中继主机名较长，放进 title 悬浮提示而非徽章正文，避免撑破布局。
   el.title = relay ? ('经中继 ' + relay) : (path === 'direct' ? 'P2P 打洞直连' : '');
@@ -3391,12 +4023,13 @@ async function refreshStatus() {
   const hVer = document.getElementById('headerVer');
   try {
     const s = await (await api('/api/status')).json();
+    lastStatus = s;
     if (fVer && s.version) { fVer.textContent = 'v' + s.version; fVer.style.display = ''; }
     if (hVer && s.version) hVer.textContent = 'v' + s.version;
-    let cls, label;
-    if (!s.configured) { cls = ''; label = '未配置'; }
-    else if (s.connected) { cls = 'ok'; label = '已连接'; }
-    else { cls = 'warn'; label = '未连接'; }
+    // 状态接口的 peers 是连接数据的权威来源；先合并再刷新表格与汇总。
+    applyStatusPeers(s.peers);
+    paintPeerConnections();
+    applyConnectionLabel(s);
     const firstRun = document.getElementById('firstRun');
     if (firstRun) firstRun.classList.toggle('hidden', !!s.configured);
     const remoteBadge = document.getElementById('credBadge');
@@ -3404,26 +4037,16 @@ async function refreshStatus() {
       remoteBadge.textContent = s.connected ? '已连接' : '未连接';
       remoteBadge.className = 'badge ' + (s.connected ? 'ok' : 'no');
     }
-    renderConnectedPeers(s.connected, s.connected_ips);
-    dot.className = 'status-dot ' + cls;
-    txt.textContent = label;
-    mDot.className = 'status-dot ' + cls;
-    mDot.style.width = mDot.style.height = '10px';
-    mState.textContent = label;
+    renderConnectedPeers(s);
     mTunnels.textContent = s.mappings;
     if (mActive) mActive.textContent = s.active_tunnels ?? 0;
     document.getElementById('sideActive').textContent = s.active_tunnels ?? 0;
-    fDot.className = 'status-dot ' + cls;
-    fTxt.textContent = label;
-    setConnectionTone(cls);
     renderPathChip(pathChip, s.path, s.connected, s.rtt_ms, s.relay);
     renderPathChip(mPathChip, s.path, s.connected, s.rtt_ms, s.relay);
     renderUptime(s.connected ? s.connected_since : null);
     pushRttSample(s.connected ? s.rtt_ms : null);
     renderOps(s);
     noteConnection(s.configured, s.connected);
-    // 标签页标题带状态点：多标签页时一眼可辨这个控制台是否连着。
-    setTabTitle(!s.configured ? 'idle' : s.connected ? 'ok' : 'warn');
   } catch {
     dot.className = 'status-dot err'; txt.textContent = '服务不可用';
     mDot.className = 'status-dot err'; mState.textContent = '不可用';
@@ -3433,10 +4056,15 @@ async function refreshStatus() {
     renderPathChip(pathChip, null, false);
     renderPathChip(mPathChip, null, false);
     renderUptime(null);
-    renderConnectedPeers(false, []);
+    // 连不上自己的管理接口时，不能继续显示上一次的“在线”。
+    for (const info of peerConn.values()) info.connected = false;
+    paintPeerConnections();
+    renderConnectedPeers(null);
     prevConnected = null;
     setTabTitle('err');
   }
+  // 「已保持」交给就地刷新：列表按签名门控不重绘时，时长也不会停在旧值上。
+  tickDurationSpans();
 }
 // 连接状态卡的数值颜色必须随状态变化：未配置/不可用显示为绿色会误导。
 function setConnectionTone(cls) {
@@ -3725,8 +4353,12 @@ function showShortcutHelp() {
   });
 }
 
+// 首次切页放在全部顶层常量声明之后：早于 `const API_TIMEOUT_MS` 调用会让
+// `api()` 撞上暂时性死区（首个 /api/peers 请求被拒绝，页面要等下一轮轮询才恢复）。
+selectTab(location.hash.slice(1) || localStorage.getItem(TAB_KEY) || 'dashboard');
 safe(refreshPeers().then(() => { refreshTargetCatalog(); refresh(); refreshDomains(); }));
 safe(refreshOwnNode());
+safe(refreshInbound());
 safe(refresh());
 safe(refreshDomains());
 safe(refreshStatus());
@@ -3744,7 +4376,7 @@ function poll() {
   // 慢请求期间不叠加下一轮，避免断网时请求队列越积越多。
   if (pollBusy) return Promise.resolve();
   pollBusy = true;
-  const jobs = [refreshPeers(), refreshStatus(), refresh(), refreshDomains(), refreshOwnNode(), checkUpdate({ silent: true })];
+  const jobs = [refreshPeers(), refreshStatus(), refresh(), refreshDomains(), refreshOwnNode(), refreshInbound(), checkUpdate({ silent: true })];
   if (location.hash.slice(1) === 'about') jobs.push(refreshAboutRuntime());
   if (location.hash.slice(1) === 'events') jobs.push(refreshEvents());
   return Promise.allSettled(jobs).finally(() => { pollBusy = false; });

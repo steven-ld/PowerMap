@@ -45,8 +45,8 @@ use crate::{
     config, diagnostic_report,
     diagnostics::{Observation as DiagnosticObservation, Snapshot as DiagnosticSnapshot},
     domain_hosts::{HostsError, HostsStore},
-    local_services, mapping_health, port_suggestions, proto, relay_runtime, runtime, tunnel,
-    update,
+    inbound, local_services, mapping_health, port_suggestions, proto, relay_runtime, runtime,
+    tunnel, update,
 };
 
 /// 运行期可变的接入凭证：连接目标（node_id → PublicKey）与访问令牌。
@@ -484,6 +484,14 @@ pub struct PeerView {
     configured: bool,
     connected: bool,
     restart_required: bool,
+    /// 该节点当前选定的穿透路径（`direct` / `relay`）；未连接时为 None。
+    path: Option<String>,
+    /// 该节点选定路径的往返延迟（毫秒）。
+    rtt_ms: Option<u64>,
+    /// 经中继连接时的中继主机名，供管理页显示"经中继 example.com"。
+    relay: Option<String>,
+    /// 当前连接建立时刻（unix 毫秒）；未连接时为 None。
+    connected_since: Option<u64>,
 }
 
 #[derive(Default)]
@@ -798,40 +806,80 @@ impl PeerManager {
             .cloned()
             .collect::<Vec<_>>();
         let links = self.runtime.lock().await.links.clone();
-        let mut views = Vec::with_capacity(peers.len());
+        // 逐节点探测并发执行：单个节点最多耗时 500ms（见 `peer_view`），
+        // 串行会让整体膨胀成 N×500ms，节点一多就把两秒一次的轮询拖垮。
+        let mut tasks = tokio::task::JoinSet::new();
         for peer in peers {
-            let link = links.get(&peer.id);
-            views.push(PeerView {
-                id: peer.id,
-                name: peer.name,
-                configured: !peer.node_id.is_empty(),
-                connected: match link {
-                    Some(link) => link.is_alive().await,
-                    None => false,
-                },
-                restart_required: match link {
-                    Some(link) => link.relay_restart_required().await,
-                    None => false,
-                },
-            });
+            let link = links.get(&peer.id).cloned();
+            tasks.spawn(async move { Self::peer_view(peer, link).await });
+        }
+        let mut views = Vec::with_capacity(tasks.len());
+        while let Some(result) = tasks.join_next().await {
+            match result {
+                Ok(view) => views.push(view),
+                Err(error) => tracing::warn!(%error, "读取节点连接状态失败"),
+            }
         }
         views.sort_by(|a, b| a.id.cmp(&b.id));
         views
+    }
+
+    /// 单个节点的连接质量快照。由 `peer_views` 并发调用，因此不借用 `self`。
+    async fn peer_view(peer: config::PeerConfig, link: Option<Link>) -> PeerView {
+        let connected = match &link {
+            Some(link) => link.is_alive().await,
+            None => false,
+        };
+        let restart_required = match &link {
+            Some(link) => link.relay_restart_required().await,
+            None => false,
+        };
+        // 路径查询在缺少选定路径时会回退到远端地址枚举；加时限，避免个别节点
+        // 把每两秒一次的轮询拖长。
+        let path_info = match &link {
+            Some(link) if connected => {
+                tokio::time::timeout(Duration::from_millis(500), link.transport_path())
+                    .await
+                    .unwrap_or_default()
+            }
+            _ => None,
+        };
+        let connected_since = match &link {
+            Some(link) if connected => match link.connected_since.load(Ordering::Relaxed) {
+                0 => None,
+                since => Some(since),
+            },
+            _ => None,
+        };
+        PeerView {
+            id: peer.id,
+            name: peer.name,
+            configured: !peer.node_id.is_empty(),
+            connected,
+            restart_required,
+            path: path_info.as_ref().map(|info| info.path.to_string()),
+            rtt_ms: path_info.as_ref().and_then(|info| info.rtt_ms),
+            relay: path_info.and_then(|info| info.relay),
+            connected_since,
+        }
     }
 
     /// Return one currently live link for aggregate legacy-compatible status surfaces without
     /// allocating an endpoint for a dormant peer. Per-peer state remains available from
     /// `peer_views`; callers use this only for the historical single-path summary fields.
     async fn first_alive_link(&self) -> Option<Link> {
-        let links = self
+        let mut links = self
             .runtime
             .lock()
             .await
             .links
-            .values()
-            .cloned()
+            .iter()
+            .map(|(id, link)| (id.clone(), link.clone()))
             .collect::<Vec<_>>();
-        for link in links {
+        // 聚合字段必须稳定：按 peer id 排序后再挑，避免 HashMap 的随机遍历顺序让
+        // 状态卡每轮指向不同节点。`peer_views` 也按同一顺序排序，两者结果一致。
+        links.sort_by(|a, b| a.0.cmp(&b.0));
+        for (_, link) in links {
             if link.is_alive().await {
                 return Some(link);
             }
@@ -1366,6 +1414,9 @@ struct AppState {
     /// 反向映射策略（deny-all）：是否接受 B 端发起的反向隧道，及允许 A 拨号的目标。
     /// 用 RwLock 承载，便于后续通过管理页在运行期开关；save/export 从此读回持久化。
     reverse: Arc<RwLock<ReverseConfig>>,
+    /// 入站连接表（由同进程的 expose 角色写入）。`None` 表示本机没有启用 expose，
+    /// 管理页据此显示“未启用”，而不是伪造一个“当前无人连接”的结论。
+    inbound: Option<Arc<inbound::InboundRegistry>>,
 }
 
 /// A 端反向映射运行期配置。空网段/端口即 deny-all（见 [`tunnel::ReversePolicy`]）。
@@ -1563,7 +1614,7 @@ struct Status {
     node_id: String,
     mappings: usize,
     /// 穿透路径：direct（P2P 打洞直连）/ relay（经中继转发）/ unknown；未连接时为 null。
-    path: Option<&'static str>,
+    path: Option<String>,
     /// 已选路径的往返延迟（毫秒）；无活跃路径时为 null。
     rtt_ms: Option<u64>,
     /// 经中继时的中继主机名；直连或未知时为 null。
@@ -1593,37 +1644,23 @@ async fn status(State(st): State<AppState>) -> Json<Status> {
     let n = st.inner.lock().await.mappings.len();
     let peers = st.peers.peer_views().await;
     let configs = st.peers.peer_configs().await;
-    let link = st.peers.first_alive_link().await;
-    let path_info = match &link {
-        Some(link) => link.transport_path().await,
-        None => None,
-    };
+    // legacy 聚合字段取 peer id 最小的在线节点（`peer_views` 已按 id 排序，
+    // `first_alive_link` 也按同一顺序），保证多节点时不会每轮指向不同节点。
+    // 路径与延迟直接复用 `peer_views` 的结果：再调一次 `transport_path` 既重复又
+    // 绕过了那里的 500ms 时限。
+    let connected_view = peers.iter().find(|view| view.connected);
+    let connected = connected_view.is_some();
+    let path = connected_view.and_then(|view| view.path.clone());
+    let rtt_ms = connected_view.and_then(|view| view.rtt_ms);
+    let relay = connected_view.and_then(|view| view.relay.clone());
+    let connected_since = connected_view.and_then(|view| view.connected_since);
     let m = &st.metrics;
-    let (path, rtt_ms, relay) = match path_info {
-        Some(p) => (Some(p.path), p.rtt_ms, p.relay),
-        None => (None, None, None),
-    };
-    let connected = link.is_some();
-    let connected_since = if connected {
-        match link
-            .as_ref()
-            .expect("connected status requires a selected peer")
-            .connected_since
-            .load(Ordering::Relaxed)
-        {
-            0 => None,
-            since => Some(since),
-        }
-    } else {
-        None
-    };
-    let connected_ips = if connected {
-        link.as_ref()
-            .expect("connected status requires a selected peer")
-            .connected_ips()
+    let connected_ips = match st.peers.first_alive_link().await {
+        // 远端地址枚举同样会走 `remote_info`，和 `peer_views` 里的路径查询保持同一时限。
+        Some(link) => tokio::time::timeout(Duration::from_millis(500), link.connected_ips())
             .await
-    } else {
-        Vec::new()
+            .unwrap_or_default(),
+        None => Vec::new(),
     };
     let configured_peers = configs
         .iter()
@@ -1664,12 +1701,21 @@ async fn diagnostics(State(st): State<AppState>) -> Json<DiagnosticSnapshot> {
         .any(|peer| !peer.node_id.trim().is_empty());
     let link = st.peers.first_alive_link().await;
     let connected = link.is_some();
+    // 与 `/api/status` 一致：路径与地址枚举都可能回退到远端信息查询，统一加时限。
     let path_info = match &link {
-        Some(link) if connected => link.transport_path().await,
+        Some(link) if connected => {
+            tokio::time::timeout(Duration::from_millis(500), link.transport_path())
+                .await
+                .unwrap_or_default()
+        }
         _ => None,
     };
     let peer_ips = match &link {
-        Some(link) if connected => link.connected_ips().await,
+        Some(link) if connected => {
+            tokio::time::timeout(Duration::from_millis(500), link.connected_ips())
+                .await
+                .unwrap_or_default()
+        }
         _ => Vec::new(),
     };
 
@@ -1992,6 +2038,7 @@ mod integration_tests {
             relay_update: Arc::new(Mutex::new(())),
             updater: update::UpdateCoordinator::new(CancellationToken::new()),
             reverse: Arc::new(RwLock::new(ReverseConfig::default())),
+            inbound: None,
         }
     }
 
@@ -6260,6 +6307,11 @@ struct PeerApiView {
     connected: bool,
     restart_required: bool,
     mapping_count: usize,
+    /// 当前穿透路径与延迟；未连接时为 null，供节点列表直接展示连接质量。
+    path: Option<String>,
+    rtt_ms: Option<u64>,
+    relay: Option<String>,
+    connected_since: Option<u64>,
 }
 
 async fn peer_mapping_counts(st: &AppState) -> HashMap<String, usize> {
@@ -6305,6 +6357,10 @@ async fn peer_api_views(st: &AppState) -> Vec<PeerApiView> {
                 connected: view.is_some_and(|view| view.connected),
                 restart_required: view.is_some_and(|view| view.restart_required),
                 mapping_count: counts.get(&peer.id).copied().unwrap_or_default(),
+                path: view.and_then(|view| view.path.clone()),
+                rtt_ms: view.and_then(|view| view.rtt_ms),
+                relay: view.and_then(|view| view.relay.clone()),
+                connected_since: view.and_then(|view| view.connected_since),
                 peer,
             }
         })
@@ -6334,6 +6390,28 @@ async fn persist_peer_state(st: &AppState) -> Result<(), String> {
 
 async fn list_peers(State(st): State<AppState>) -> Json<Vec<PeerApiView>> {
     Json(peer_api_views(&st).await)
+}
+
+/// `/api/inbound` 的线格式。`enabled` 区分两种“没有连接”：本机没跑 expose 角色，
+/// 与 expose 在跑但当前无人接入；把两者混成空列表会让用户以为对端都不在线。
+#[derive(Serialize)]
+struct InboundResponse {
+    enabled: bool,
+    connections: Vec<inbound::InboundView>,
+}
+
+/// 谁连到了本机（expose 侧入站连接）。与 `/api/peers` 的“我连了谁”互为另一半。
+async fn inbound_connections(State(st): State<AppState>) -> Json<InboundResponse> {
+    match &st.inbound {
+        Some(registry) => Json(InboundResponse {
+            enabled: true,
+            connections: registry.snapshot().await,
+        }),
+        None => Json(InboundResponse {
+            enabled: false,
+            connections: Vec::new(),
+        }),
+    }
 }
 
 async fn create_peer(
@@ -8869,6 +8947,7 @@ fn app(state: AppState) -> Router {
         .route("/api/mappings/{id}/toggle", post(toggle))
         .route("/api/mappings/toggle-all", post(toggle_all))
         .route("/api/peers", get(list_peers).post(create_peer))
+        .route("/api/inbound", get(inbound_connections))
         .route("/api/peers/{id}", put(update_peer).delete(delete_peer))
         .route(
             "/api/domain-mappings",
@@ -10253,6 +10332,7 @@ pub async fn run(
     config_path: PathBuf,
     cancel: CancellationToken,
     local_expose_id: Option<PublicKey>,
+    inbound: Option<Arc<inbound::InboundRegistry>>,
 ) -> Result<()> {
     cfg.validate().map_err(anyhow::Error::msg)?;
     let peers = PeerManager::new(cfg.peers.clone(), cancel.clone(), local_expose_id)
@@ -10303,6 +10383,7 @@ pub async fn run(
             allow_networks: cfg.reverse_allow_networks.clone(),
             allow_ports: cfg.reverse_allow_ports.clone(),
         })),
+        inbound,
     };
 
     // 恢复持久化的映射（受 max_mappings 上限约束）
